@@ -1,6 +1,6 @@
 # ===== BOT SETTINGS =====
 # Your bot's name and race (use plain strings)
-BOT_NAME = "MyBot"
+BOT_NAME = "KauKauBot"
 BOT_RACE = "Zerg"  # Options: Terran, Protoss, Zerg, Random
 
 # ===== GAME SETTINGS =====
@@ -27,4 +27,4 @@ OPPONENT_DIFFICULTY = "Medium"  # VeryEasy, Easy, Medium, Hard, VeryHard, etc.
 
 # ===== GAME MODE =====
 # Set to True to play in realtime (like a human), False for faster simulation
-REALTIME = False
+REALTIME = True
