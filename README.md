@@ -13,7 +13,7 @@ Local games pick the build via FORCE_BUILD in config.py (omitted from the ladder
 
 ## Layout
 
-`
+```
 bot/
   bot.py              # CompetitiveBot - step orchestration
   builds/
@@ -29,7 +29,7 @@ bot/
 config.py             # Local-only settings (not in ladder zip)
 run.py                # Local play + --validate
 create_ladder_zip.py  # Package for AI Arena upload
-`
+```
 
 ## Ling rush (current ladder-ready path)
 
