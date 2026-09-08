@@ -61,26 +61,37 @@ class EconomyManager:
         log_event(self.bot, f"ORDER extractor (supply={self.bot.supply_used})")
         self._logged_extractor_order = True
 
-    def build_extractor(self) -> None:
+    def build_extractor(self, *, second_ok: bool = True) -> None:
         bot = self.bot
         if not bot.workers or not bot.townhalls:
             return
 
         if self._is_upgrade_rush():
-            if not pool_started(bot) or bot.supply_used < self.plan.EXTRACTOR_SUPPLY:
+            if bot.supply_used < self.plan.EXTRACTOR_SUPPLY:
                 return
-            max_per_base = self.plan.EXTRACTORS_PER_BASE
+            # 1st @17; 2nd on pool.ready when second_ok (after speed + first lings)
+            total_ex = (
+                bot.structures(UnitTypeId.EXTRACTOR).amount
+                + bot.already_pending(UnitTypeId.EXTRACTOR)
+            )
+            pool_ready = bool(bot.structures(UnitTypeId.SPAWNINGPOOL).ready)
+            if total_ex >= 1 and not (second_ok and pool_ready):
+                return
+            # Hard total extractor cap (Jason: max 4)
+            max_total = int(getattr(self.plan, "MAX_EXTRACTORS", 4))
+            if total_ex >= max_total:
+                return
             for th in bot.townhalls.ready:
                 local = bot.structures(UnitTypeId.EXTRACTOR).closer_than(12, th)
                 pending = bot.structures(UnitTypeId.EXTRACTOR).not_ready.closer_than(12, th).amount
-                if local.amount + pending >= max_per_base:
+                max_local = 1 if total_ex < 1 else int(getattr(self.plan, "EXTRACTORS_PER_BASE", 2))
+                if local.amount + pending >= max_local:
                     continue
                 geysers = bot.vespene_geyser.closer_than(12, th)
                 taken = {e.position.rounded for e in local}
                 free = [g for g in geysers if g.position.rounded not in taken]
                 if not free or not bot.can_afford(UnitTypeId.EXTRACTOR):
                     continue
-                # Prefer a local worker for this base
                 local_w = [w for w in bot.workers if w.distance_to(th) < 18 and not w.is_carrying_vespene]
                 builder = min(local_w, key=lambda w: w.distance_to(free[0])) if local_w else bot.workers.random
                 builder.build(UnitTypeId.EXTRACTOR, free[0])

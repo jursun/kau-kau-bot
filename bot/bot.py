@@ -23,7 +23,6 @@ class CompetitiveBot(BotAI):
         self.production = ProductionManager(self)
         self.combat = CombatManager(self)
         self.scouting = ScoutingManager(self)
-        self._macro_goal_done = False
 
     async def on_start(self):
         self.build_plan = choose_build()
@@ -66,36 +65,40 @@ class CompetitiveBot(BotAI):
             self.production.train_overlords()
             await self.production.build_pool()
             self.economy.build_extractor()
+            self.production.research_upgrades()
+            await self.production.build_evolution_chambers()
+            self.production.morph_lair()
+            await self.production.build_infestation_pit()
+            self.production.morph_hive()
+            await self.production.build_macro_hatch()
+            await self.production.expand_bases()
+            self.production.train_queens()
+            self.economy.inject_larva()
+            self.economy.build_extractor()
+            self.production.train_drones()
+            self.production.train_zerglings()
         else:
+            # Upgrade rush: hatch@15 → pool@16 → gas@17 → ovi@19
+            # @pool: Metabolic Boost → first lings → 2nd Extractor → double evo
             self.production.train_overlords()
+            await self.production.expand_bases()
             await self.production.build_pool()
-        self.production.research_upgrades()
-        await self.production.build_evolution_chambers()
-        self.production.morph_lair()
-        await self.production.build_infestation_pit()
-        self.production.morph_hive()
-        await self.production.build_macro_hatch()
-        await self.production.expand_bases()
-        self.production.train_queens()
-        self.economy.inject_larva()
-        self.economy.build_extractor()
-        self.production.train_drones()
-        self.production.train_zerglings()
+            self.economy.build_extractor(second_ok=False)  # gas1 @17 only
+            self.production.research_upgrades()  # 1) Metabolic Boost
+            self.production.morph_lair()
+            await self.production.build_infestation_pit()
+            self.production.morph_hive()
+            await self.production.build_macro_hatch()
+            await self.production.expand_bases()
+            self.production.train_queens()
+            self.economy.inject_larva()
+            self.production.train_drones()
+            self.production.train_zerglings()  # 2) first lings (+ natural drones continue)
+            self.economy.build_extractor(second_ok=True)  # 3) 2nd Extractor on pool.ready
+            await self.production.build_evolution_chambers()  # 4) double evo
         await self.combat.manage()
         await self.economy.manage_workers()
         await self.scouting.execute()
-        if (
-            getattr(self.build_plan, "NAME", "") == "upgrade_rush"
-            and not self._macro_goal_done
-            and self.production.check_macro_goal()
-        ):
-            self._macro_goal_done = True
-            # End local game once macro goal hit (debug DeclareVictory)
-            try:
-                await self.client.debug_declare_victory()
-                log_event(self, "LOCAL END macro goal (DeclareVictory)")
-            except Exception as e:
-                log_event(self, f"macro goal reached but could not end game: {e}")
 
     async def on_end(self, result: Result):
         log_event(self, f"END result={result}")

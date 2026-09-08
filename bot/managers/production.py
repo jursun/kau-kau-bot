@@ -90,6 +90,8 @@ class ProductionManager:
 
     async def build_pool(self) -> None:
         bot = self.bot
+        if self._is_upgrade_rush() and self._hatch_count() < 2:
+            return  # hatch@15 before pool@16
         if pool_pending_or_none(bot) and bot.supply_used >= self.plan.POOL_SUPPLY:
             if bot.can_afford(UnitTypeId.SPAWNINGPOOL):
                 near = bot.start_location.towards(
@@ -139,32 +141,72 @@ class ProductionManager:
                 f"ORDER macro hatch (minerals={bot.minerals}, hatches={hatch_count}+1)",
             )
 
+    def _enemy_threat_near_home(self) -> bool:
+        bot = self.bot
+        radius = float(getattr(self.plan, "INBASE_HATCH_THREAT_RADIUS", 40))
+        home = bot.start_location
+        return any(u.distance_to(home) < radius for u in bot.enemy_units if not u.is_flying)
+
     async def expand_bases(self) -> None:
-        """Upgrade rush: expand like Burny example, up to MAX_BASES."""
+        """Upgrade rush: 2nd hatch @ EXPAND_SUPPLY (natural if safe else in-base); later after pool."""
         bot = self.bot
         if not self._is_upgrade_rush():
             return
         if self._hatch_count() >= self.plan.MAX_BASES:
             return
-        if not bot.structures(UnitTypeId.SPAWNINGPOOL).ready:
-            return
         if safe_already_pending(bot, UnitTypeId.HATCHERY) > 0:
             return
         if not bot.can_afford(UnitTypeId.HATCHERY):
             return
-        # Natural after a bit of eco; then keep expanding while under worker goal
-        if self._hatch_count() < 2 and bot.supply_workers < 14:
+
+        n = self._hatch_count()
+        expand_at = int(getattr(self.plan, "EXPAND_SUPPLY", 15))
+        third_at = int(getattr(self.plan, "THIRD_HATCH_SUPPLY", 32))
+
+        if n < 2:
+            if bot.supply_used < expand_at:
+                return
+            if self._enemy_threat_near_home():
+                near = bot.start_location.towards(
+                    bot.game_info.map_center,
+                    getattr(self.plan, "MACRO_HATCH_NEAR_DISTANCE", 6),
+                )
+                built = await bot.build(UnitTypeId.HATCHERY, near=near, max_distance=15)
+                if built:
+                    log_event(bot, f"ORDER in-base hatch (threat, supply={bot.supply_used})")
+                    self._logged_expand = True
+                return
+            location = await bot.get_next_expansion()
+            if not location:
+                return
+            before = n
+            await bot.expand_now(location=location, max_distance=25)
+            after = self._hatch_count()
+            pending = safe_already_pending(bot, UnitTypeId.HATCHERY)
+            log_event(
+                bot,
+                f"ORDER natural expand (bases={max(after, before)}, pending={pending}, supply={bot.supply_used}, minerals={bot.minerals})",
+            )
+            self._logged_expand = True
+            return
+
+        # 3rd+: need pool first; third hatch @ THIRD_HATCH_SUPPLY (32)
+        if not bot.structures(UnitTypeId.SPAWNINGPOOL).ready:
+            return
+        if n < 3 and bot.supply_used < third_at:
             return
         location = await bot.get_next_expansion()
         if not location:
             return
-        before = self._hatch_count()
+        before = n
         await bot.expand_now(location=location, max_distance=25)
         after = self._hatch_count()
         if after > before or safe_already_pending(bot, UnitTypeId.HATCHERY) > 0:
-            log_event(bot, f"ORDER expand (bases={max(after, before)}, workers={bot.supply_workers})")
-            if not self._logged_expand:
-                self._logged_expand = True
+            log_event(
+                bot,
+                f"ORDER expand (bases={max(after, before)}, supply={bot.supply_used})",
+            )
+            self._logged_expand = True
 
 
     async def build_evolution_chambers(self) -> None:
@@ -173,8 +215,7 @@ class ProductionManager:
             return
         if not bot.structures(UnitTypeId.SPAWNINGPOOL).ready:
             return
-        if bot.already_pending_upgrade(UpgradeId.ZERGLINGMOVEMENTSPEED) == 0:
-            return
+        # Opening: double evo after speed + first lings + 2nd extractor (on_step order)
         have = self._structure_total(UnitTypeId.EVOLUTIONCHAMBER)
         while have < self.plan.EVO_COUNT and bot.can_afford(UnitTypeId.EVOLUTIONCHAMBER):
             near = bot.start_location.towards(bot.game_info.map_center, 8)
@@ -337,78 +378,101 @@ class ProductionManager:
                 f"SUPPLY BLOCKED (used={bot.supply_used}, cap={bot.supply_cap})",
             )
 
-        if (
-            bot.supply_left <= self.plan.OVERLORD_SUPPLY_LEFT
-            and bot.already_pending(UnitTypeId.OVERLORD) == 0
-            and bot.larva
-            and bot.can_afford(UnitTypeId.OVERLORD)
-        ):
+        if not bot.larva or not bot.can_afford(UnitTypeId.OVERLORD):
+            return
+        if bot.already_pending(UnitTypeId.OVERLORD) > 0:
+            return
+
+        if self._is_upgrade_rush():
+            ovis = bot.units(UnitTypeId.OVERLORD).amount + bot.structures(
+                UnitTypeId.OVERLORDTRANSPORT
+            ).amount
+            # Opening: 13 ovi, then 19 ovi; afterward keep OVERLORD_SUPPLY_LEFT buffer
+            need_opening = (
+                (ovis < 1 and bot.supply_used >= getattr(self.plan, "FIRST_OVERLORD_SUPPLY", 13))
+                or (ovis < 2 and bot.supply_used >= getattr(self.plan, "SECOND_OVERLORD_SUPPLY", 19))
+            )
+            need_buffer = bot.supply_left <= self.plan.OVERLORD_SUPPLY_LEFT
+            if not (need_opening or need_buffer):
+                return
+            bot.train(UnitTypeId.OVERLORD)
+            self._log_once(
+                "_logged_first_overlord",
+                f"ORDER overlord (supply={bot.supply_used}, ovis~{ovis}+1)",
+            )
+            return
+
+        if bot.supply_left <= self.plan.OVERLORD_SUPPLY_LEFT:
             bot.train(UnitTypeId.OVERLORD)
             self._log_once(
                 "_logged_first_overlord",
                 f"ORDER overlord (supply_left={bot.supply_left})",
             )
 
-    def check_macro_goal(self) -> bool:
-        """True when we hit GOAL_WORKERS (default 100)."""
-        bot = self.bot
-        if not self._is_upgrade_rush():
-            return False
-        goal = getattr(self.plan, "GOAL_WORKERS", 100)
-        if bot.supply_workers >= goal:
-            log_event(bot, f"GOAL workers={bot.supply_workers}/{goal} bases={bot.townhalls.amount}")
-            return True
-        return False
 
     def train_drones(self) -> None:
         bot = self.bot
         if bot.supply_left <= 1:
             return
-        if not pool_started(bot):
-            if bot.supply_used >= 14:
-                return
-            if bot.minerals >= 200 and bot.supply_used >= self.plan.POOL_SUPPLY:
-                return
 
+        # Upgrade rush: always run saturation fallback (never pool-first soft-starve).
+        # Structures morph drones — replace promptly to mineral ideal_harvesters.
         if self._is_upgrade_rush():
-            goal = getattr(self.plan, "GOAL_WORKERS", 100)
-            if bot.supply_workers >= goal:
+            goal = int(getattr(self.plan, "GOAL_WORKERS", 80))
+            workers_now = bot.supply_workers + safe_already_pending(bot, UnitTypeId.DRONE)
+            if workers_now >= goal:
                 if not self._logged_drone_cap:
-                    log_event(bot, f"DRONE CAP reached ({bot.supply_workers}/{goal})")
+                    log_event(bot, f"DRONE CAP reached ({workers_now}/{goal})")
                     self._logged_drone_cap = True
                 return
             self._logged_drone_cap = False
 
-            # Leave minerals for expand when we still need bases
-            if (
+            # Reserve 300 for hatch@15 / later expands without stopping saturation.
+            # Only skip a drone when spending 50 would leave <300 while a hatch is due.
+            expand_at = int(getattr(self.plan, "EXPAND_SUPPLY", 15))
+            reserve_hatch = (
                 self._hatch_count() < self.plan.MAX_BASES
-                and bot.minerals >= 300
                 and safe_already_pending(bot, UnitTypeId.HATCHERY) == 0
-                and bot.structures(UnitTypeId.SPAWNINGPOOL).ready
-            ):
-                return
+                and (
+                    (self._hatch_count() < 2 and bot.supply_used >= expand_at)
+                    or (
+                        self._hatch_count() >= 2
+                        and bot.structures(UnitTypeId.SPAWNINGPOOL).ready
+                    )
+                )
+            )
 
-            # Burny-style: each ready hatch spends its own nearby larva if under-saturated
             for th in bot.townhalls.ready:
-                if bot.supply_workers >= goal:
+                workers_now = bot.supply_workers + safe_already_pending(bot, UnitTypeId.DRONE)
+                if workers_now >= goal:
                     break
-                if not bot.can_afford(UnitTypeId.DRONE) or bot.supply_left <= 1:
+                if bot.supply_left <= 1:
                     break
-                # Prefer bases that still need harvesters
-                ideal = getattr(th, "ideal_harvesters", 0) or 22
+                if not bot.can_afford(UnitTypeId.DRONE):
+                    break
+                if reserve_hatch and bot.minerals < 350:
+                    break  # keep >=300 for expand_bases; still allow drones when richer
+                ideal = getattr(th, "ideal_harvesters", 0) or 16
                 assigned = getattr(th, "assigned_harvesters", 0)
-                if assigned >= ideal and th.surplus_harvesters >= 0:
+                # Mineral line saturation only (gas filled by yank-3, not here)
+                if assigned >= ideal and getattr(th, "surplus_harvesters", 0) >= 0:
                     continue
                 larva = self._larva_near(th)
                 if not larva:
                     continue
-                lar = larva[0]
-                lar.train(UnitTypeId.DRONE)
+                larva[0].train(UnitTypeId.DRONE)
                 log_event(
                     bot,
                     f"DRONE train hatch assigned={assigned}/{ideal} workers={bot.supply_workers}",
                 )
             return
+
+        # Ling rush: pool-first soft gates
+        if not pool_started(bot):
+            if bot.supply_used >= 14:
+                return
+            if bot.minerals >= 200 and bot.supply_used >= self.plan.POOL_SUPPLY:
+                return
 
         # Ling rush
         cap = self._drone_cap()
@@ -448,18 +512,20 @@ class ProductionManager:
             return
 
         if self._is_upgrade_rush():
-            # Saturated bases: larva -> overlord (if low supply) else zergling
-            # Undersaturated bases leave larva for drones (train_drones)
+            # @pool ready: make lings, but NEVER steal larva from an undersaturated
+            # hatch — train_drones runs first and fills natural minerals (~2/patch)
+            # while the first ling morphs.
+            if not bot.structures(UnitTypeId.SPAWNINGPOOL).ready:
+                return
             for th in bot.townhalls.ready:
                 if not self._hatch_saturated(th):
-                    continue
+                    continue  # leave larva for drones (esp. natural mineral line)
                 larva = self._larva_near(th)
                 if not larva:
                     continue
                 for lar in larva:
                     if bot.supply_left <= 0:
                         return
-                    # Prefer overlords when supply is tight
                     if (
                         bot.supply_left <= self.plan.OVERLORD_SUPPLY_LEFT
                         and bot.can_afford(UnitTypeId.OVERLORD)
@@ -470,7 +536,7 @@ class ProductionManager:
                         lar.train(UnitTypeId.ZERGLING)
                         self._log_once(
                             "_logged_first_lings",
-                            "ORDER first zerglings (saturated base)",
+                            "ORDER first zerglings (saturated hatch, natural drones continue)",
                         )
             return
 

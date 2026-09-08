@@ -417,6 +417,39 @@ class CombatManager:
             self._wave_sent_tags.add(ling.tag)
         return "third->natural"
 
+
+    def _is_upgrade_rush(self) -> bool:
+        return getattr(self.bot.build_plan, "NAME", "") == "upgrade_rush"
+
+    def _plus1_remaining_pair(self):
+        bot = self.bot
+        research_time = float(getattr(bot.build_plan, "PLUS1_RESEARCH_TIME", 114.0))
+        melee = float(bot.already_pending_upgrade(UpgradeId.ZERGMELEEWEAPONSLEVEL1))
+        armor = float(bot.already_pending_upgrade(UpgradeId.ZERGGROUNDARMORSLEVEL1))
+
+        def remaining(progress: float) -> float:
+            if progress <= 0:
+                return research_time
+            if progress >= 1.0:
+                return 0.0
+            return (1.0 - progress) * research_time
+
+        return remaining(melee), remaining(armor)
+
+    def _wave1_plus1_leave_ready(self) -> bool:
+        """Leave when both +1 melee and +1 carapace finish within WAVE1_LEAVE_BEFORE_PLUS1.
+
+        Interpretation: max(remaining_melee, remaining_armor) <= threshold.
+        Both upgrades must have started (progress > 0) or be done (==1).
+        """
+        leave_before = float(getattr(self.bot.build_plan, "WAVE1_LEAVE_BEFORE_PLUS1", 10.0))
+        melee = float(self.bot.already_pending_upgrade(UpgradeId.ZERGMELEEWEAPONSLEVEL1))
+        armor = float(self.bot.already_pending_upgrade(UpgradeId.ZERGGROUNDARMORSLEVEL1))
+        if melee <= 0 or armor <= 0:
+            return False
+        rm, ra = self._plus1_remaining_pair()
+        return max(rm, ra) <= leave_before
+
     def _manage_waves(self) -> None:
         """Gather at natural; WAVE 1 size gate, then attack by WAVE_ATTACK_MODE."""
         bot = self.bot
@@ -467,6 +500,25 @@ class CombatManager:
                     )
                     self._logged_gathering = True
                 return
+
+            # upgrade_rush: leave 10s before both +1 melee and +1 carapace complete
+            if self._is_upgrade_rush() and not self._wave1_plus1_leave_ready():
+                rm, ra = self._plus1_remaining_pair()
+                if not getattr(self, "_logged_plus1_wait", False):
+                    log_event(
+                        bot,
+                        "GATHER wave 1 wait +1/+1 (rem melee=%.0fs armor=%.0fs, leave when max<=10; size=%d/%d)"
+                        % (rm, ra, gathered.amount, need),
+                    )
+                    self._logged_plus1_wait = True
+                return
+
+            if self._is_upgrade_rush():
+                rm, ra = self._plus1_remaining_pair()
+                log_event(
+                    bot,
+                    "WAVE 1 leave (+1 rem melee=%.0fs armor=%.0fs)" % (rm, ra),
+                )
 
             focus_note = self._launch_wave(home_lings, set_initial_focus=True)
             self._last_wave_size = home_lings.amount
