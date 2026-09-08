@@ -1,4 +1,4 @@
-﻿"""12-pool zergling rush — finalized.
+"""12-pool zergling rush — finalized.
 
 Opening (overlord → pool → extractor):
   - First overlord, then pool (~12–14), then extractor

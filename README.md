@@ -77,7 +77,6 @@ Useful config.py knobs:
 - FORCE_BUILD - "ling_rush", "upgrade_rush", or None (random)
 - OPPONENT_RACE / OPPONENT_DIFFICULTY - local computer opponent
 - MAP_POOL - Persephone / Pylon / Torches AIE maps
-- LEAVE_ON_GG - end local games early on enemy GG / wipe (ladder-safe: off without config)
 - REALTIME - human-speed vs fast sim
 
 ## Ladder package

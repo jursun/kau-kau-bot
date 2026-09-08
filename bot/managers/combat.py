@@ -1,4 +1,4 @@
-﻿"""Combat: pre-speed home scout/defend, then attack waves + expansion hunt."""
+"""Combat: pre-speed home scout/defend, then attack waves + expansion hunt."""
 
 from __future__ import annotations
 
@@ -196,6 +196,38 @@ class CombatManager:
         structures = bot.enemy_structures.closer_than(_HOME_DEFENSE_RADIUS, home)
         return units, structures
 
+    def _home_collapse_target(self):
+        """Closest ground enemy unit/building near home — collapse on anything grounded."""
+        enemy_units, enemy_structures = self._threats_near_home()
+        home = self._home_anchor()
+        ground = enemy_units.filter(lambda u: not u.is_flying)
+        if ground:
+            return ground.closest_to(home)
+        # Ground structures (bunker, pylon, etc.)
+        ground_structs = enemy_structures.filter(lambda s: not s.is_flying)
+        if ground_structs:
+            return ground_structs.closest_to(home)
+        return None
+
+    def _collapse_lings_home(self, lings) -> bool:
+        """Attack home lings onto a nearby threat. True if collapsing (skip move spam)."""
+        target = self._home_collapse_target()
+        if target is None or self._past_leash(target.position):
+            return False
+        for ling in lings:
+            if ling.tag in self._wave_sent_tags:
+                continue
+            if self._past_leash(ling.position):
+                continue
+            ling.attack(target)
+        if not self._logged_collapse:
+            log_event(
+                self.bot,
+                f"COLLAPSE on {target.type_id.name} at {target.position}",
+            )
+            self._logged_collapse = True
+        return True
+
     def _pull_past_leash(self, lings) -> None:
         """Yank any non-wave ling that drifted past half-map back onto patrol."""
         rally = self._natural_rally()
@@ -245,41 +277,21 @@ class CombatManager:
         harass = enemy_units.filter(lambda u: u.type_id in _HARASS_TYPES)
         workers = enemy_units.filter(lambda u: u.type_id in _WORKER_TYPES)
 
-        # Harassment: retreat to main + spine
+        # Harassment still warrants a spine, but collapse onto them (no retreat move-spam)
         if harass:
             self._need_spine = True
-            home = self._home_anchor()
-            minerals = self._mineral_line_pos()
-            rally = minerals.towards(home, 2)
-            for ling in lings:
-                ling.move(rally)
             if not self._logged_harass_retreat:
                 kinds = sorted({u.type_id.name for u in harass})
-                log_event(bot, f"HARASS detected {kinds} - retreat + spine")
+                log_event(bot, f"HARASS detected {kinds} - collapse + spine")
                 self._logged_harass_retreat = True
             await self._build_spine_near_minerals()
-            return
+            # fall through to collapse on any ground threat
 
-        # Worker or structure near base: collapse (still respect leash)
-        target: Optional[Unit] = None
-        if enemy_structures:
-            target = enemy_structures.closest_to(self._home_anchor())
-        elif workers:
-            target = workers.closest_to(self._home_anchor())
-
-        if target is not None and not self._past_leash(target.position):
-            for ling in lings:
-                if self._past_leash(ling.position):
-                    continue
-                ling.attack(target)
-            if not self._logged_collapse:
-                log_event(
-                    bot,
-                    f"COLLAPSE on {target.type_id.name} at {target.position}",
-                )
-                self._logged_collapse = True
+        # Army / workers / buildings near base: collapse (skip move spam)
+        if self._collapse_lings_home(lings):
             await self._build_spine_near_minerals()
             return
+
 
         # ~15s before speed finishes: group everyone at natural
         if self._should_pre_rally():
@@ -339,32 +351,44 @@ class CombatManager:
         )
 
     def _update_wave_focus(self) -> None:
-        """Stay on third until workers/TH gone, then shift to natural."""
-        if self._wave_focus != "third":
+        """Advance wave focus when the current base is cleared of workers/TH."""
+        if self._wave_focus == "third":
+            pos = self._enemy_third_pos()
+            nxt, note = "natural", "WAVE focus -> natural (third clear/empty)"
+        elif self._wave_focus == "natural":
+            pos = self._enemy_natural_pos()
+            nxt, note = "main", "WAVE focus -> main (natural clear/empty)"
+        else:
             return
-        third = self._enemy_third_pos()
-        workers = self._enemy_workers_near(third)
-        ths = self._townhalls().closer_than(_EXP_TH_RADIUS, third)
+        workers = self._enemy_workers_near(pos)
+        ths = self._townhalls().closer_than(_EXP_TH_RADIUS, pos)
         if not workers and not ths:
-            self._wave_focus = "natural"
-            log_event(self.bot, "WAVE focus -> natural (third clear/empty)")
+            self._wave_focus = nxt
+            log_event(self.bot, note)
 
     def _assign_harass_targets(self, army) -> None:
-        """Focus fire enemy workers at third, then natural; else hit mineral lines."""
+        """Focus fire enemy workers at current wave focus, then the next base."""
         self._update_wave_focus()
         third = self._enemy_third_pos()
         natural = self._enemy_natural_pos()
-        focus_pos = third if self._wave_focus == "third" else natural
+        main = self._enemy_main()
+        if self._wave_focus == "third":
+            focus_pos, secondary = third, natural
+        elif self._wave_focus == "natural":
+            focus_pos, secondary = natural, main
+        else:
+            focus_pos, secondary = main, natural
         workers = self._enemy_workers_near(focus_pos)
         minerals = self._mineral_line_at(focus_pos)
         for ling in army:
             if workers:
                 ling.attack(workers.closest_to(ling))
             else:
-                other = natural if self._wave_focus == "third" else third
-                other_workers = self._enemy_workers_near(other)
+                other_workers = self._enemy_workers_near(secondary)
                 if other_workers:
                     ling.attack(other_workers.closest_to(ling))
+                elif self._wave_focus == "main":
+                    ling.attack(main)
                 else:
                     ling.attack(minerals)
 
@@ -372,7 +396,7 @@ class CombatManager:
         self._wave_sent_tags &= alive
 
     def _manage_waves(self) -> None:
-        """Gather at natural; WAVE 1 waits for ~20 lings, hits enemy third then natural (workers)."""
+        """Gather at natural; WAVE 1 size gate, then attack by WAVE_ATTACK_MODE."""
         bot = self.bot
         lings = bot.units(UnitTypeId.ZERGLING).ready
         if not lings:
@@ -397,9 +421,17 @@ class CombatManager:
         if not home_lings:
             return
 
+        # Defend first: collapse onto marines/army at home before rally moves
+        if self._collapse_lings_home(home_lings):
+            return
+
+        # Only re-issue move when idle / far — avoid canceling attack orders
         for ling in home_lings:
-            if ling.distance_to(rally) > 3:
-                ling.move(rally)
+            if ling.distance_to(rally) <= 3:
+                continue
+            if ling.is_attacking:
+                continue
+            ling.move(rally)
 
         gathered = home_lings.closer_than(_RALLY_RADIUS, rally)
 
@@ -420,6 +452,12 @@ class CombatManager:
                     ling.attack(main)
                     self._wave_sent_tags.add(ling.tag)
                 focus_note = "main"
+            elif self._wave_mode == "natural_main":
+                self._wave_focus = "natural"
+                self._assign_harass_targets(home_lings)
+                for ling in home_lings:
+                    self._wave_sent_tags.add(ling.tag)
+                focus_note = "natural->main"
             else:
                 self._wave_focus = "third"
                 self._assign_harass_targets(home_lings)
@@ -447,6 +485,11 @@ class CombatManager:
                     ling.attack(main)
                     self._wave_sent_tags.add(ling.tag)
                 focus_note = "main"
+            elif self._wave_mode == "natural_main":
+                self._assign_harass_targets(home_lings)
+                for ling in home_lings:
+                    self._wave_sent_tags.add(ling.tag)
+                focus_note = "natural->main"
             else:
                 self._assign_harass_targets(home_lings)
                 for ling in home_lings:
