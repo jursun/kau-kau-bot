@@ -20,7 +20,7 @@ zip_archive_name = "bot.zip"
 copy_zip_to_folder = "publish"
 
 # the files to include in the zip file
-# Note: config.py is intentionally omitted so local LEAVE_ON_GG cannot ship to ladder.
+# Note: config.py is intentionally omitted so local force-build / opponent settings cannot ship to ladder.
 files_and_directories_to_zip = [
     "ladderbots.json",  # generated when this script is run
     "sc2",

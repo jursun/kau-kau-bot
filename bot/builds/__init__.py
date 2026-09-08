@@ -1,4 +1,4 @@
-﻿"""Build plans. One is chosen at random on game start (or forced via config)."""
+"""Build plans. One is chosen at random on game start (or forced via config)."""
 
 from __future__ import annotations
 

@@ -1,32 +1,34 @@
-﻿"""Upgrade-rush mass zerglings: double evo, lair/hive, 3 bases.
+"""Upgrade-rush plan constants.
 
-Worker cap: 22 per base (16 minerals + 3 + 3 on two extractors).
-After metabolic boost: 50/50 larva into drones vs zerglings (until worker cap).
+Economy focus (Burny-style): distribute_workers + per-hatch drones + expand.
+Local end goal: 100 workers.
 """
 
 
 class UpgradeRush:
-    """Tech-heavy mass ling plan."""
+    """Tech-heavy mass ling plan (tech/lings paused while economy is rebuilt)."""
 
     NAME = "upgrade_rush"
     LABEL = "Upgrade Rush (mass lings)"
 
     POOL_SUPPLY = 12
     EXTRACTOR_SUPPLY = 11
-    DRONE_TARGET = 16  # minerals per base
+    DRONE_TARGET = 16
     DRONE_TARGET_PER_BASE = 16
-    WORKERS_PER_BASE = 22  # 16 minerals + 3 + 3 gas
-    MAX_BASES = 3
+    WORKERS_PER_MINERAL = 2
+    GAS_WORKER_COUNT = 3
+    EXTRACTORS_PER_BASE = 2
+    WORKERS_PER_BASE_TARGET = 22
+    MAX_BASES = 5  # ~22*5 covers 100 workers
     MACRO_HATCH_COUNT = 0
     MACRO_HATCH_NEAR_DISTANCE = 6
     EVO_COUNT = 2
-    EXTRACTORS_PER_BASE = 2
-    OVERLORD_SUPPLY_LEFT = 2
+    OVERLORD_SUPPLY_LEFT = 6
     QUEEN_INJECT_ENERGY = 25
     POOL_NEAR_DISTANCE = 5
-    GAS_WORKER_COUNT = 3
     METABOLIC_BOOST_GAS = 100
-    PULL_GAS_AFTER_SPEED = False  # keep gas for upgrade chain
-    LONG_DISTANCE_MINE = False  # stay within 16 mineral slots / base
+    PULL_GAS_AFTER_SPEED = False
+    LONG_DISTANCE_MINE = True
     WAVE1_MIN_SIZE = 20
-    WAVE_ATTACK_MODE = "third_natural"
+    WAVE_ATTACK_MODE = "natural_main"
+    GOAL_WORKERS = 100

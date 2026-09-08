@@ -1,4 +1,4 @@
-﻿import random
+import random
 
 from sc2.bot_ai import BotAI
 from sc2.data import Result
@@ -25,6 +25,7 @@ class CompetitiveBot(BotAI):
         self.production = ProductionManager(self)
         self.combat = CombatManager(self)
         self.scouting = ScoutingManager(self)
+        self._macro_goal_done = False
 
     async def on_start(self):
         self.build_plan = choose_build()
@@ -85,6 +86,23 @@ class CompetitiveBot(BotAI):
         await self.combat.manage()
         await self.economy.manage_workers()
         await self.scouting.execute()
+        if (
+            getattr(self.build_plan, "NAME", "") == "upgrade_rush"
+            and not self._macro_goal_done
+            and self.production.check_macro_goal()
+        ):
+            self._macro_goal_done = True
+            # End local game once macro goal hit (debug DeclareVictory)
+            try:
+                from sc2.data import ActionResult
+                from sc2.ids.ability_id import AbilityId
+            except Exception:
+                pass
+            try:
+                await self.client.debug_declare_victory()
+                log_event(self, "LOCAL END macro goal (DeclareVictory)")
+            except Exception as e:
+                log_event(self, f"macro goal reached but could not end game: {e}")
 
     async def on_end(self, result: Result):
         log_event(self, f"END result={result}")
