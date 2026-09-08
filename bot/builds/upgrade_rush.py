@@ -1,6 +1,6 @@
 """Upgrade-rush plan constants.
 
-Economy focus (Burny-style): distribute_workers + per-hatch drones + expand.
+Economy focus (Burny-style): per-hatch drones + expand; no distribute_workers.
 Local end goal: 100 workers.
 """
 

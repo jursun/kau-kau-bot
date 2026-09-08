@@ -1,5 +1,3 @@
-import random
-
 from sc2.bot_ai import BotAI
 from sc2.data import Result
 from sc2.ids.unit_typeid import UnitTypeId
@@ -15,7 +13,7 @@ from bot.common.log import log_event
 
 
 class CompetitiveBot(BotAI):
-    """Main bot â€” picks ling rush or upgrade rush at random on game start."""
+    """Main bot — picks ling rush or upgrade rush at random on game start."""
 
     def __init__(self):
         super().__init__()
@@ -29,7 +27,7 @@ class CompetitiveBot(BotAI):
 
     async def on_start(self):
         self.build_plan = choose_build()
-        print(f"Game started â€” build={self.build_plan.LABEL}")
+        print(f"Game started — build={self.build_plan.LABEL}")
         log_event(
             self,
             f"START race={self.race} map={self.game_info.map_name} build={self.build_plan.NAME}",
@@ -93,11 +91,6 @@ class CompetitiveBot(BotAI):
         ):
             self._macro_goal_done = True
             # End local game once macro goal hit (debug DeclareVictory)
-            try:
-                from sc2.data import ActionResult
-                from sc2.ids.ability_id import AbilityId
-            except Exception:
-                pass
             try:
                 await self.client.debug_declare_victory()
                 log_event(self, "LOCAL END macro goal (DeclareVictory)")

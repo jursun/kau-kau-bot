@@ -395,6 +395,28 @@ class CombatManager:
     def _prune_wave_tags(self, alive: Set[int]) -> None:
         self._wave_sent_tags &= alive
 
+    def _launch_wave(self, home_lings, *, set_initial_focus: bool) -> str:
+        """Issue wave attacks by WAVE_ATTACK_MODE; mark tags; return focus note."""
+        if self._wave_mode == "main":
+            main = self._enemy_main()
+            for ling in home_lings:
+                ling.attack(main)
+                self._wave_sent_tags.add(ling.tag)
+            return "main"
+        if self._wave_mode == "natural_main":
+            if set_initial_focus:
+                self._wave_focus = "natural"
+            self._assign_harass_targets(home_lings)
+            for ling in home_lings:
+                self._wave_sent_tags.add(ling.tag)
+            return "natural->main"
+        if set_initial_focus:
+            self._wave_focus = "third"
+        self._assign_harass_targets(home_lings)
+        for ling in home_lings:
+            self._wave_sent_tags.add(ling.tag)
+        return "third->natural"
+
     def _manage_waves(self) -> None:
         """Gather at natural; WAVE 1 size gate, then attack by WAVE_ATTACK_MODE."""
         bot = self.bot
@@ -446,24 +468,7 @@ class CombatManager:
                     self._logged_gathering = True
                 return
 
-            if self._wave_mode == "main":
-                main = self._enemy_main()
-                for ling in home_lings:
-                    ling.attack(main)
-                    self._wave_sent_tags.add(ling.tag)
-                focus_note = "main"
-            elif self._wave_mode == "natural_main":
-                self._wave_focus = "natural"
-                self._assign_harass_targets(home_lings)
-                for ling in home_lings:
-                    self._wave_sent_tags.add(ling.tag)
-                focus_note = "natural->main"
-            else:
-                self._wave_focus = "third"
-                self._assign_harass_targets(home_lings)
-                for ling in home_lings:
-                    self._wave_sent_tags.add(ling.tag)
-                focus_note = "third->natural"
+            focus_note = self._launch_wave(home_lings, set_initial_focus=True)
             self._last_wave_size = home_lings.amount
             self._next_wave_target = max(
                 need + 1, math.ceil(self._last_wave_size * _WAVE_GROWTH)
@@ -479,22 +484,7 @@ class CombatManager:
             return
 
         if gathered.amount >= self._next_wave_target:
-            if self._wave_mode == "main":
-                main = self._enemy_main()
-                for ling in home_lings:
-                    ling.attack(main)
-                    self._wave_sent_tags.add(ling.tag)
-                focus_note = "main"
-            elif self._wave_mode == "natural_main":
-                self._assign_harass_targets(home_lings)
-                for ling in home_lings:
-                    self._wave_sent_tags.add(ling.tag)
-                focus_note = "natural->main"
-            else:
-                self._assign_harass_targets(home_lings)
-                for ling in home_lings:
-                    self._wave_sent_tags.add(ling.tag)
-                focus_note = "third->natural"
+            focus_note = self._launch_wave(home_lings, set_initial_focus=False)
             size = home_lings.amount
             self._last_wave_size = size
             self._next_wave_target = max(

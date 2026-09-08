@@ -1,4 +1,4 @@
-"""Production: pool, structures, units, research â€” behavior depends on bot.build_plan."""
+"""Production: pool, structures, units, research — behavior depends on bot.build_plan."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ from typing import List, Tuple
 
 from sc2.bot_ai import BotAI
 from sc2.ids.unit_typeid import UnitTypeId
-from sc2.ids.ability_id import AbilityId
 from sc2.ids.upgrade_id import UpgradeId
 
 from bot.common.helpers import pool_started, pool_pending_or_none, safe_already_pending
@@ -54,6 +53,21 @@ class ProductionManager:
     def _is_upgrade_rush(self) -> bool:
         return getattr(self.plan, "NAME", "") == "upgrade_rush"
 
+    def _log_once(self, flag: str, message: str) -> None:
+        if getattr(self, flag):
+            return
+        log_event(self.bot, message)
+        setattr(self, flag, True)
+
+    def _structure_total(self, unit_type: UnitTypeId) -> int:
+        bot = self.bot
+        return bot.structures(unit_type).amount + bot.already_pending(unit_type)
+
+    def _larva_near(self, th, radius: float = 10):
+        larva = [lar for lar in self.bot.larva if lar.distance_to(th) < radius]
+        larva.sort(key=lambda lar: lar.distance_to(th))
+        return larva
+
     def _hatch_count(self) -> int:
         bot = self.bot
         return (
@@ -82,15 +96,13 @@ class ProductionManager:
                     bot.game_info.map_center, distance=self.plan.POOL_NEAR_DISTANCE
                 )
                 built = await bot.build(UnitTypeId.SPAWNINGPOOL, near=near)
-                if built and not self._logged_pool_order:
-                    log_event(
-                        bot,
+                if built:
+                    self._log_once(
+                        "_logged_pool_order",
                         f"ORDER pool (supply={bot.supply_used}, workers={bot.supply_workers})",
                     )
-                    self._logged_pool_order = True
-        if not self._logged_pool_ready and bot.structures(UnitTypeId.SPAWNINGPOOL).ready:
-            log_event(bot, "READY spawning pool")
-            self._logged_pool_ready = True
+        if bot.structures(UnitTypeId.SPAWNINGPOOL).ready:
+            self._log_once("_logged_pool_ready", "READY spawning pool")
 
     async def build_macro_hatch(self) -> None:
         """Ling rush: second hatch inside main for larva (after speed is secured)."""
@@ -121,12 +133,11 @@ class ProductionManager:
             bot.game_info.map_center, self.plan.MACRO_HATCH_NEAR_DISTANCE
         )
         built = await bot.build(UnitTypeId.HATCHERY, near=near, max_distance=15)
-        if built and not self._logged_macro_hatch:
-            log_event(
-                bot,
+        if built:
+            self._log_once(
+                "_logged_macro_hatch",
                 f"ORDER macro hatch (minerals={bot.minerals}, hatches={hatch_count}+1)",
             )
-            self._logged_macro_hatch = True
 
     async def expand_bases(self) -> None:
         """Upgrade rush: expand like Burny example, up to MAX_BASES."""
@@ -164,10 +175,7 @@ class ProductionManager:
             return
         if bot.already_pending_upgrade(UpgradeId.ZERGLINGMOVEMENTSPEED) == 0:
             return
-        have = (
-            bot.structures(UnitTypeId.EVOLUTIONCHAMBER).amount
-            + bot.already_pending(UnitTypeId.EVOLUTIONCHAMBER)
-        )
+        have = self._structure_total(UnitTypeId.EVOLUTIONCHAMBER)
         while have < self.plan.EVO_COUNT and bot.can_afford(UnitTypeId.EVOLUTIONCHAMBER):
             near = bot.start_location.towards(bot.game_info.map_center, 8)
             if bot.townhalls:
@@ -176,17 +184,18 @@ class ProductionManager:
             if not built:
                 break
             have += 1
-            if not self._logged_evo:
-                log_event(bot, f"ORDER evolution chamber ({have}/{self.plan.EVO_COUNT})")
-                self._logged_evo = True
+            self._log_once(
+                "_logged_evo",
+                f"ORDER evolution chamber ({have}/{self.plan.EVO_COUNT})",
+            )
 
     def morph_lair(self) -> None:
         bot = self.bot
         if not self._is_upgrade_rush():
             return
-        if bot.structures(UnitTypeId.LAIR).amount + bot.already_pending(UnitTypeId.LAIR):
+        if self._structure_total(UnitTypeId.LAIR):
             return
-        if bot.structures(UnitTypeId.HIVE).amount + bot.already_pending(UnitTypeId.HIVE):
+        if self._structure_total(UnitTypeId.HIVE):
             return
         if not bot.structures(UnitTypeId.SPAWNINGPOOL).ready:
             return
@@ -198,18 +207,13 @@ class ProductionManager:
         if not hatches or not bot.can_afford(UnitTypeId.LAIR):
             return
         hatches.first.build(UnitTypeId.LAIR)
-        if not self._logged_lair:
-            log_event(bot, "ORDER lair")
-            self._logged_lair = True
+        self._log_once("_logged_lair", "ORDER lair")
 
     async def build_infestation_pit(self) -> None:
         bot = self.bot
         if not self._is_upgrade_rush():
             return
-        if (
-            bot.structures(UnitTypeId.INFESTATIONPIT).amount
-            + bot.already_pending(UnitTypeId.INFESTATIONPIT)
-        ):
+        if self._structure_total(UnitTypeId.INFESTATIONPIT):
             return
         if not bot.structures(UnitTypeId.LAIR).ready and not bot.structures(UnitTypeId.HIVE):
             return
@@ -223,15 +227,14 @@ class ProductionManager:
         if bot.townhalls.ready:
             near = bot.townhalls.ready.first.position.towards(bot.game_info.map_center, 8)
         built = await bot.build(UnitTypeId.INFESTATIONPIT, near=near, max_distance=15)
-        if built and not self._logged_pit:
-            log_event(bot, "ORDER infestation pit")
-            self._logged_pit = True
+        if built:
+            self._log_once("_logged_pit", "ORDER infestation pit")
 
     def morph_hive(self) -> None:
         bot = self.bot
         if not self._is_upgrade_rush():
             return
-        if bot.structures(UnitTypeId.HIVE).amount + bot.already_pending(UnitTypeId.HIVE):
+        if self._structure_total(UnitTypeId.HIVE):
             return
         if not bot.structures(UnitTypeId.INFESTATIONPIT).ready:
             return
@@ -239,9 +242,7 @@ class ProductionManager:
         if not lairs or not bot.can_afford(UnitTypeId.HIVE):
             return
         lairs.first.build(UnitTypeId.HIVE)
-        if not self._logged_hive:
-            log_event(bot, "ORDER hive")
-            self._logged_hive = True
+        self._log_once("_logged_hive", "ORDER hive")
 
     def research_upgrades(self) -> None:
         bot = self.bot
@@ -277,12 +278,10 @@ class ProductionManager:
             and bot.can_afford(UpgradeId.ZERGLINGMOVEMENTSPEED)
         ):
             started = bot.research(UpgradeId.ZERGLINGMOVEMENTSPEED)
-            if started and not self._logged_speed_started:
-                log_event(bot, "RESEARCH metabolic boost started")
-                self._logged_speed_started = True
-        elif progress == 1 and not self._logged_speed_done:
-            log_event(bot, "READY metabolic boost")
-            self._logged_speed_done = True
+            if started:
+                self._log_once("_logged_speed_started", "RESEARCH metabolic boost started")
+        elif progress == 1:
+            self._log_once("_logged_speed_done", "READY metabolic boost")
 
     def _hatch_training_queen(self, th) -> bool:
         for order in th.orders:
@@ -326,20 +325,17 @@ class ProductionManager:
                 # busy morphing/building something else
                 continue
             th.train(UnitTypeId.QUEEN)
-            if not self._logged_first_queen:
-                log_event(bot, "ORDER queen")
-                self._logged_first_queen = True
+            self._log_once("_logged_first_queen", "ORDER queen")
             return  # one queen order per step
 
 
     def train_overlords(self) -> None:
         bot = self.bot
-        if bot.supply_left <= 0 and not self._logged_supply_block:
-            log_event(
-                bot,
+        if bot.supply_left <= 0:
+            self._log_once(
+                "_logged_supply_block",
                 f"SUPPLY BLOCKED (used={bot.supply_used}, cap={bot.supply_cap})",
             )
-            self._logged_supply_block = True
 
         if (
             bot.supply_left <= self.plan.OVERLORD_SUPPLY_LEFT
@@ -348,9 +344,10 @@ class ProductionManager:
             and bot.can_afford(UnitTypeId.OVERLORD)
         ):
             bot.train(UnitTypeId.OVERLORD)
-            if not self._logged_first_overlord:
-                log_event(bot, f"ORDER overlord (supply_left={bot.supply_left})")
-                self._logged_first_overlord = True
+            self._log_once(
+                "_logged_first_overlord",
+                f"ORDER overlord (supply_left={bot.supply_left})",
+            )
 
     def check_macro_goal(self) -> bool:
         """True when we hit GOAL_WORKERS (default 100)."""
@@ -402,10 +399,9 @@ class ProductionManager:
                 assigned = getattr(th, "assigned_harvesters", 0)
                 if assigned >= ideal and th.surplus_harvesters >= 0:
                     continue
-                larva = [lar for lar in bot.larva if lar.distance_to(th) < 10]
+                larva = self._larva_near(th)
                 if not larva:
                     continue
-                larva.sort(key=lambda lar: lar.distance_to(th))
                 lar = larva[0]
                 lar.train(UnitTypeId.DRONE)
                 log_event(
@@ -457,10 +453,9 @@ class ProductionManager:
             for th in bot.townhalls.ready:
                 if not self._hatch_saturated(th):
                     continue
-                larva = [lar for lar in bot.larva if lar.distance_to(th) < 10]
+                larva = self._larva_near(th)
                 if not larva:
                     continue
-                larva.sort(key=lambda lar: lar.distance_to(th))
                 for lar in larva:
                     if bot.supply_left <= 0:
                         return
@@ -473,9 +468,10 @@ class ProductionManager:
                         continue
                     if bot.can_afford(UnitTypeId.ZERGLING):
                         lar.train(UnitTypeId.ZERGLING)
-                        if not self._logged_first_lings:
-                            log_event(bot, "ORDER first zerglings (saturated base)")
-                            self._logged_first_lings = True
+                        self._log_once(
+                            "_logged_first_lings",
+                            "ORDER first zerglings (saturated base)",
+                        )
             return
 
         # Ling rush
@@ -487,9 +483,14 @@ class ProductionManager:
             return
         if bot.minerals < 100:
             return
-        while bot.larva.amount > 0 and bot.can_afford(UnitTypeId.ZERGLING) and bot.supply_left > 0:
-            bot.train(UnitTypeId.ZERGLING, 1)
-            if not self._logged_first_lings:
-                log_event(bot, f"ORDER first zerglings (larva={bot.larva.amount})")
-                self._logged_first_lings = True
+        # Iterate larva explicitly — bot.train() does not reduce larva.amount
+        # in-frame, so a while larva.amount loop spins forever after first ORDER.
+        for larva in list(bot.larva):
+            if bot.supply_left <= 0 or not bot.can_afford(UnitTypeId.ZERGLING):
+                break
+            larva.train(UnitTypeId.ZERGLING)
+            self._log_once(
+                "_logged_first_lings",
+                f"ORDER first zerglings (larva={bot.larva.amount})",
+            )
 

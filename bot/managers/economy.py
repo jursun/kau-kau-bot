@@ -55,6 +55,12 @@ class EconomyManager:
                 log_event(bot, "INJECT larva (first)")
                 self._logged_first_inject = True
 
+    def _log_extractor_order(self) -> None:
+        if self._logged_extractor_order:
+            return
+        log_event(self.bot, f"ORDER extractor (supply={self.bot.supply_used})")
+        self._logged_extractor_order = True
+
     def build_extractor(self) -> None:
         bot = self.bot
         if not bot.workers or not bot.townhalls:
@@ -78,9 +84,7 @@ class EconomyManager:
                 local_w = [w for w in bot.workers if w.distance_to(th) < 18 and not w.is_carrying_vespene]
                 builder = min(local_w, key=lambda w: w.distance_to(free[0])) if local_w else bot.workers.random
                 builder.build(UnitTypeId.EXTRACTOR, free[0])
-                if not self._logged_extractor_order:
-                    log_event(bot, f"ORDER extractor (supply={bot.supply_used})")
-                    self._logged_extractor_order = True
+                self._log_extractor_order()
                 return
             return
 
@@ -100,9 +104,7 @@ class EconomyManager:
             UnitTypeId.EXTRACTOR,
             bot.vespene_geyser.closest_to(bot.townhalls.first),
         )
-        if not self._logged_extractor_order:
-            log_event(bot, f"ORDER extractor (supply={bot.supply_used})")
-            self._logged_extractor_order = True
+        self._log_extractor_order()
 
     def _needs_gas(self) -> bool:
         if self._gas_goal_met:
@@ -131,8 +133,23 @@ class EconomyManager:
             or (w.is_carrying_vespene and w.distance_to(extractor) < 15)
         ]
 
+    def _effective_gas_assigned(self, extractor: Unit) -> int:
+        return max(len(self._gas_workers(extractor)), int(extractor.assigned_harvesters))
+
+    def _maybe_log_gas_saturated(self, effective: int, target: int) -> None:
+        if self._logged_gas_saturated or effective < target:
+            return
+        log_event(
+            self.bot,
+            f"GAS saturated (target={target}, assigned~{effective})",
+        )
+        self._logged_gas_saturated = True
+
     def _minerals_near(self, place) -> List[Unit]:
         return list(self.bot.mineral_field.closer_than(10, place))
+
+    def _minerals_near_or_any(self, place) -> List[Unit]:
+        return self._minerals_near(place) or list(self.bot.mineral_field)
 
     def _extractors_near(self, th: Unit):
         return self.bot.structures(UnitTypeId.EXTRACTOR).ready.closer_than(12, th)
@@ -196,7 +213,7 @@ class EconomyManager:
             # Prefer an underfilled extractor so gas fills from spawns, not reassigns
             underfilled = None
             for ex in self._extractors_near(th):
-                assigned = max(len(self._gas_workers(ex)), int(ex.assigned_harvesters))
+                assigned = self._effective_gas_assigned(ex)
                 if assigned < gas_target:
                     underfilled = ex
                     break
@@ -206,6 +223,13 @@ class EconomyManager:
             minerals = self._minerals_near(th)
             if minerals:
                 th(AbilityId.RALLY_HATCHERY_UNITS, min(minerals, key=lambda m: m.distance_to(th)))
+
+    def _send_worker_to_minerals_near(self, worker: Unit, place) -> bool:
+        minerals = self._minerals_near_or_any(place)
+        if not minerals:
+            return False
+        worker.gather(min(minerals, key=lambda m: m.distance_to(worker)))
+        return True
 
     def _assign_gas_ling(self) -> None:
         bot = self.bot
@@ -220,11 +244,7 @@ class EconomyManager:
                 for w in list(self._gas_workers(ex)):
                     if not self._worker_free(w):
                         continue
-                    minerals = self._minerals_near(bot.townhalls.ready.closest_to(ex)) or list(
-                        bot.mineral_field
-                    )
-                    if minerals:
-                        w.gather(min(minerals, key=lambda m: m.distance_to(w)))
+                    if self._send_worker_to_minerals_near(w, bot.townhalls.ready.closest_to(ex)):
                         pulled += 1
             if (pulled or self._gas_goal_met) and not self._logged_gas_pull:
                 log_event(
@@ -241,24 +261,14 @@ class EconomyManager:
                 if w is None:
                     break
                 current = [c for c in current if c.tag != w.tag]
-                minerals = self._minerals_near(bot.townhalls.ready.closest_to(ex)) or list(
-                    bot.mineral_field
-                )
-                if minerals:
-                    w.gather(min(minerals, key=lambda m: m.distance_to(w)))
-                else:
+                if not self._send_worker_to_minerals_near(w, bot.townhalls.ready.closest_to(ex)):
                     break
 
             current = self._gas_workers(ex)
             effective = max(len(current), int(ex.assigned_harvesters))
             deficit = target - effective
             if deficit <= 0:
-                if not self._logged_gas_saturated and effective >= target:
-                    log_event(
-                        bot,
-                        f"GAS saturated (target={target}, assigned~{effective})",
-                    )
-                    self._logged_gas_saturated = True
+                self._maybe_log_gas_saturated(effective, target)
                 continue
             pool = [
                 w
@@ -271,20 +281,15 @@ class EconomyManager:
             pool.sort(key=lambda w: w.distance_to(ex))
             for w in pool[:deficit]:
                 w.gather(ex)
-            assigned = max(len(self._gas_workers(ex)), int(ex.assigned_harvesters))
-            if not self._logged_gas_saturated and assigned >= target:
-                log_event(
-                    bot,
-                    f"GAS saturated (target={target}, assigned~{assigned})",
-                )
-                self._logged_gas_saturated = True
+            assigned = self._effective_gas_assigned(ex)
+            self._maybe_log_gas_saturated(assigned, target)
 
     def _assign_minerals_ling_rush(self) -> None:
         bot = self.bot
         if not bot.townhalls.ready:
             return
         th = bot.townhalls.ready.first
-        minerals = self._minerals_near(th) or list(bot.mineral_field)
+        minerals = self._minerals_near_or_any(th)
         if not minerals:
             return
 
@@ -355,12 +360,7 @@ class EconomyManager:
 
                 if deficit <= 0:
                     self._extractors_pending_gas_fill.discard(ex.tag)
-                    if not self._logged_gas_saturated and effective >= target:
-                        log_event(
-                            bot,
-                            f"GAS saturated (target={target}, assigned~{effective})",
-                        )
-                        self._logged_gas_saturated = True
+                    self._maybe_log_gas_saturated(effective, target)
                     continue
 
                 mineral_tags = {m.tag for m in self._minerals_near(th)}
@@ -386,18 +386,12 @@ class EconomyManager:
                         ):
                             pool.append(w)
 
-                pool.sort(
-                    key=lambda w: (
-                        0 if w.is_idle else 1,
-                        0
-                        if (
-                            self._closest_ready_hatch(w)
-                            and self._closest_ready_hatch(w).tag == th.tag
-                        )
-                        else 1,
-                        w.distance_to(ex),
-                    )
-                )
+                def _yank_sort_key(w: Unit):
+                    owner = self._closest_ready_hatch(w)
+                    local = 0 if (owner is not None and owner.tag == th.tag) else 1
+                    return (0 if w.is_idle else 1, local, w.distance_to(ex))
+
+                pool.sort(key=_yank_sort_key)
                 sent = 0
                 for w in pool[:deficit]:
                     w.gather(ex)
@@ -415,15 +409,10 @@ class EconomyManager:
                         bot,
                         f"GAS assign ({kind}) need={deficit} sent={sent} assigned~{assigned}",
                     )
-                if not self._logged_gas_saturated and assigned >= target:
-                    log_event(
-                        bot,
-                        f"GAS saturated (target={target}, assigned~{assigned})",
-                    )
-                    self._logged_gas_saturated = True
+                self._maybe_log_gas_saturated(assigned, target)
 
     def _next_base_minerals(self, th: Unit) -> List[Unit]:
-        """Mineral field at the next base after 	h (ready hatch or next expansion spot)."""
+        """Mineral field at the next base after th (ready hatch or next expansion spot)."""
         bases = self._bases_in_order()
         idx = next((i for i, b in enumerate(bases) if b.tag == th.tag), None)
         if idx is not None and idx + 1 < len(bases):
