@@ -1,4 +1,4 @@
-# ===== BOT SETTINGS =====
+﻿# ===== BOT SETTINGS =====
 # Your bot's name and race (use plain strings)
 BOT_NAME = "KauKauBot"
 BOT_RACE = "Zerg"  # Options: Terran, Protoss, Zerg, Random
@@ -23,8 +23,23 @@ MAP_POOL = [
 # ===== OPPONENT SETTINGS =====
 # Computer opponent settings (for local games)
 OPPONENT_RACE = "Terran"  # Terran, Zerg, Protoss, Random
-OPPONENT_DIFFICULTY = "Medium"  # VeryEasy, Easy, Medium, Hard, VeryHard, etc.
+# Max non-cheat difficulty (CheatVision/CheatMoney/CheatInsane also exist)
+OPPONENT_DIFFICULTY = "VeryHard"
 
 # ===== GAME MODE =====
 # Set to True to play in realtime (like a human), False for faster simulation
-REALTIME = True
+REALTIME = False
+
+# ===== LOCAL DEBUG =====
+# Early-end local games on enemy GG chat OR computer wipe/surrender
+# (uses debug DeclareVictory - not a resign).
+# Ladder zips omit config.py, so this stays OFF on the ladder automatically.
+LEAVE_ON_GG = True
+
+# ===== BUILD SELECT =====
+# Local only (omitted from ladder zip). Options: ling_rush, upgrade_rush, or None for random
+FORCE_BUILD = "ling_rush"
+
+
+
+

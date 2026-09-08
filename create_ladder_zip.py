@@ -1,4 +1,4 @@
-# Adapted from: https://github.com/DrInfy/sharpy-sc2/blob/master/dummy_ladder_zip.py
+﻿# Adapted from: https://github.com/DrInfy/sharpy-sc2/blob/master/dummy_ladder_zip.py
 
 import os
 import shutil
@@ -20,6 +20,7 @@ zip_archive_name = "bot.zip"
 copy_zip_to_folder = "publish"
 
 # the files to include in the zip file
+# Note: config.py is intentionally omitted so local LEAVE_ON_GG cannot ship to ladder.
 files_and_directories_to_zip = [
     "ladderbots.json",  # generated when this script is run
     "sc2",
@@ -108,3 +109,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
