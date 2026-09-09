@@ -17,6 +17,7 @@ from ares.behaviors.macro import (
     BuildWorkers,
     ExpansionController,
     GasBuildingController,
+    MacroPlan,
     Mining,
     SpawnController,
     UpgradeController,
@@ -105,6 +106,40 @@ def upgrades() -> MacroStep:
 def spawn_army() -> MacroStep:
     def step(ctx: "BotContext"):
         return SpawnController(dict(ctx.build.army.comp))
+
+    return step
+
+
+def split_production(gate: Gate = _always) -> MacroStep:
+    """Alternate `build_workers`/`spawn_army` priority once `gate` passes, to
+    keep economy and army investment roughly even instead of one having
+    outright priority.
+
+    `MacroPlan.execute()` runs its macros in order and stops at the first one
+    that acts (see `macro_engine.py`) — so simply listing both unconditionally
+    always favors whichever is listed first. This nests them in their own
+    `MacroPlan`, reordered each frame by whichever side currently has less
+    supply invested, so each gets a turn without ever wasting a frame outright
+    — if the preferred one has nothing to do, the plan falls through to the
+    other on the same frame.
+
+    Before `gate` passes, economy keeps its usual priority (as if this were
+    still separate `build_workers()` then `spawn_army()` calls).
+    """
+
+    def step(ctx: "BotContext"):
+        workers = BuildWorkers(to_count=ctx.worker_target)
+        army = SpawnController(dict(ctx.build.army.comp))
+
+        if gate(ctx) and ctx.bot.supply_army < ctx.bot.supply_workers:
+            first, second = army, workers
+        else:
+            first, second = workers, army
+
+        plan = MacroPlan()
+        plan.add(first)
+        plan.add(second)
+        return plan
 
     return step
 

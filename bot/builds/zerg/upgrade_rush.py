@@ -3,9 +3,16 @@
 Opening: `UpgradeRush` in `zerg_builds.yml` — 13 overlord, 15 hatch before
 pool, 16 pool, 17 gas, 19 overlord, metabolic boost, queen, second gas.
 
-After the opening the macro steps drone up, take the third and beyond, and
-`UpgradeController` auto-techs evo -> lair -> hive on the way through +1/+1
-to 3/3 and adrenal glands. Wave 1 waits until both +1s are about to land.
+After the opening the macro steps drone up (to a 60-worker cap, 3 extractors
+max), take the third and beyond, and `UpgradeController` auto-techs evo ->
+lair -> hive on the way through +1/+1 to 3/3 and adrenal glands.
+
+Wave 1 leaves once Speed is done and at least `wave1_min` lings are massed;
+every wave after that is 25% bigger and leaves as soon as it is ready —
+no extra tech gate. Once wave 1 is out, production splits evenly between
+economy and army (see `common.split_production`) instead of drones having
+outright priority. Spore Crawlers start going up in each base's mineral
+line at the 4-minute mark.
 
 Never played. See MIGRATION.md.
 """
@@ -14,7 +21,6 @@ from __future__ import annotations
 
 from sc2.data import Race
 from sc2.ids.unit_typeid import UnitTypeId
-from sc2.ids.upgrade_id import UpgradeId
 
 from bot.builds.definition import Army, BuildDefinition, Combat, Economy
 from bot.consts import FOCUS_MAIN, FOCUS_NATURAL, FULL_LING_UPGRADES, MASS_LING_COMP
@@ -22,20 +28,16 @@ from bot.routines import combat, gates, scouting
 from bot.steps import common as c
 from bot.steps import zerg as z
 
-PLUS_ONE = (UpgradeId.ZERGMELEEWEAPONSLEVEL1, UpgradeId.ZERGGROUNDARMORSLEVEL1)
-PLUS_ONE_RESEARCH_TIME = 114.0
-LEAVE_BEFORE_PLUS_ONE = 10.0
-
 BUILD = BuildDefinition(
     name="UpgradeRush",
     label="Upgrade Rush (mass lings)",
     race=Race.Zerg,
     economy=Economy(
-        worker_target=80,
+        worker_target=60,
         workers_per_base=22,
         max_bases=5,
         gas_per_base=2,
-        max_gas=4,
+        max_gas=3,
         workers_per_gas=3,
         long_distance_mine=True,
     ),
@@ -51,18 +53,11 @@ BUILD = BuildDefinition(
             combat.attack_squads(),
             scouting.air_scout(UnitTypeId.OVERLORD),
         ),
-        # Wave 1 holds for +1/+1; later waves leave on size alone.
-        wave_gate=gates.all_of(
-            gates.upgrade_done(z.LING_SPEED),
-            gates.any_of(
-                gates.after_wave(1),
-                gates.upgrades_within(
-                    PLUS_ONE, LEAVE_BEFORE_PLUS_ONE, PLUS_ONE_RESEARCH_TIME
-                ),
-            ),
-        ),
+        # Speed done + wave1_min massed is the only gate; later waves leave
+        # on size alone.
+        wave_gate=gates.upgrade_done(z.LING_SPEED),
         wave1_min=20,
-        wave_growth=1.10,
+        wave_growth=1.25,
         focus=(FOCUS_NATURAL, FOCUS_MAIN),
     ),
     # This build needs gas all game for the upgrade path, so no pull-off gate.
@@ -72,10 +67,10 @@ BUILD = BuildDefinition(
         z.train_queens(per_base=1, maximum=4),
         # UpgradeController only ever builds one evo; two enable parallel +1/+1.
         z.evolution_chambers(2, gate=gates.upgrade_started(z.LING_SPEED)),
+        z.spore_crawlers(per_base=1, gate=gates.after_time(240.0)),
         c.expansions(),
         c.gas_buildings(),
         c.upgrades(),
-        c.build_workers(),
-        c.spawn_army(),
+        c.split_production(gate=gates.after_wave(1)),
     ),
 )

@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 
+from ares.behaviors.macro import BuildStructure, MacroPlan
+
 from bot.behaviors.zerg import BuildMacroHatch, InjectLarva, TrainQueens
 from bot.builds.definition import _always
 from bot.core.types import Gate, MacroStep
@@ -60,8 +62,32 @@ def evolution_chambers(count: int, gate: Gate = _always) -> MacroStep:
     return common.structure(UnitTypeId.EVOLUTIONCHAMBER, count, gate)
 
 
-def spore_crawlers(count: int, gate: Gate = _always) -> MacroStep:
-    return common.structure(UnitTypeId.SPORECRAWLER, count, gate)
+def spore_crawlers(per_base: int, gate: Gate = _always) -> MacroStep:
+    """One Spore Crawler (mineral-line placement) per ready base, once `gate` passes.
+
+    Unlike `common.structure`, which caps a single global count at one
+    location, this issues a `BuildStructure` call per townhall so each base
+    gets its own, capped with `to_count_per_base` rather than `to_count`.
+    Bundled into their own `MacroPlan` so a base that already has enough
+    doesn't block the next base's turn on the same frame (see
+    `MacroPlan.execute`, which stops at the first behavior that acts).
+    """
+
+    def step(ctx: "BotContext"):
+        if not gate(ctx):
+            return None
+        plan = MacroPlan()
+        for townhall in ctx.ready_townhalls:
+            plan.add(
+                BuildStructure(
+                    base_location=townhall.position,
+                    structure_id=UnitTypeId.SPORECRAWLER,
+                    to_count_per_base=per_base,
+                )
+            )
+        return plan
+
+    return step
 
 
 def spine_crawlers(count: int, gate: Gate = _always) -> MacroStep:
