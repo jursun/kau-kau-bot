@@ -101,6 +101,12 @@ class ZergRushValidator:
     POOL_DEADLINE: float = 50.0       # Pool started by ~0:50
     SPEED_DEADLINE: float = 180.0     # Speed started by ~3:00
     ATTACK_DEADLINE: float = 270.0    # Attack by ~4:30
+    SUPPLY_BLOCK_GRACE_PERIOD: float = 60.0
+    # A fast zergling-flood opening is supply-blocked by design for a few
+    # seconds before pool even starts (drones and an extractor ahead of
+    # the second overlord). Only count blocks after this grace period, so
+    # an on-time opening never fails Supply Management for doing what
+    # it's supposed to; a genuinely late pool still gets caught.
 
     # ── Supply thresholds ───────────────────────────────────────────────
     POOL_SUPPLY_MIN: float = 11
@@ -156,7 +162,11 @@ class ZergRushValidator:
             self._max_workers = worker_count
 
         # Track supply blocks (supply_left == 0 for extended time)
-        if self.supply_left == 0 and not self._pool_started:
+        if (
+            self.supply_left == 0
+            and not self._pool_started
+            and self.time >= self.SUPPLY_BLOCK_GRACE_PERIOD
+        ):
             self._supply_blocked_frames += 1
 
         # Track extractor
