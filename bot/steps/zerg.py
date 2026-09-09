@@ -65,37 +65,50 @@ def evolution_chambers(count: int, gate: Gate = _always) -> MacroStep:
 def spore_crawlers(per_base: int, gate: Gate = _always) -> MacroStep:
     """One Spore Crawler (mineral-line placement) per owned base, once `gate` passes.
 
-    Unlike `common.structure`, which caps a single global count at one
-    location, this issues a `BuildStructure` call per base so each one gets
-    its own, capped with `to_count_per_base` rather than `to_count`.
+    `BuildStructure.to_count_per_base` cannot be used here: it is checked via
+    `mediator.get_placements_dict[base_location]`, and that dict is only ever
+    populated by `PlacementManager._solve_terran_building_formation` /
+    `_solve_protoss_building_formation` — `_solve_zerg_building_formation` is
+    an unimplemented stub (`# TODO: Implement zerg placements`) in ares
+    v3.13.1. So for a Zerg bot the dict never gets a single key, and
+    `to_count_per_base` is a guaranteed `KeyError` the first time it runs,
+    for *any* location — not a location-matching bug (switching from
+    `townhall.position` to the canonical `ctx.bot.owned_expansions` key
+    didn't help; it crashed a real game a second time at a different
+    location entirely). Zerg placement goes through the completely separate
+    `ai.request_zerg_placement` -> `_do_zerg_build_placement` path instead
+    (see gotcha 1), which knows nothing about `placements_dict`.
 
-    Deliberately keyed off `ctx.bot.owned_expansions` rather than
-    `ctx.ready_townhalls`: `to_count_per_base` looks up
-    `mediator.get_placements_dict[base_location]`, which is only ever keyed
-    by the map's precomputed expansion-location points
-    (`ai.expansion_locations_list`) — passing a townhall's literal position
-    is a `KeyError` the moment it doesn't land on that exact point (crashed a
-    real game: `KeyError: (60.5, 56.5)`, the natural). `owned_expansions` is
-    ares' own `{expansion_location: townhall}` mapping, built from those same
-    precomputed points, so every key here is guaranteed to already exist in
-    the placements dict. It also collapses a macro hatch sharing the main's
-    location down to one entry instead of a second, redundant call there.
+    So this counts existing/in-progress crawlers itself instead, the same
+    way `bot/behaviors/zerg/build_macro_hatch.py` rolls its own zerg-specific
+    logic rather than leaning on placement-solver machinery that only really
+    supports Terran/Protoss. `EXPANSION_GAP_THRESHOLD` (15) is python-sc2's
+    own radius for "close enough to belong to this base" — the same radius
+    `owned_expansions` itself uses to match a townhall to its expansion
+    location, so a crawler is credited to a base on the same terms a
+    townhall is.
 
     Bundled into their own `MacroPlan` so a base that already has enough
     doesn't block the next base's turn on the same frame (see
     `MacroPlan.execute`, which stops at the first behavior that acts).
+    `BuildStructure`'s own `max_on_route` (default 1, global per structure
+    type) already serializes construction to one crawler in flight at a
+    time, so this doesn't queue multiple bases' workers at once.
     """
 
     def step(ctx: "BotContext"):
         if not gate(ctx):
             return None
+        radius = ctx.bot.EXPANSION_GAP_THRESHOLD
+        existing = ctx.bot.structures(UnitTypeId.SPORECRAWLER)
         plan = MacroPlan()
         for location in ctx.bot.owned_expansions:
+            if len(existing.closer_than(radius, location)) >= per_base:
+                continue
             plan.add(
                 BuildStructure(
                     base_location=location,
                     structure_id=UnitTypeId.SPORECRAWLER,
-                    to_count_per_base=per_base,
                 )
             )
         return plan

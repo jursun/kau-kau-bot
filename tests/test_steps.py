@@ -34,6 +34,10 @@ def _ctx(supply_workers: float = 10.0, supply_army: float = 10.0) -> BotContext:
     bot.supply_workers = supply_workers
     bot.supply_army = supply_army
     bot.townhalls.ready = []  # base_count -> 1, so worker_target is well-defined
+    bot.EXPANSION_GAP_THRESHOLD = 15  # real python-sc2 BotAI constant
+    bot.owned_expansions = {}
+    # No spore crawlers anywhere by default; tests override per location.
+    bot.structures.return_value.closer_than.return_value = []
 
     build = MagicMock()
     build.economy.worker_target = 60
@@ -76,11 +80,11 @@ def test_split_production_never_drops_either_side() -> None:
 
 
 def test_spore_crawlers_places_one_per_owned_expansion() -> None:
-    # Regression test: `base_location` must be one of the map's precomputed
-    # expansion-location points (`owned_expansions`' keys), not a townhall's
-    # literal position — passing the latter crashed a real game with
-    # `KeyError: (60.5, 56.5)` inside `to_count_per_base`'s lookup into
-    # `mediator.get_placements_dict`.
+    # Regression test: `base_location` must be one of ares' own recognized
+    # base points, not a townhall's literal position — passing the latter
+    # crashed a real game with `KeyError: (60.5, 56.5)`. See the next test
+    # for why `to_count_per_base` itself (a second crash, at a *different*
+    # location) is avoided entirely rather than just fixing the location.
     ctx = _ctx()
     main = Point2((10.0, 10.0))
     natural = Point2((50.0, 50.0))
@@ -94,7 +98,29 @@ def test_spore_crawlers_places_one_per_owned_expansion() -> None:
         assert isinstance(behavior, BuildStructure)
         assert behavior.structure_id == UnitTypeId.SPORECRAWLER
         assert behavior.base_location == location
-        assert behavior.to_count_per_base == 1
+        # Regression test: `to_count_per_base` must stay unset (0). Ares
+        # never populates `placements_dict` for a Zerg bot
+        # (`_solve_zerg_building_formation` is a stub), so any use of
+        # `to_count_per_base` here is a guaranteed `KeyError` — crashed a
+        # real game a second time, at `(90.5, 132.5)`, even after the first
+        # crash's location fix. Per-base counting is done by
+        # `spore_crawlers` itself instead (see the next test).
+        assert behavior.to_count_per_base == 0
+
+
+def test_spore_crawlers_skips_bases_that_already_have_enough() -> None:
+    ctx = _ctx()
+    covered = Point2((10.0, 10.0))
+    uncovered = Point2((50.0, 50.0))
+    ctx.bot.owned_expansions = {covered: MagicMock(), uncovered: MagicMock()}
+    ctx.bot.structures.return_value.closer_than.side_effect = (
+        lambda _radius, location: [MagicMock()] if location == covered else []
+    )
+
+    plan = z.spore_crawlers(per_base=1, gate=lambda _ctx: True)(ctx)
+
+    assert len(plan.macros) == 1
+    assert plan.macros[0].base_location == uncovered
 
 
 def test_spore_crawlers_collapses_a_macro_hatch_onto_its_base() -> None:
