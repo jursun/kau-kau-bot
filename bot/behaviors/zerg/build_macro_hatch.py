@@ -3,12 +3,25 @@
 `BuildStructure` cannot do this job on Zerg. It defers placement to ares'
 `_do_zerg_build_placement`, which calls `find_placement(..., 30)` — a thirty
 tile search radius from the base location. A 5x5 hatchery rarely fits cleanly
-in a Zerg main, so that search walks outward and happily settles on the
-natural expansion, which is exactly the wrong place for a larva hatch.
+in a Zerg main, so that search walks outward and settles on the natural.
 
-This behavior keeps the hatch in the main by construction: candidates must sit
-on the same terrain height as the start location (the natural is on lower
-ground) and must be clear of every known expansion.
+Getting the hatch into the main needs three separate things to hold, each of
+which broke a test game in turn:
+
+1. **A legal building centre.** A 5x5 structure centres on the middle of its
+   centre tile, i.e. a `.5` coordinate. `can_place_structure` derives the
+   footprint with `round(pos - 2.5)` and so accepts an integer centre, but the
+   resulting build order is invalid and the drone silently never places.
+2. **The main, not the natural.** Candidates must share the start location's
+   terrain height (the natural is on lower ground) and stay clear of every
+   known expansion.
+3. **Somewhere the drone can actually reach.** `BuildingManager` only attempts
+   `worker.build` once the drone is within *1.0* of the building centre, and
+   paths there on the ground grid. A legal but cramped spot — tucked against
+   the main hatchery, or behind the mineral line — is one the drone never
+   reaches, so it moves, goes idle, and moves again forever. Candidates must
+   therefore be standable and hold real clearance from resources and existing
+   structures, not merely satisfy `can_place_structure`.
 """
 
 from __future__ import annotations
@@ -31,11 +44,12 @@ if TYPE_CHECKING:
 # Squared distance within which an expansion counts as "our own main".
 _OWN_MAIN_TOLERANCE_SQ: float = 36.0
 
-# A 5x5 structure's centre sits at the middle of its centre tile, i.e. on a
-# `.5` coordinate. Passing an integer centre makes `can_place_structure` agree
-# (it rounds to the same footprint) while the build order itself is invalid,
-# so the drone silently never places. Snap every candidate.
+# Log the rejection funnel at most this often (game loops; ~10s at 22.4/s).
+_DIAGNOSTIC_INTERVAL: int = 224
+
+
 def _snap_to_building_centre(x: float, y: float) -> Point2:
+    """5x5 structures centre on a `.5` coordinate. Integer centres are invalid."""
     return Point2((floor(x) + 0.5, floor(y) + 0.5))
 
 
@@ -45,16 +59,24 @@ class BuildMacroHatch(MacroBehavior):
 
     Attributes:
         to_count: Total townhall count to stop at (main included).
+        min_radius: Closest to the main hatchery a candidate may sit. Below
+            roughly 7 the two 5x5 footprints leave no lane for the drone.
         search_radius: How far from the start location to look.
         expansion_clearance: Reject candidates this close to any expansion.
+        resource_clearance: Reject candidates this close to a mineral patch or
+            geyser — mineral lines are where the drone gets stuck.
+        structure_clearance: Reject candidates this close to a structure.
         max_on_route: Workers allowed to be walking to build one.
         ring_step: Spacing between candidate rings.
         rays: Candidate positions sampled per ring.
     """
 
     to_count: int
-    search_radius: float = 16.0
+    min_radius: float = 8.0
+    search_radius: float = 18.0
     expansion_clearance: float = 12.0
+    resource_clearance: float = 6.0
+    structure_clearance: float = 5.5
     max_on_route: int = 1
     ring_step: float = 1.5
     rays: int = 24
@@ -70,16 +92,10 @@ class BuildMacroHatch(MacroBehavior):
         if not ai.can_afford(UnitTypeId.HATCHERY):
             return False
 
-        position = self._in_base_placement(ai, mediator)
+        funnel: dict[str, int] = {}
+        position = self._in_base_placement(ai, mediator, funnel)
         if position is None:
-            # Rate-limited: this runs on every frame we can afford a hatch.
-            if ai.state.game_loop % 224 == 0:
-                logger.info(
-                    f"{ai.time_formatted} Macro hatch: no legal spot within "
-                    f"{self.search_radius} of the main "
-                    f"({len(self._candidate_positions(ai))} candidates passed "
-                    f"the terrain and expansion filters)"
-                )
+            self._log_funnel(ai, funnel)
             return False
 
         worker = mediator.select_worker(target_position=position, force_close=True)
@@ -99,54 +115,117 @@ class BuildMacroHatch(MacroBehavior):
             UnitTypeId.HATCHERY
         )
 
-    def _candidate_positions(self, ai: "AresBot") -> list[Point2]:
-        """Ring-sample the main, dropping anything off-plateau or near an expansion."""
+    def _ring_samples(self, base: Point2) -> set[Point2]:
+        seen: set[Point2] = set()
+        radius = self.min_radius
+        while radius <= self.search_radius:
+            for index in range(self.rays):
+                angle = 2.0 * pi * index / self.rays
+                seen.add(
+                    _snap_to_building_centre(
+                        base.x + radius * cos(angle), base.y + radius * sin(angle)
+                    )
+                )
+            radius += self.ring_step
+        return seen
+
+    def _candidate_positions(
+        self, ai: "AresBot", funnel: dict[str, int] | None = None
+    ) -> list[Point2]:
+        """Cheap filters, in order, recording how many survive each stage."""
         base: Point2 = ai.start_location
         home_height = ai.get_terrain_height(base)
-        clearance_sq = self.expansion_clearance**2
+        expansion_sq = self.expansion_clearance**2
+        resource_sq = self.resource_clearance**2
+        structure_sq = self.structure_clearance**2
         other_expansions = [
             e
             for e in ai.expansion_locations_list
             if cy_distance_to_squared(e, base) > _OWN_MAIN_TOLERANCE_SQ
         ]
+        resources = [*ai.mineral_field, *ai.vespene_geyser]
 
-        seen: set[Point2] = set()
-        radius = 5.0
-        while radius <= self.search_radius:
-            for index in range(self.rays):
-                angle = 2.0 * pi * index / self.rays
-                point = _snap_to_building_centre(
-                    base.x + radius * cos(angle), base.y + radius * sin(angle)
+        def record(stage: str, points: list[Point2]) -> list[Point2]:
+            if funnel is not None:
+                funnel[stage] = len(points)
+            return points
+
+        points = record("sampled", list(self._ring_samples(base)))
+        # Snapping to a `.5` centre can pull a sample up to ~1.4 tiles inward,
+        # so the ring radius alone does not enforce min_radius.
+        min_radius_sq = self.min_radius**2
+        points = record(
+            "clear_of_main",
+            [p for p in points if cy_distance_to_squared(p, base) >= min_radius_sq],
+        )
+        points = record(
+            "on_plateau", [p for p in points if ai.get_terrain_height(p) == home_height]
+        )
+        points = record("standable", [p for p in points if ai.in_pathing_grid(p)])
+        points = record(
+            "off_expansions",
+            [
+                p
+                for p in points
+                if not any(
+                    cy_distance_to_squared(p, e) < expansion_sq
+                    for e in other_expansions
                 )
-                if point in seen:
-                    continue
-                seen.add(point)
-            radius += self.ring_step
-
-        return [
-            p
-            for p in seen
-            if ai.get_terrain_height(p) == home_height
-            and not any(
-                cy_distance_to_squared(p, e) < clearance_sq for e in other_expansions
-            )
-        ]
+            ],
+        )
+        points = record(
+            "off_resources",
+            [
+                p
+                for p in points
+                if not any(
+                    cy_distance_to_squared(p, r.position) < resource_sq
+                    for r in resources
+                )
+            ],
+        )
+        return record(
+            "off_structures",
+            [
+                p
+                for p in points
+                if not any(
+                    cy_distance_to_squared(p, s.position) < structure_sq
+                    for s in ai.structures
+                )
+            ],
+        )
 
     def _in_base_placement(
-        self, ai: "AresBot", mediator: ManagerMediator
+        self,
+        ai: "AresBot",
+        mediator: ManagerMediator,
+        funnel: dict[str, int] | None = None,
     ) -> Point2 | None:
-        """Cheap filters first, then the placement check on the best candidates."""
-        candidates = self._candidate_positions(ai)
+        candidates = self._candidate_positions(ai, funnel)
         if not candidates:
             return None
 
-        # Bias toward the map-center side of the main, nearer the rally.
-        preferred = Point2(cy_towards(ai.start_location, ai.game_info.map_center, 5.0))
+        # Prefer the open, map-center side of the main (the ramp side), which
+        # is where a drone can actually path to the building centre.
+        preferred = Point2(cy_towards(ai.start_location, ai.game_info.map_center, 10.0))
         candidates.sort(key=lambda p: cy_distance_to_squared(p, preferred))
 
-        for point in candidates:
+        for checked, point in enumerate(candidates, start=1):
             if mediator.can_place_structure(
                 position=point, structure_type=UnitTypeId.HATCHERY
             ):
+                if funnel is not None:
+                    funnel["placement_checks"] = checked
                 return point
+        if funnel is not None:
+            funnel["placement_checks"] = len(candidates)
         return None
+
+    @staticmethod
+    def _log_funnel(ai: "AresBot", funnel: dict[str, int]) -> None:
+        """Say which filter emptied the list, so a failure needs no guesswork."""
+        if ai.state.game_loop % _DIAGNOSTIC_INTERVAL:
+            return
+        breakdown = " -> ".join(f"{stage}={count}" for stage, count in funnel.items())
+        logger.info(f"{ai.time_formatted} Macro hatch: no spot in main. {breakdown}")
