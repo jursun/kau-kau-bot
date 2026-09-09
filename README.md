@@ -81,16 +81,56 @@ many builds, and it would otherwise only show up mid-game.
 
 ## Local setup
 
-**Needs:** Python 3.11 or 3.12, Poetry, Git, StarCraft II, and the AI Arena
-map pack in your SC2 Maps folder.
+**Needs:** Python 3.11 or 3.12, Git, StarCraft II, and the AI Arena map pack
+in your SC2 Maps folder.
+
+### 1. Install Poetry
+
+Poetry doesn't come with Python — every `poetry` command below assumes it's
+already installed. Use the official installer:
+
+```bash
+# macOS / Linux / WSL
+curl -sSL https://install.python-poetry.org | python3 -
+```
+
+```powershell
+# Windows (PowerShell)
+(Invoke-WebRequest -Uri https://install.python-poetry.org -UseBasicParsing).Content | py -
+```
+
+**If `poetry` then comes back "not recognized"** (common on Windows — the
+installer's shim didn't land on PATH), don't fight PATH: install via pip
+instead, and swap `py -m poetry ...` in for `poetry ...` in every command
+below — it works identically:
+
+```powershell
+py -m pip install --user poetry
+py -m poetry --version   # confirms it's reachable this way
+```
+
+### 2. Clone the repo — with the `ares-sc2` submodule
+
+> **Don't `git clone` without `--recursive`.** This repo vendors ares-sc2 as
+> a git submodule; a plain clone leaves `ares-sc2/` empty and every step
+> after this one fails with confusing `ModuleNotFoundError`s that don't
+> obviously point back to a missing submodule.
 
 ```bash
 git clone --recursive git@github.com:jursun/kau-kau-bot.git
 cd kau-kau-bot
+```
 
-# if you cloned without --recursive:
+Already cloned without `--recursive`? Fetch the submodule now rather than
+re-cloning:
+
+```bash
 git submodule update --init --recursive
+```
 
+### 3. Install dependencies
+
+```bash
 poetry install --no-root
 ```
 
@@ -109,9 +149,6 @@ $py311 = py -3.11 -c "import sys; print(sys.executable)"
 py -m poetry env use $py311
 py -m poetry install --no-root
 ```
-
-`py -m poetry` also works when the `poetry.exe` shim is not on PATH, which is
-the usual cause of "'poetry' is not recognized".
 
 ### Play / validate
 
