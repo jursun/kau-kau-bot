@@ -14,7 +14,7 @@ ground) and must be clear of every known expansion.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import cos, pi, sin
+from math import cos, floor, pi, sin
 from typing import TYPE_CHECKING
 
 from cython_extensions import cy_distance_to_squared, cy_towards
@@ -31,6 +31,13 @@ if TYPE_CHECKING:
 # Squared distance within which an expansion counts as "our own main".
 _OWN_MAIN_TOLERANCE_SQ: float = 36.0
 
+# A 5x5 structure's centre sits at the middle of its centre tile, i.e. on a
+# `.5` coordinate. Passing an integer centre makes `can_place_structure` agree
+# (it rounds to the same footprint) while the build order itself is invalid,
+# so the drone silently never places. Snap every candidate.
+def _snap_to_building_centre(x: float, y: float) -> Point2:
+    return Point2((floor(x) + 0.5, floor(y) + 0.5))
+
 
 @dataclass
 class BuildMacroHatch(MacroBehavior):
@@ -46,11 +53,11 @@ class BuildMacroHatch(MacroBehavior):
     """
 
     to_count: int
-    search_radius: float = 14.0
+    search_radius: float = 16.0
     expansion_clearance: float = 12.0
     max_on_route: int = 1
-    ring_step: float = 2.0
-    rays: int = 16
+    ring_step: float = 1.5
+    rays: int = 24
 
     def execute(self, ai: "AresBot", config: dict, mediator: ManagerMediator) -> bool:
         if (
@@ -65,6 +72,14 @@ class BuildMacroHatch(MacroBehavior):
 
         position = self._in_base_placement(ai, mediator)
         if position is None:
+            # Rate-limited: this runs on every frame we can afford a hatch.
+            if ai.state.game_loop % 224 == 0:
+                logger.info(
+                    f"{ai.time_formatted} Macro hatch: no legal spot within "
+                    f"{self.search_radius} of the main "
+                    f"({len(self._candidate_positions(ai))} candidates passed "
+                    f"the terrain and expansion filters)"
+                )
             return False
 
         worker = mediator.select_worker(target_position=position, force_close=True)
@@ -100,9 +115,9 @@ class BuildMacroHatch(MacroBehavior):
         while radius <= self.search_radius:
             for index in range(self.rays):
                 angle = 2.0 * pi * index / self.rays
-                point = Point2(
-                    (base.x + radius * cos(angle), base.y + radius * sin(angle))
-                ).rounded
+                point = _snap_to_building_centre(
+                    base.x + radius * cos(angle), base.y + radius * sin(angle)
+                )
                 if point in seen:
                     continue
                 seen.add(point)

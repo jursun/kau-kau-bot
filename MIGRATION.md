@@ -53,10 +53,14 @@ code. They are the most likely causes if a game looks wrong.
 1. **Supply is less tight.** The old ling rush used
    `OVERLORD_SUPPLY_LEFT = 2`. Ares' `AutoSupply` scales with townhall count
    and starts overlords earlier. Safer, slightly slower.
-2. **Gas is never pulled off.** The old ling rush yanked all 3 drones off gas
-   at 100 vespene. `Mining(workers_per_gas=3)` keeps them there. If the rush
-   timing is now late on minerals, this is the first thing to try:
-   `mediator.set_workers_per_gas(amount=0)` once speed is paid for.
+2. **Gas pull-off is restored** (it was missing in the first ares version).
+   `Mining(workers_per_gas=...)` is *not* the lever — ares only reads that
+   value when deciding whether to vespene-boost; the `ResourceManager` owns
+   assignment. `bot/behaviors/set_gas_workers.py` calls
+   `mediator.set_workers_per_gas`, which the manager honours by pulling one
+   worker per frame off any over-staffed geyser. Speedling All-In gates it on
+   `vespene >= 100 OR ling speed started`, so spending the 100 does not send
+   drones back to the geyser.
 3. **Openings are shorter.** They end at speed/queen (Speedling All-In) and second gas
    (UpgradeRush); everything after is the dynamic macro plan. The old code had
    the whole game hard-coded in `on_step` ordering.
