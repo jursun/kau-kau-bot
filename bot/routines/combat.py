@@ -5,13 +5,12 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING
 
-from cython_extensions import cy_closest_to
-from sc2.units import Units
-
 from ares.behaviors.combat import CombatManeuver
 from ares.behaviors.combat.group import AMoveGroup, StutterGroupForward
 from ares.behaviors.combat.individual import AMove, AttackTarget, ShootTargetInRange
 from ares.consts import UnitRole, UnitTreeQueryType
+from cython_extensions import cy_closest_to, cy_distance_to_squared
+from sc2.units import Units
 
 from bot.core.types import CombatRoutine
 from bot.routines import targeting
@@ -22,6 +21,10 @@ if TYPE_CHECKING:
 DEFENDER_ENGAGE_RANGE: float = 12.0
 SQUAD_ENGAGE_RANGE: float = 11.5
 SQUAD_RADIUS: float = 9.0
+MUSTER_RADIUS: float = 4.0
+"""How tightly a freshly-released wave must cluster at the rally point
+before it is let off to attack, rather than trickling toward the enemy
+as units peel off from wherever they were defending."""
 
 
 def release_waves() -> CombatRoutine:
@@ -44,9 +47,9 @@ def release_waves() -> CombatRoutine:
             )
             return
 
-        ctx.mediator.batch_assign_role(
-            tags={u.tag for u in defenders}, role=UnitRole.ATTACKING
-        )
+        tags = {u.tag for u in defenders}
+        ctx.mediator.batch_assign_role(tags=tags, role=UnitRole.ATTACKING)
+        ctx.state.mustering_tags.update(tags)
         ctx.state.wave_number += 1
         ctx.state.next_wave_size = max(
             plan.wave1_min + 1, math.ceil(size * plan.wave_growth)
@@ -107,15 +110,37 @@ def defend_home() -> CombatRoutine:
 
 
 def attack_squads(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
-    """Drive each ATTACKING squad at its nearest worthwhile target."""
+    """Drive each ATTACKING squad at its nearest worthwhile target.
+
+    A freshly-promoted wave musters at the rally point in front of our
+    natural (`targeting.rally_point`) before it advances, so it moves out as
+    one group instead of trickling toward the enemy as units arrive from
+    wherever they were defending. `RunState.mustering_tags` marks units still
+    waiting to form up; once a squad clusters within `MUSTER_RADIUS` of the
+    rally point its tags are released and it attacks like any other squad
+    from then on, even if it later drifts away from the rally point.
+    """
 
     def routine(ctx: "BotContext") -> None:
+        alive_attackers = {u.tag for u in ctx.units_in_role(UnitRole.ATTACKING)}
+        ctx.state.mustering_tags &= alive_attackers
+
         squads = ctx.mediator.get_squads(
             role=UnitRole.ATTACKING, squad_radius=squad_radius
         )
+        rally = targeting.rally_point(ctx)
         for squad in squads:
             position = squad.squad_position
-            target = targeting.attack_target(ctx, position)
+            mustering = squad.tags & ctx.state.mustering_tags
+
+            if (
+                mustering
+                and cy_distance_to_squared(position, rally) <= MUSTER_RADIUS**2
+            ):
+                ctx.state.mustering_tags -= mustering
+                mustering = set()
+
+            target = rally if mustering else targeting.attack_target(ctx, position)
             close_enemy = _enemies_near(ctx, position, SQUAD_ENGAGE_RANGE)
 
             maneuver = CombatManeuver()

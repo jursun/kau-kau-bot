@@ -10,7 +10,7 @@ Zerg StarCraft II bot for [AI Arena](https://aiarena.net/), built on
 
 | Opening | Intent | State |
 |---------|--------|-------|
-| `Speedling All-In` | Overlord, 12 pool, gas, metabolic boost, macro hatch, waves into the enemy main | **Working on ares** - win vs VeryHard Terran at 5:10 |
+| `Speedling All-In` | Overlord, pool, gas, metabolic boost, macro hatch, zergling flood into the enemy main | **Working on ares** - win vs VeryHard Terran at 5:10 |
 | `UpgradeRush` | Hatch-first 3-base mass lings behind double evo / lair / hive | **Ported, never run** - see below |
 
 `BuildSelection: Cycle` keeps the current opening while it wins, so Speedling All-In

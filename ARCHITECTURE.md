@@ -95,6 +95,9 @@ lands, but only for wave 1" is three existing gates combined, not new code.
 
 **`CombatRoutine`** — `(ctx) -> None`. Registers its own maneuvers. Wave
 release is itself a routine, so a purely defensive build simply omits it.
+`attack_squads` musters a freshly-released wave at `targeting.rally_point`
+before sending it at the real target, tracked via `RunState.mustering_tags`
+so a squad that scatters mid-attack is not sent back to re-muster.
 
 **`ctx.build.army.types`** is what keeps combat race-neutral: the engine asks
 for "army units in role X", never for zerglings.

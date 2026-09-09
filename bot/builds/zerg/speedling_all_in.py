@@ -1,4 +1,4 @@
-"""Speedling All-In — 12-pool zergling rush.
+"""Speedling All-In — a Zergling flood build.
 
 Opening: `Speedling All-In` in `zerg_builds.yml` — overlord, pool, extractor, 3 on
 gas, metabolic boost, first lings, queen.
@@ -29,7 +29,7 @@ GAS_FOR_SPEED = 100
 
 BUILD = BuildDefinition(
     name="Speedling All-In",
-    label="Speedling All-In (12 pool)",
+    label="Speedling All-In",
     race=Race.Zerg,
     economy=Economy(
         worker_target=16,
@@ -54,7 +54,7 @@ BUILD = BuildDefinition(
         ),
         wave_gate=gates.upgrade_done(z.LING_SPEED),
         wave1_min=6,
-        wave_growth=1.10,
+        wave_growth=1.25,
         focus=(FOCUS_MAIN,),
     ),
     always=(

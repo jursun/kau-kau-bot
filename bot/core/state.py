@@ -18,4 +18,7 @@ class RunState:
     wave_number: int = 0
     next_wave_size: int = 0
     scout_tags: set[int] = field(default_factory=set)
+    mustering_tags: set[int] = field(default_factory=set)
+    """Attacking units still forming up at the rally point (see
+    `bot.routines.combat.attack_squads`)."""
     log_once: LogOnce = field(default_factory=LogOnce)

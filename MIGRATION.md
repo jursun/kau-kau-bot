@@ -113,14 +113,17 @@ Against a real ares-sc2 3.13.1 checkout with its actual dependencies:
   Its supply numbers, the double evo chamber, the third hatch and the +1/+1
   wave gate have all never executed.
 - **Evo chamber and lair/hive placement**, which only happens in UpgradeRush.
-- **Whether the ling rush is leaving value on the table.** It wins, but gas is
-  no longer pulled off at 100 vespene (change 2 above), and
-  `WAVE1_MIN_SIZE = 6` was a guess — the old code used 1 behind a pre-speed
-  natural rally that no longer exists in the same form.
+- **`UpgradeRush` wave sizing and gas usage**, unvalidated for the same reason.
 - **`UpgradeRush` economy**, which the old README already flagged as unfinished.
 
-Resolved by the first run: the Speedling All-In opening supply numbers are fine (the
-build runner reached the end and handed over), and macro hatch placement works.
+Resolved by real games: the Speedling All-In opening supply numbers are fine (the
+build runner reached the end and handed over), macro hatch placement works
+(the drone needs a spot it can both build on *and reach* — see
+`bot/behaviors/zerg/build_macro_hatch.py`), the gas pull-off at 100 vespene
+works (`bot/behaviors/set_gas_workers.py`), and each wave now musters in
+front of the natural before attacking — the pre-speed natural rally the old
+code had, which this migration initially dropped (see `attack_squads` in
+`bot/routines/combat.py`).
 
 ## First run
 

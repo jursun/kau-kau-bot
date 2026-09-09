@@ -47,7 +47,7 @@ BuildChoices:
             - UpgradeRush
 
 Builds:
-    # Speedling All-In: 12 pool. Overlord -> pool -> extractor, 3 on gas, speed ASAP.
+    # Speedling All-In: zergling flood. Overlord -> pool -> extractor, 3 on gas, speed ASAP.
     # Drone cap of 16 is enforced by ConstantWorkerProductionTill here and by
     # the economy targets in bot/builds/zerg/speedling_all_in.py afterwards.
     Speedling All-In:
