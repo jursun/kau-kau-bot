@@ -1,0 +1,78 @@
+# KauKauBot openings, run by the ares BuildOrderRunner.
+#
+# Openings are deliberately short: they cover the parts of the game where
+# exact timings matter, then hand off to the dynamic macro plan in
+# `bot/managers/macro.py` once `build_order_runner.build_completed` is True.
+#
+# Forcing an opening locally: set `Debug: True` in config.yml (ares then uses
+# the `test_123` opponent id) and put the opening you want first in the
+# `test_123` cycle below. This replaces the old `FORCE_BUILD` in config.py.
+
+# Save game opening + result to ./data so ares can switch openings after a loss.
+UseData: True
+# Cycle: keep the opening while it wins, advance to the next one after a defeat.
+BuildSelection: Cycle
+MinGamesWinrateBased: 5
+
+BuildChoices:
+    # Active when `Debug: True` in config.yml — reorder to force an opening.
+    test_123:
+        BotName: LocalDebug
+        Cycle:
+            - Speedling All-In
+            - UpgradeRush
+
+    Terran:
+        BotName: TerranRace
+        Cycle:
+            - Speedling All-In
+            - UpgradeRush
+
+    Protoss:
+        BotName: ProtossRace
+        Cycle:
+            - Speedling All-In
+            - UpgradeRush
+
+    Zerg:
+        BotName: ZergRace
+        Cycle:
+            - Speedling All-In
+            - UpgradeRush
+
+    Random:
+        BotName: RandomRace
+        Cycle:
+            - Speedling All-In
+            - UpgradeRush
+
+Builds:
+    # Speedling All-In: 12 pool. Overlord -> pool -> extractor, 3 on gas, speed ASAP.
+    # Drone cap of 16 is enforced by ConstantWorkerProductionTill here and by
+    # the economy targets in bot/builds/zerg/speedling_all_in.py afterwards.
+    Speedling All-In:
+        ConstantWorkerProductionTill: 16
+        AutoSupplyAtSupply: 14
+        OpeningBuildOrder:
+            - 12 overlord
+            - 12 spawningpool
+            - 13 gas
+            - 14 zerglingmovementspeed
+            - 14 zergling *4
+            - 14 queen
+
+    # 3-base mass ling with double evo / lair / hive upgrades.
+    # Hatch before pool. Evolution chambers, third hatch and the +1/+1 -> 3/3
+    # upgrade path are all handled dynamically after this opening finishes.
+    UpgradeRush:
+        ConstantWorkerProductionTill: 20
+        AutoSupplyAtSupply: 16
+        OpeningBuildOrder:
+            - 13 overlord
+            - 15 expand
+            - 16 spawningpool
+            - 17 gas
+            - 19 overlord
+            - 19 zerglingmovementspeed
+            - 19 queen
+            - 20 gas
