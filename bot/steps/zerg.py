@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 
-from bot.behaviors.zerg import InjectLarva, TrainQueens
+from bot.behaviors.zerg import BuildMacroHatch, InjectLarva, TrainQueens
 from bot.builds.definition import _always
 from bot.core.types import Gate, MacroStep
 from bot.steps import common
@@ -40,8 +40,19 @@ def train_queens(per_base: int = 1, maximum: int = 4) -> MacroStep:
 
 
 def macro_hatch(count: int, gate: Gate = _always) -> MacroStep:
-    """Extra in-base hatcheries, purely for larva."""
-    return common.structure(UnitTypeId.HATCHERY, count, gate)
+    """Extra hatcheries inside the main, purely for larva.
+
+    Uses `BuildMacroHatch` rather than `common.structure`: ares' zerg
+    placement searches 30 tiles from the base location and will put the hatch
+    at the natural. See that behavior's docstring.
+    """
+
+    def step(ctx: "BotContext"):
+        if not gate(ctx):
+            return None
+        return BuildMacroHatch(to_count=count)
+
+    return step
 
 
 def evolution_chambers(count: int, gate: Gate = _always) -> MacroStep:

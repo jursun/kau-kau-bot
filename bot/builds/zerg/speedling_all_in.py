@@ -1,6 +1,6 @@
-"""12-pool zergling rush.
+"""Speedling All-In — 12-pool zergling rush.
 
-Opening: `LingRush` in `zerg_builds.yml` — overlord, pool, extractor, 3 on
+Opening: `Speedling All-In` in `zerg_builds.yml` — overlord, pool, extractor, 3 on
 gas, metabolic boost, first lings, queen.
 
 After the opening: hard drone cap of 16, one macro hatch in the main for
@@ -20,9 +20,12 @@ from bot.routines import combat, gates, scouting
 from bot.steps import common as c
 from bot.steps import zerg as z
 
+# Main + one macro hatch. Also the queen target: one inject per hatchery.
+MACRO_HATCH_COUNT = 2
+
 BUILD = BuildDefinition(
-    name="LingRush",
-    label="12-pool Ling Rush",
+    name="Speedling All-In",
+    label="Speedling All-In (12 pool)",
     race=Race.Zerg,
     economy=Economy(
         worker_target=16,
@@ -53,9 +56,10 @@ BUILD = BuildDefinition(
     always=(c.mining(), z.inject_larva()),
     macro_steps=(
         c.auto_supply(),
-        z.train_queens(per_base=1, maximum=1),
+        # One queen per hatchery — the macro hatch needs its own for injects.
+        z.train_queens(per_base=1, maximum=MACRO_HATCH_COUNT),
         # Metabolic boost outranks the macro hatch; wait until it is paid for.
-        z.macro_hatch(2, gate=gates.upgrade_started(z.LING_SPEED)),
+        z.macro_hatch(MACRO_HATCH_COUNT, gate=gates.upgrade_started(z.LING_SPEED)),
         c.expansions(),
         c.gas_buildings(),
         c.upgrades(),
