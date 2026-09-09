@@ -75,27 +75,45 @@ def test_split_production_never_drops_either_side() -> None:
     assert kinds == {BuildWorkers, SpawnController}
 
 
-def test_spore_crawlers_places_one_per_ready_townhall() -> None:
+def test_spore_crawlers_places_one_per_owned_expansion() -> None:
+    # Regression test: `base_location` must be one of the map's precomputed
+    # expansion-location points (`owned_expansions`' keys), not a townhall's
+    # literal position — passing the latter crashed a real game with
+    # `KeyError: (60.5, 56.5)` inside `to_count_per_base`'s lookup into
+    # `mediator.get_placements_dict`.
     ctx = _ctx()
-    town_hall_1, town_hall_2 = MagicMock(), MagicMock()
-    town_hall_1.position = Point2((10.0, 10.0))
-    town_hall_2.position = Point2((50.0, 50.0))
-    ctx.bot.townhalls.ready = [town_hall_1, town_hall_2]
+    main = Point2((10.0, 10.0))
+    natural = Point2((50.0, 50.0))
+    ctx.bot.owned_expansions = {main: MagicMock(), natural: MagicMock()}
 
     plan = z.spore_crawlers(per_base=1, gate=lambda _ctx: True)(ctx)
 
     assert isinstance(plan, MacroPlan)
     assert len(plan.macros) == 2
-    for behavior, townhall in zip(plan.macros, (town_hall_1, town_hall_2)):
+    for behavior, location in zip(plan.macros, (main, natural)):
         assert isinstance(behavior, BuildStructure)
         assert behavior.structure_id == UnitTypeId.SPORECRAWLER
-        assert behavior.base_location == townhall.position
+        assert behavior.base_location == location
         assert behavior.to_count_per_base == 1
+
+
+def test_spore_crawlers_collapses_a_macro_hatch_onto_its_base() -> None:
+    """Two hatcheries at the same expansion location (main + a macro hatch)
+    must not produce two BuildStructure calls for that base."""
+    ctx = _ctx()
+    main = Point2((10.0, 10.0))
+    ctx.bot.owned_expansions = {main: MagicMock()}  # owned_expansions already
+    # collapses same-location townhalls to one entry — this just documents
+    # that spore_crawlers relies on that rather than counting townhalls itself.
+
+    plan = z.spore_crawlers(per_base=1, gate=lambda _ctx: True)(ctx)
+
+    assert len(plan.macros) == 1
 
 
 def test_spore_crawlers_returns_none_before_gate() -> None:
     ctx = _ctx()
-    ctx.bot.townhalls.ready = [MagicMock()]
+    ctx.bot.owned_expansions = {Point2((10.0, 10.0)): MagicMock()}
     assert z.spore_crawlers(per_base=1, gate=lambda _ctx: False)(ctx) is None
 
 

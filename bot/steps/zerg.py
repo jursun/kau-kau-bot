@@ -63,11 +63,24 @@ def evolution_chambers(count: int, gate: Gate = _always) -> MacroStep:
 
 
 def spore_crawlers(per_base: int, gate: Gate = _always) -> MacroStep:
-    """One Spore Crawler (mineral-line placement) per ready base, once `gate` passes.
+    """One Spore Crawler (mineral-line placement) per owned base, once `gate` passes.
 
     Unlike `common.structure`, which caps a single global count at one
-    location, this issues a `BuildStructure` call per townhall so each base
-    gets its own, capped with `to_count_per_base` rather than `to_count`.
+    location, this issues a `BuildStructure` call per base so each one gets
+    its own, capped with `to_count_per_base` rather than `to_count`.
+
+    Deliberately keyed off `ctx.bot.owned_expansions` rather than
+    `ctx.ready_townhalls`: `to_count_per_base` looks up
+    `mediator.get_placements_dict[base_location]`, which is only ever keyed
+    by the map's precomputed expansion-location points
+    (`ai.expansion_locations_list`) — passing a townhall's literal position
+    is a `KeyError` the moment it doesn't land on that exact point (crashed a
+    real game: `KeyError: (60.5, 56.5)`, the natural). `owned_expansions` is
+    ares' own `{expansion_location: townhall}` mapping, built from those same
+    precomputed points, so every key here is guaranteed to already exist in
+    the placements dict. It also collapses a macro hatch sharing the main's
+    location down to one entry instead of a second, redundant call there.
+
     Bundled into their own `MacroPlan` so a base that already has enough
     doesn't block the next base's turn on the same frame (see
     `MacroPlan.execute`, which stops at the first behavior that acts).
@@ -77,10 +90,10 @@ def spore_crawlers(per_base: int, gate: Gate = _always) -> MacroStep:
         if not gate(ctx):
             return None
         plan = MacroPlan()
-        for townhall in ctx.ready_townhalls:
+        for location in ctx.bot.owned_expansions:
             plan.add(
                 BuildStructure(
-                    base_location=townhall.position,
+                    base_location=location,
                     structure_id=UnitTypeId.SPORECRAWLER,
                     to_count_per_base=per_base,
                 )
