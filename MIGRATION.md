@@ -129,14 +129,18 @@ Against a real ares-sc2 3.13.1 checkout with its actual dependencies:
 - **`UpgradeRush` economy**, tightened (60 workers, 3 extractors) but still
   unconfirmed against a real opponent.
 
-The first real UpgradeRush game got as far as the 4-minute mark and crashed
-on `spore_crawlers()`'s very first attempt: `BuildStructure.to_count_per_base`
-looked up `mediator.get_placements_dict[townhall.position]`, but that dict is
-only keyed by the map's precomputed expansion-location points, not a
-townhall's literal position — `KeyError: (60.5, 56.5)` for the natural. Fixed
-in `130b17b` by iterating `ctx.bot.owned_expansions` instead (see
-`claude/ares-migration.md` gotcha 10 for the full writeup). Nothing past that
-point in the game has been observed yet.
+The first real UpgradeRush game crashed on `spore_crawlers()`'s very first
+attempt at the 4-minute mark, twice, at two different locations
+(`KeyError: (60.5, 56.5)`, then `KeyError: (90.5, 132.5)`). Root cause:
+`BuildStructure.to_count_per_base` is checked via
+`mediator.get_placements_dict[base_location]`, and that dict is never
+populated for a Zerg bot at all — `PlacementManager._solve_zerg_building_formation`
+is an unimplemented stub in ares v3.13.1 — so `to_count_per_base` is a
+guaranteed `KeyError` for a Zerg structure regardless of which location is
+passed. Fixed for real in `eb322a8` by dropping `to_count_per_base` entirely
+and having `spore_crawlers()` count existing crawlers itself (see
+`claude/ares-migration.md` gotcha 10 for the full two-attempt writeup).
+Nothing past that point in the game has been observed yet.
 
 Resolved by real games: the Speedling All-In opening supply numbers are fine (the
 build runner reached the end and handed over), macro hatch placement works
