@@ -36,8 +36,10 @@ def _ctx(supply_workers: float = 10.0, supply_army: float = 10.0) -> BotContext:
     bot.townhalls.ready = []  # base_count -> 1, so worker_target is well-defined
     bot.EXPANSION_GAP_THRESHOLD = 15  # real python-sc2 BotAI constant
     bot.owned_expansions = {}
-    # No spore crawlers anywhere by default; tests override per location.
+    # No spore crawlers anywhere, and none in flight, by default; tests
+    # override either per case.
     bot.structures.return_value.closer_than.return_value = []
+    bot.structure_pending.return_value = 0
 
     build = MagicMock()
     build.economy.worker_target = 60
@@ -121,6 +123,20 @@ def test_spore_crawlers_skips_bases_that_already_have_enough() -> None:
 
     assert len(plan.macros) == 1
     assert plan.macros[0].base_location == uncovered
+
+
+def test_spore_crawlers_waits_while_one_is_already_in_flight() -> None:
+    # Regression test: a worker already dispatched to build a spore crawler
+    # doesn't show up in `structures()` until it actually starts, which can
+    # take several seconds of walking. Without this gate, every frame in
+    # that window re-requests a build for the same still-"uncovered" base —
+    # a real game piled several crawlers onto one base this way.
+    ctx = _ctx()
+    ctx.bot.owned_expansions = {Point2((10.0, 10.0)): MagicMock()}
+    ctx.bot.structure_pending.return_value = 1
+
+    assert z.spore_crawlers(per_base=1, gate=lambda _ctx: True)(ctx) is None
+    ctx.bot.structure_pending.assert_called_with(UnitTypeId.SPORECRAWLER)
 
 
 def test_spore_crawlers_collapses_a_macro_hatch_onto_its_base() -> None:

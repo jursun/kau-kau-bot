@@ -88,16 +88,26 @@ def spore_crawlers(per_base: int, gate: Gate = _always) -> MacroStep:
     location, so a crawler is credited to a base on the same terms a
     townhall is.
 
+    `ai.structure_pending(SPORECRAWLER)` gates the whole step, not just a
+    per-base count: a dispatched worker walking to build doesn't show up in
+    `structures()` yet, so counting only structures re-requests the same
+    still-uncovered base every frame for the whole walk time — a real game
+    ended up with several crawlers piled onto one base. `structure_pending`
+    is the same combined ready-or-pending count `BuildStructure.to_count`
+    already uses successfully elsewhere in this file (`_enough_existing`),
+    so nothing new is requested anywhere while one crawler is already in
+    flight, and `BuildStructure`'s own `max_on_route` is a second, redundant
+    line of defense rather than the only one.
+
     Bundled into their own `MacroPlan` so a base that already has enough
     doesn't block the next base's turn on the same frame (see
     `MacroPlan.execute`, which stops at the first behavior that acts).
-    `BuildStructure`'s own `max_on_route` (default 1, global per structure
-    type) already serializes construction to one crawler in flight at a
-    time, so this doesn't queue multiple bases' workers at once.
     """
 
     def step(ctx: "BotContext"):
         if not gate(ctx):
+            return None
+        if ctx.bot.structure_pending(UnitTypeId.SPORECRAWLER):
             return None
         radius = ctx.bot.EXPANSION_GAP_THRESHOLD
         existing = ctx.bot.structures(UnitTypeId.SPORECRAWLER)
