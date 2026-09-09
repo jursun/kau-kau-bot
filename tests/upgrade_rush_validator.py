@@ -8,7 +8,9 @@ running bot / `BotContext` so nothing here can drift out of sync with
   Stage 1: Opening Economy — workers, pool timing, extractor cap, supply
   Stage 2: Tech Structures — Evolution Chamber x2, Lair, Infestation Pit, Hive
   Stage 3: Upgrades        — every upgrade in `ctx.build.army.upgrades`, in order
-  Stage 4: Attack Waves    — one line per wave actually released: size + timing
+  Stage 4: Attack Waves    — one line per wave actually released: size, timing,
+                             and our supply released vs the enemy's known army
+                             supply at that moment
 
 Stages 2 and 3 additionally report *resource-blocked* time per milestone:
 how many frames the bot was tech-eligible for that milestone (everything but
@@ -56,8 +58,8 @@ When the game ends the validator prints a report like::
         ...
 
       Stage 4: Attack Waves
-        Wave 1 ...................... PASS (t=302.1s size=21 (expected>=20))
-        Wave 2 ...................... PASS (t=418.6s size=26 (expected>=27) gap=116.5s)
+        Wave 1 ...................... PASS (t=302.1s size=21 (expected>=20) | supply us=21 vs enemy=14)
+        Wave 2 ...................... PASS (t=418.6s size=26 (expected>=27) gap=116.5s | supply us=26 vs enemy=22)
         ...
 
     ══════════════════════════════════════════════════
@@ -89,7 +91,7 @@ from sc2.dicts.upgrade_researched_from import UPGRADE_RESEARCHED_FROM
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 
-from ares.consts import UnitRole
+from ares.consts import WORKER_TYPES, UnitRole
 
 
 # ── Step result ─────────────────────────────────────────────────────────────
@@ -166,6 +168,8 @@ class _WaveRecord:
     size: int
     expected_min: int
     gap: Optional[float]
+    our_supply: float
+    enemy_supply: float
 
 
 # ── Validator mixin ─────────────────────────────────────────────────────────
@@ -430,20 +434,37 @@ class UpgradeRushValidator:
 
     # ── Stage 4 tracking ─────────────────────────────────────────────────
 
+    def _enemy_army_supply(self) -> float:
+        """Total supply of the enemy's known army (cached, so units that have
+        gone back out of vision since still count) — mirrors ares' own
+        `enemy_army_value` (`UnitCacheManager`), which sums resource cost the
+        same way: everything in `get_cached_enemy_army` except workers,
+        which that cache includes but doesn't itself filter out."""
+        return sum(
+            self.calculate_supply_cost(unit.type_id)
+            for unit in self.mediator.get_cached_enemy_army
+            if unit.type_id not in WORKER_TYPES
+        )
+
     def _track_waves(self) -> None:
         ctx = self.ctx
         if ctx is None:
             return
 
-        current_attacking = {u.tag for u in ctx.units_in_role(UnitRole.ATTACKING)}
+        attacking_units = ctx.units_in_role(UnitRole.ATTACKING)
+        current_attacking = {u.tag for u in attacking_units}
         wave_number = ctx.state.wave_number
         if wave_number > self._last_wave_number:
             new_tags = current_attacking - self._known_attacking_tags
+            new_units = attacking_units.tags_in(new_tags)
             size = len(new_tags)
             gap = (
                 None
                 if self._last_wave_time is None
                 else self.time - self._last_wave_time
+            )
+            our_supply = sum(
+                self.calculate_supply_cost(unit.type_id) for unit in new_units
             )
             self._waves.append(
                 _WaveRecord(
@@ -452,6 +473,8 @@ class UpgradeRushValidator:
                     size=size,
                     expected_min=self._next_wave_expected_min,
                     gap=gap,
+                    our_supply=our_supply,
+                    enemy_supply=self._enemy_army_supply(),
                 )
             )
             if size > 0:
@@ -574,6 +597,9 @@ class UpgradeRushValidator:
             )
             if wave.gap is not None:
                 detail += f" gap={wave.gap:.1f}s"
+            detail += (
+                f" | supply us={wave.our_supply:.0f} vs enemy={wave.enemy_supply:.0f}"
+            )
             results.append(
                 StepResult(f"Wave {wave.number}", size_ok and gap_ok, detail)
             )

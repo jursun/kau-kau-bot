@@ -40,8 +40,18 @@ class _Counted:
 
 
 class _FakeUnit:
-    def __init__(self, tag: int):
+    def __init__(self, tag: int, type_id=UnitTypeId.ZERGLING):
         self.tag = tag
+        self.type_id = type_id
+
+
+class _FakeUnits(list):
+    """Stands in for python-sc2's `Units`: just the `.tags_in` the validator
+    needs to pick the newly-released wave's actual unit objects back out of
+    the current ATTACKING group."""
+
+    def tags_in(self, tags) -> "_FakeUnits":
+        return _FakeUnits(u for u in self if u.tag in tags)
 
 
 class _FakeCtx:
@@ -68,8 +78,8 @@ class _FakeCtx:
         self.state = SimpleNamespace(wave_number=0)
         self.attacking: list = []
 
-    def units_in_role(self, role) -> list:
-        return self.attacking
+    def units_in_role(self, role) -> _FakeUnits:
+        return _FakeUnits(self.attacking)
 
 
 class FakeAI(UpgradeRushValidator):
@@ -87,6 +97,9 @@ class FakeAI(UpgradeRushValidator):
         self.supply_used = 14
         self.workers = _Counted(12)
         self.gas_buildings = _Counted(0)
+        # `.get_cached_enemy_army` is a plain attribute here (a test sets it
+        # directly), standing in for ares' real `ManagerMediator` property.
+        self.mediator = SimpleNamespace(get_cached_enemy_army=[])
         self.ctx = _FakeCtx(
             upgrades,
             max_gas=max_gas,
@@ -118,6 +131,13 @@ class FakeAI(UpgradeRushValidator):
 
     def tech_requirement_progress(self, structure_type) -> float:
         return 1.0
+
+    # Real per-unit supply costs, just for the couple of types these tests
+    # use - not a general `sc2.BotAI.calculate_supply_cost` stand-in.
+    _SUPPLY_COSTS = {UnitTypeId.ZERGLING: 0.5, UnitTypeId.ROACH: 2.0}
+
+    def calculate_supply_cost(self, unit_type) -> float:
+        return self._SUPPLY_COSTS.get(unit_type, 1.0)
 
 
 def _step(ai: FakeAI) -> None:
@@ -324,6 +344,7 @@ def test_wave_release_records_size_time_and_next_expected_minimum() -> None:
     assert wave1.size == 21
     assert wave1.expected_min == 20  # wave1_min, before any wave has landed
     assert wave1.gap is None
+    assert wave1.our_supply == 10.5  # 21 zerglings * 0.5 supply each
 
     # ceil(21 * 1.25) == 27 is what the *next* wave should be measured against.
     assert ai._next_wave_expected_min == 27
@@ -344,6 +365,37 @@ def test_wave_release_records_size_time_and_next_expected_minimum() -> None:
     wave_results = {r.name: r for r in result["Stage 4: Attack Waves"]}
     assert wave_results["Wave 1"].passed
     assert wave_results["Wave 2"].passed
+
+
+def test_wave_records_our_supply_against_enemy_army_supply() -> None:
+    """Each wave should capture what it's actually walking into: our
+    released supply next to the enemy's known army supply at that instant -
+    not just our own size, and not the enemy's unit *count* either, since a
+    handful of Roaches outweighs the same number of Zerglings."""
+    ai = FakeAI(upgrades=())
+    ai.mediator.get_cached_enemy_army = [
+        _FakeUnit(900 + i, type_id=UnitTypeId.ROACH) for i in range(4)
+    ]
+    # A worker sitting in the cached enemy army (ares' cache doesn't filter
+    # these out itself - see `_enemy_army_supply`'s docstring) must not
+    # count as army supply.
+    ai.mediator.get_cached_enemy_army.append(_FakeUnit(950, type_id=UnitTypeId.DRONE))
+
+    wave1_units = [_FakeUnit(i, type_id=UnitTypeId.ZERGLING) for i in range(20)]
+    ai.time = 300.0
+    ai.ctx.state.wave_number = 1
+    ai.ctx.attacking = wave1_units
+    _step(ai)
+
+    wave1 = ai._waves[0]
+    assert wave1.our_supply == 10.0  # 20 zerglings * 0.5
+    assert wave1.enemy_supply == 8.0  # 4 roaches * 2.0, drone excluded
+
+    result = ai.validate()
+    wave1_result = next(
+        r for r in result["Stage 4: Attack Waves"] if r.name == "Wave 1"
+    )
+    assert "supply us=10 vs enemy=8" in wave1_result.detail
 
 
 def test_no_wave_ever_released_fails_stage_4() -> None:

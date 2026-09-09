@@ -261,3 +261,27 @@ regardless of what build is running.
   is still a case for a new validator class; a build that just has
   different targets, a different upgrade list, or no tech structures at
   all is already handled by this one, for free.
+- **Danger-avoidance is a per-routine choice, not a blanket policy.**
+  `scouting.air_scout()` used to wrap its `PathUnitToTarget` in a
+  `KeepUnitSafe`-first `CombatManeuver` — the same shape `escort_overseers`
+  uses (see the `CombatManeuver.execute` bullet above) — but that's wrong
+  for what it's actually escorting: the opening scouting Overlord
+  (`core/roles.py`'s `SCOUT_TYPES`) exists specifically to sit and watch a
+  vision spot, so retreating the instant something worth watching showed up
+  defeated its own purpose. It now registers a bare `PathUnitToTarget` with
+  no danger check ahead of it. `KeepUnitSafe`/`MoveToSafeTarget` stay
+  correct for anything that's actually trying to survive while moving
+  (`escort_overseers`, `_defender_maneuver`) — the shape isn't universal,
+  it depends on whether the unit is supposed to avoid the threat or watch it.
+- **`sc2.BotAI.calculate_supply_cost(unit_type)` is the one true source for
+  a unit type's supply cost** — it corrects for morphs the same way ares'
+  `enemy_army_value` corrects for cost (e.g. a Ravager's true supply comes
+  from the Roach it morphed from, not a second charge on top), so it beats
+  hand-rolling a `{UnitTypeId: supply}` table. `UpgradeRushValidator`'s wave
+  tracking uses it both ways: `ctx.units_in_role(UnitRole.ATTACKING)
+  .tags_in(new_tags)` for our own released supply, and
+  `mediator.get_cached_enemy_army` (ares' persisted-out-of-vision enemy
+  unit cache — filter out `WORKER_TYPES` yourself, same as
+  `enemy_army_value` does, since the cache doesn't) for the enemy's known
+  army supply at that same instant. Every wave in the Stage 4 report now
+  carries both numbers side by side.

@@ -18,11 +18,10 @@ Once there's a queen to spare beyond one per base, it peels off injecting to
 spread creep (`routines.creep.spread_creep`); every burrowed tumor also
 spawns a follow-on tumor toward the enemy on its own cooldown
 (`routines.creep.spread_tumors`), so creep keeps crawling forward even
-between queen-placed tumors. An Overseer comes out of Lair for each wave
-released so far (capped at 3) and heads for wherever the biggest attacking
-squad is going — staying at the edge of enemy range rather than trailing
-into it (`routines.combat.escort_overseers`) — for vision and detection on
-the push.
+between queen-placed tumors. One Overseer comes out of Lair once the first
+wave releases and heads for wherever the biggest attacking squad is going —
+staying at the edge of enemy range rather than trailing into it
+(`routines.combat.escort_overseers`) — for vision and detection on the push.
 
 Still being validated in real games; the last several fixed spore_crawlers()
 crashing/over-building near the 4-minute mark (see ARCHITECTURE.md's
@@ -88,7 +87,7 @@ BUILD = BuildDefinition(
         z.evolution_chambers(),
         z.spore_crawlers(per_base=1, gate=gates.after_time(240.0)),
         # One Overseer per wave released so far, capped — see combat.escort_overseers.
-        z.overseers(per_wave=1, maximum=3),
+        z.overseers(per_wave=1, maximum=1),
         c.expansions(),
         c.gas_buildings(),
         c.upgrades(),

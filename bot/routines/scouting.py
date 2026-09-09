@@ -8,8 +8,7 @@ from typing import TYPE_CHECKING
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
 
-from ares.behaviors.combat import CombatManeuver
-from ares.behaviors.combat.individual import KeepUnitSafe, PathUnitToTarget
+from ares.behaviors.combat.individual import PathUnitToTarget
 from ares.consts import UnitRole
 
 from bot.core.types import CombatRoutine
@@ -28,7 +27,16 @@ def enemy_natural_overlook(ctx: "BotContext") -> Point2:
 def air_scout(
     unit_type: UnitTypeId, target: TargetFn = enemy_natural_overlook
 ) -> CombatRoutine:
-    """Park SCOUTING fliers on a vision spot, retreating from danger first."""
+    """Park SCOUTING fliers on a vision spot.
+
+    No danger-avoidance here on purpose: this is only ever the opening
+    scouting Overlord (see `core/roles.py`'s `SCOUT_TYPES`), and it needs to
+    reach its vision spot and stay there — a `KeepUnitSafe` check used to
+    make it retreat the moment anything came near, which is exactly the
+    threats it exists to keep watching. Combat units that DO need to dodge
+    danger while moving (the escort Overseers, for instance) use
+    `KeepUnitSafe`/`MoveToSafeTarget` in `routines/combat.py` instead.
+    """
 
     def routine(ctx: "BotContext") -> None:
         scouts = ctx.mediator.get_units_from_role(
@@ -39,14 +47,10 @@ def air_scout(
         grid = ctx.mediator.get_air_grid
         destination = target(ctx)
         for scout in scouts:
-            maneuver = CombatManeuver()
-            # Safety first: only advance while the path is clear.
-            maneuver.add(KeepUnitSafe(unit=scout, grid=grid))
-            maneuver.add(
+            ctx.bot.register_behavior(
                 PathUnitToTarget(
                     unit=scout, grid=grid, target=destination, success_at_distance=2.0
                 )
             )
-            ctx.bot.register_behavior(maneuver)
 
     return routine
