@@ -8,17 +8,19 @@ Notes from Jason (2026-09-07 wrap), re-scoped after the ares-sc2 migration:
    `get_enemy_worker_rushed`, `get_enemy_marine_rush`, `get_did_enemy_rush` —
    which `CombatManager.attack_ready()` could read to hold a wave home.
 2. **Add spore crawlers to mineral lines**
-   Not done. `BuildStructure(base_location=th.position,
-   structure_id=UnitTypeId.SPORECRAWLER, static_defence=True,
-   to_count_per_base=1)` in `MacroManager.structure_behaviors()`.
+   Done for UpgradeRush: `zerg.spore_crawlers(per_base=1,
+   gate=gates.after_time(240.0))`, one `BuildStructure` call per ready
+   townhall. Not yet wired into Speedling All-In or confirmed in a real game.
 3. **Fix 3rd and 4th Extractor timing**
    Now handled by `GasBuildingController(to_count=...)`, driven by
    `EXTRACTORS_PER_BASE` / `MAX_EXTRACTORS` on the plan. Needs a real game to
    confirm the timing is sane.
 4. **More zerglings after the 2nd Evo Chamber starts**
-   `SpawnController` sits last in the `MacroPlan`, so anything above it can
-   starve it. If lings are thin after the evos, either raise ling priority or
-   cap `BuildWorkers` sooner via `DRONE_TARGET_PER_BASE`.
+   Done for UpgradeRush via `common.split_production()`: once wave 1 is out,
+   `BuildWorkers`/`SpawnController` swap priority each frame based on which
+   side (by supply) is behind, instead of `SpawnController` always sitting
+   last and starving. Not yet applied to Speedling All-In, which still gives
+   drones outright priority throughout.
 5. **Refactor builds so each build has its own managers, over a common base**
    Done, then taken further. Subclassing was replaced by composition: a build
    is now a declarative `BuildDefinition` listing which steps and routines it
@@ -32,5 +34,9 @@ Notes from Jason (2026-09-07 wrap), re-scoped after the ares-sc2 migration:
   in `bot/steps/common.py`), waves 25% bigger each time and mustering at the
   natural before attacking. History archived at `data/archive/` — see
   [MIGRATION.md](MIGRATION.md).
-- Now validating `UpgradeRush` in-game — see the "What still needs a real
-  game" section in [MIGRATION.md](MIGRATION.md).
+- Now validating `UpgradeRush` in-game — worker/gas caps tightened (60
+  workers, 3 extractors), wave gate simplified to just ling speed, waves grow
+  25% like Speedling All-In, production splits ~50/50 economy/army after
+  wave 1, and Spore Crawlers now go up per-base at 4 minutes. Logging also
+  switched from a raw `print()` to loguru's `logger`. See the "What still
+  needs a real game" section in [MIGRATION.md](MIGRATION.md).

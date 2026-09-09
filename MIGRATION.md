@@ -75,11 +75,17 @@ code. They are the most likely causes if a game looks wrong.
 6. **Double evo chambers** come from `EVO_COUNT = 2` +
    `BuildStructure(to_count=2)`, because `UpgradeController` alone only ever
    builds one. Two are needed for +1 melee and +1 carapace in parallel.
-6. **Wave 1 gating is unchanged in intent**: Speedling All-In leaves on ling speed;
-   UpgradeRush additionally waits until both +1s are within 10s of finishing
-   (`PLUS1_RESEARCH_TIME = 114.0` is still the hardcoded estimate).
-7. **`already_pending_upgrade` returns a 0.0-1.0 float**, and the +1/+1 timing
-   maths depends on that. It is used the same way the old code used it.
+6. **Wave 1 gating is unchanged in intent**: both openings leave on ling
+   speed once `wave1_min` lings are massed. UpgradeRush's wave gate was
+   originally more elaborate (also waiting until both +1s were within 10s of
+   finishing) but that extra tech-wait was dropped as unnecessary complexity
+   — see `claude/ares-migration.md` gotcha 6 for why a `MacroPlan` needs to
+   be nested rather than statically ordered when two steps should compete for
+   the same frame, which is the pattern that replaced it for production
+   splitting instead.
+7. **`already_pending_upgrade` returns a 0.0-1.0 float.** Used by
+   `gates.upgrades_within` for gates that need to know how close a
+   researching upgrade is to finishing, not just whether it's started.
 
 ## What was verified
 
@@ -114,11 +120,15 @@ Against a real ares-sc2 3.13.1 checkout with its actual dependencies:
   Speedling All-In (it picks by matching the *name* of the last opening it
   played against the current cycle, not by list position — reordering alone
   does nothing while that name is still in the cycle and still won). Its
-  supply numbers, the double evo chamber, the third hatch and the +1/+1
-  wave gate have all never executed.
+  supply numbers, the double evo chamber and the third hatch have all never
+  executed.
 - **Evo chamber and lair/hive placement**, which only happens in UpgradeRush.
-- **`UpgradeRush` wave sizing and gas usage**, unvalidated for the same reason.
-- **`UpgradeRush` economy**, which the old README already flagged as unfinished.
+- **`UpgradeRush` wave sizing and gas usage**, unvalidated for the same
+  reason — includes the newer 50/50 economy/army production split
+  (`common.split_production`) and per-base spore crawlers, neither of which
+  has fired in a real game yet.
+- **`UpgradeRush` economy**, tightened (60 workers, 3 extractors) but still
+  unconfirmed against a real opponent.
 
 Resolved by real games: the Speedling All-In opening supply numbers are fine (the
 build runner reached the end and handed over), macro hatch placement works
