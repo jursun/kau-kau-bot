@@ -23,6 +23,10 @@ from bot.steps import zerg as z
 # Main + one macro hatch. Also the queen target: one inject per hatchery.
 MACRO_HATCH_COUNT = 2
 
+# Metabolic boost costs 100 gas and it is the only thing this build spends gas
+# on, so the geyser is abandoned the moment it is paid for.
+GAS_FOR_SPEED = 100
+
 BUILD = BuildDefinition(
     name="Speedling All-In",
     label="Speedling All-In (12 pool)",
@@ -53,7 +57,19 @@ BUILD = BuildDefinition(
         wave_growth=1.10,
         focus=(FOCUS_MAIN,),
     ),
-    always=(c.mining(), z.inject_larva()),
+    always=(
+        c.mining(),
+        # Exactly 3 on gas until metabolic boost is paid for, then everyone
+        # back to minerals. Latched on `upgrade_started` as well as the
+        # threshold, so spending the 100 does not send drones back.
+        c.gas_workers(
+            pull_off=gates.any_of(
+                gates.vespene_at_least(GAS_FOR_SPEED),
+                gates.upgrade_started(z.LING_SPEED),
+            )
+        ),
+        z.inject_larva(),
+    ),
     macro_steps=(
         c.auto_supply(),
         # One queen per hatchery — the macro hatch needs its own for injects.

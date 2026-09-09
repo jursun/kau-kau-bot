@@ -29,6 +29,5 @@ Notes from Jason (2026-09-07 wrap), re-scoped after the ares-sc2 migration:
 
 - Validate both openings in-game — see the "What still needs a real game"
   section in [MIGRATION.md](MIGRATION.md).
-- Decide whether the ling rush should pull off gas after speed
-  (`mediator.set_workers_per_gas(amount=0)`); ares does not do this by default
-  and the old bot did.
+- Gas pull-off after speed is now implemented (`c.gas_workers(pull_off=...)`
+  in the Speedling All-In build). Worth eyeballing the timing on a real run.

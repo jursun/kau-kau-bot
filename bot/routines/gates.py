@@ -90,6 +90,23 @@ def upgrades_within(
     return gate
 
 
+def vespene_at_least(amount: int) -> Gate:
+    """Careful: this un-latches as soon as the gas is spent. Combine it with
+    `upgrade_started` via `any_of` when gating on "we have paid for X"."""
+
+    def gate(ctx: "BotContext") -> bool:
+        return ctx.bot.vespene >= amount
+
+    return gate
+
+
+def minerals_at_least(amount: int) -> Gate:
+    def gate(ctx: "BotContext") -> bool:
+        return ctx.bot.minerals >= amount
+
+    return gate
+
+
 def after_time(seconds: float) -> Gate:
     def gate(ctx: "BotContext") -> bool:
         return ctx.bot.time >= seconds

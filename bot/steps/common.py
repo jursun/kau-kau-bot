@@ -22,6 +22,7 @@ from ares.behaviors.macro import (
     UpgradeController,
 )
 
+from bot.behaviors import SetGasWorkers
 from bot.builds.definition import _always
 from bot.core.types import Gate, MacroStep
 
@@ -37,6 +38,27 @@ def mining() -> MacroStep:
             workers_per_gas=ctx.build.economy.workers_per_gas,
             long_distance_mine=ctx.build.economy.long_distance_mine,
         )
+
+    return step
+
+
+def gas_workers(pull_off: Gate | None = None, when_pulled: int = 0) -> MacroStep:
+    """Keep `economy.workers_per_gas` on each geyser; pull off when gated.
+
+    Belongs in `always` — it is a setting that must be reasserted each frame,
+    and it is also the only thing that makes `economy.workers_per_gas` take
+    effect at all (see `SetGasWorkers`).
+
+    Attributes:
+        pull_off: When this passes, drop to `when_pulled` workers per geyser.
+        when_pulled: Workers to leave on gas once pulled. 0 empties the geyser.
+    """
+
+    def step(ctx: "BotContext"):
+        amount = ctx.build.economy.workers_per_gas
+        if pull_off is not None and pull_off(ctx):
+            amount = when_pulled
+        return SetGasWorkers(amount)
 
     return step
 

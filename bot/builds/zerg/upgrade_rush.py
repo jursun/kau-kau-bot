@@ -65,7 +65,8 @@ BUILD = BuildDefinition(
         wave_growth=1.10,
         focus=(FOCUS_NATURAL, FOCUS_MAIN),
     ),
-    always=(c.mining(), z.inject_larva()),
+    # This build needs gas all game for the upgrade path, so no pull-off gate.
+    always=(c.mining(), c.gas_workers(), z.inject_larva()),
     macro_steps=(
         c.auto_supply(),
         z.train_queens(per_base=1, maximum=4),
