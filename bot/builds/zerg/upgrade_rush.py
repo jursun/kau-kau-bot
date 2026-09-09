@@ -14,7 +14,10 @@ economy and army (see `common.split_production`) instead of drones having
 outright priority. Spore Crawlers start going up in each base's mineral
 line at the 4-minute mark.
 
-Never played. See MIGRATION.md.
+Still being validated in real games; the last several fixed spore_crawlers()
+crashing/over-building near the 4-minute mark (see ARCHITECTURE.md's
+"ares-sc2 quirks worth knowing" for the Zerg placement gotchas that caused
+it). No opponent has been beaten with it yet.
 """
 
 from __future__ import annotations

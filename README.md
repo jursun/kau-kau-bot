@@ -3,9 +3,6 @@
 Zerg StarCraft II bot for [AI Arena](https://aiarena.net/), built on
 [ares-sc2](https://github.com/AresSC2/ares-sc2).
 
-> **Migrated from python-sc2.** See [MIGRATION.md](MIGRATION.md) for what
-> changed, what was deleted, and what still needs validating in-game.
-
 ## Status
 
 | Opening | Intent | State |

@@ -115,3 +115,56 @@ for "army units in role X", never for zerglings.
 
 If you find yourself adding an `if build.name == ...` anywhere, that is the
 signal to add a step or gate instead.
+
+## ares-sc2 quirks worth knowing
+
+Facts about how ares behaves that are not obvious from its source, surfaced
+while migrating off python-sc2 and validating both openings in real games.
+Kept here (rather than in a one-time migration log) because they stay true
+regardless of what build is running.
+
+- **One macro action happens per frame.** A `MacroPlan` short-circuits on
+  the first behavior that acts, so `macro_steps` order is spending priority
+  (see "Order is priority" above). This is also why two steps that should
+  compete for the same frame — e.g. drones vs. army once
+  `common.split_production` kicks in — have to be nested in their own
+  `MacroPlan` rather than statically ordered: nesting lets whichever side is
+  behind win the frame instead of one starving the other outright.
+- **`BuildStructure` cannot place an in-base hatchery on Zerg.** For
+  `Race.Zerg` it defers unconditionally to ares' own
+  `_do_zerg_build_placement`, which searches ~30 tiles out from the base
+  location and tends to settle on the natural rather than a tight in-base
+  spot. `bot/behaviors/zerg/build_macro_hatch.py` does its own search
+  instead, constrained to the main's terrain height and kept clear of every
+  expansion.
+- **`BuildStructure.to_count_per_base` is a guaranteed `KeyError` for
+  Zerg.** It's checked via `mediator.get_placements_dict[base_location]`,
+  and that dict is only ever populated by
+  `PlacementManager._solve_terran_building_formation` /
+  `_solve_protoss_building_formation` — `_solve_zerg_building_formation` is
+  an unimplemented stub in ares v3.13.1, so the dict never gets a single
+  zerg key, for any base, ever. Count existing/pending structures yourself
+  instead — see `steps/zerg.py`'s `spore_crawlers()`, which also shows the
+  follow-on gotcha below.
+- **Count pending, not just placed, structures when gating a build request
+  per base.** A worker already dispatched to build something doesn't show
+  up in `structures()` until it arrives and starts — only a second or two,
+  but long enough that a naive per-frame per-base check re-requests a build
+  every frame during that walk, piling several onto one base. Gate on
+  `ai.structure_pending(structure_id)` (a ready-or-pending count, bot-wide)
+  first; it's the same count `BuildStructure.to_count` already uses
+  reliably elsewhere.
+- **The gas pull-off lever is `mediator.set_workers_per_gas`, not
+  `Mining(workers_per_gas=...)`.** The latter is only read by `Mining` when
+  deciding whether to vespene-boost; the `ResourceManager` owns actual
+  worker assignment. `bot/behaviors/set_gas_workers.py` calls
+  `mediator.set_workers_per_gas` directly, one worker per frame off any
+  over-staffed geyser.
+- **`UpgradeController.auto_tech_up_enabled` only ever builds one
+  Evolution Chamber.** A build that wants +1 melee and +1 carapace
+  researching in parallel needs its own `BuildStructure(to_count=2)` step
+  for the second one — see `z.evolution_chambers()`.
+- **`already_pending_upgrade` returns a 0.0-1.0 float**, not a count — how
+  close a researching upgrade is to finishing, for gates like
+  `gates.upgrades_within` that need to leave *before* an upgrade lands
+  rather than waiting for it to actually finish.
