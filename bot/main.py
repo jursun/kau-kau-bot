@@ -1,0 +1,111 @@
+"""KauKauBot — Zerg bot for AI Arena, built on ares-sc2.
+
+This file is hooks only. Ares picks the opening; the opening name selects a
+`BuildDefinition`, and the two engines run whatever steps and routines that
+definition lists. Adding a build touches nothing here.
+
+Every python-sc2 hook must call its ares superclass first — that super call
+drives ares' manager hub, build order runner and behavior executioner.
+Skipping it silently disables the framework.
+"""
+
+from __future__ import annotations
+
+from typing import Optional
+
+from loguru import logger
+from sc2.data import Result
+from sc2.ids.unit_typeid import UnitTypeId
+from sc2.unit import Unit
+
+from ares import AresBot
+
+from bot.core import BotContext, CombatEngine, MacroEngine, RunState
+from bot.core import roles
+from bot.core.registry import UnknownBuild, default_build, get_build
+from bot.common.log import log_event
+
+# Structures worth a line in the timeline log.
+LOGGED_STRUCTURES: frozenset[UnitTypeId] = frozenset(
+    {
+        UnitTypeId.SPAWNINGPOOL,
+        UnitTypeId.EXTRACTOR,
+        UnitTypeId.HATCHERY,
+        UnitTypeId.LAIR,
+        UnitTypeId.HIVE,
+        UnitTypeId.EVOLUTIONCHAMBER,
+        UnitTypeId.INFESTATIONPIT,
+        UnitTypeId.SPINECRAWLER,
+        UnitTypeId.SPORECRAWLER,
+    }
+)
+
+
+class KauKauBot(AresBot):
+    ctx: BotContext
+
+    def __init__(self, game_step_override: Optional[int] = None):
+        super().__init__(game_step_override)
+        # The context needs `self.mediator`, which only exists once ares'
+        # on_start has built the manager hub.
+        self.ctx = None  # type: ignore[assignment]
+        self.macro = MacroEngine()
+        self.combat = CombatEngine()
+
+    # --- lifecycle -------------------------------------------------------
+
+    async def on_start(self) -> None:
+        await super(KauKauBot, self).on_start()
+
+        opening: str = self.build_order_runner.chosen_opening
+        build = self._resolve_build(opening)
+        self.ctx = BotContext(bot=self, build=build, state=RunState())
+
+        log_event(
+            self,
+            f"START race={self.race.name} map={self.game_info.map_name} "
+            f"opening={opening} build={build.name}",
+        )
+
+    def _resolve_build(self, opening: str):
+        """Fall back loudly rather than ending a ladder game over a typo."""
+        try:
+            return get_build(opening, self.race)
+        except UnknownBuild as error:
+            fallback = default_build(self.race)
+            logger.critical(f"{error} Falling back to {fallback.name}.")
+            return fallback
+
+    async def on_step(self, iteration: int) -> None:
+        await super(KauKauBot, self).on_step(iteration)
+
+        self.macro.execute(self.ctx)
+        self.combat.execute(self.ctx)
+
+    async def on_end(self, game_result: Result) -> None:
+        await super(KauKauBot, self).on_end(game_result)
+        log_event(self, f"END result={game_result}")
+
+    # --- roles -----------------------------------------------------------
+
+    async def on_unit_created(self, unit: Unit) -> None:
+        await super(KauKauBot, self).on_unit_created(unit)
+        roles.assign_on_created(self.ctx, unit)
+
+    async def on_unit_destroyed(self, unit_tag: int) -> None:
+        await super(KauKauBot, self).on_unit_destroyed(unit_tag)
+        roles.forget_destroyed(self.ctx, unit_tag)
+
+    # --- logging ---------------------------------------------------------
+
+    async def on_building_construction_complete(self, unit: Unit) -> None:
+        await super(KauKauBot, self).on_building_construction_complete(unit)
+
+        if unit.type_id in LOGGED_STRUCTURES:
+            count = self.structures(unit.type_id).amount
+            log_event(self, f"COMPLETE {unit.type_id.name.lower()} ({count})")
+
+    async def on_upgrade_complete(self, upgrade) -> None:
+        # AresBot does not override this python-sc2 hook, so there is no
+        # super() implementation to chain into.
+        log_event(self, f"COMPLETE upgrade {upgrade.name}")

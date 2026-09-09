@@ -133,3 +133,14 @@ dmypy.json
 
 # Pycharm
 /.idea
+
+# --- ares-sc2 / ladder packaging ---
+data/
+publish/
+bot.zip
+KauKauBot.zip
+ladderbots.json
+python-sc2/
+SC2MapAnalysis/
+cython-extensions-sc2/
+sc2-helper/

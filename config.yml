@@ -1,0 +1,59 @@
+# KauKauBot config.
+# Check `ares-sc2/src/ares/config.yml` for every valid option; anything set
+# here is merged over those defaults. Build orders live in `zerg_builds.yml`.
+
+MyBotName: KauKauBot
+MyBotRace: Zerg
+
+# Auto-upload to https://aiarena.net/ on push to `main`.
+# Requires UPLOAD_API_TOKEN / UPLOAD_BOT_ID repo secrets — see README.
+AutoUploadToAiarena: False
+BotZipPubliclyDownloadable: False
+BotDataPubliclyDownloadable: False
+BotDataEnabled: True
+
+########################
+# Local-only knobs. `Debug: True` makes ares use the `test_123` opponent id,
+# which is how you force a specific opening locally (see zerg_builds.yml).
+# MUST be False for a ladder zip — create_ladder_zip.py asserts on it.
+Debug: False
+
+UseData: False  # overwritten by `UseData:` in zerg_builds.yml
+GameStep: 2
+DebugGameStep: 2
+
+# Turn ares features on/off for performance reasons
+Features:
+    # Only needed for disruptor-ball style avoidance. Off = cheaper frames.
+    TacticalGroundGrid: False
+
+DebugOptions:
+    # one of: Air, AirVsGround, Ground, GroundAvoidance, AirAvoidance
+    ActiveGrid: Ground
+    ChatDebug: False
+    DebugSpawn: False
+    ShowPathingCost: True
+    ResourceDebug: False
+    ShowBuildingFormation: False
+
+# Ares mines gas with 3 workers per extractor by default, which is what both
+# of our openings want.
+Mining:
+    GeyserDistanceFactor: 1.05
+    MineralDistanceFactor: 1.25
+    TownhallDistanceFactor: 1.08
+
+########################
+# Local play settings, read only by `run.py` when not on ladder.
+# (Replaces the old, deleted `config.py`.)
+LocalGame:
+    # Full path to your SC2 Maps folder, or `null` to let python-sc2 find it.
+    MapPath: "C:/Program Files (x86)/StarCraft II/Maps"
+    MapPool:
+        - PersephoneAIE_v4
+        - PylonAIE_v4
+        - TorchesAIE_v4
+    OpponentRace: Terran
+    # VeryEasy .. VeryHard, plus CheatVision / CheatMoney / CheatInsane
+    OpponentDifficulty: VeryHard
+    Realtime: False

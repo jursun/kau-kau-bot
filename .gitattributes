@@ -1,0 +1,7 @@
+# The repo is stored with LF. Without this, a Windows checkout can leave the
+# whole tree looking modified (CRLF in the worktree vs LF in the index).
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.SC2Map binary
+*.zip binary
