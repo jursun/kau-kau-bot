@@ -10,10 +10,10 @@ Zerg StarCraft II bot for [AI Arena](https://aiarena.net/), built on
 
 | Opening | Intent | State |
 |---------|--------|-------|
-| `LingRush` | Overlord, 12 pool, gas, metabolic boost, waves into the enemy main | **Working on ares** - win vs VeryHard Terran at 5:10 |
+| `Speedling All-In` | Overlord, 12 pool, gas, metabolic boost, macro hatch, waves into the enemy main | **Working on ares** - win vs VeryHard Terran at 5:10 |
 | `UpgradeRush` | Hatch-first 3-base mass lings behind double evo / lair / hive | **Ported, never run** - see below |
 
-`BuildSelection: Cycle` keeps the current opening while it wins, so LingRush
+`BuildSelection: Cycle` keeps the current opening while it wins, so Speedling All-In
 will not hand over to UpgradeRush on its own. To exercise UpgradeRush, set
 `Debug: True` in `config.yml` and put it first in the `test_123` cycle in
 `zerg_builds.yml`. **Set `Debug` back to `False` before building a ladder zip** -

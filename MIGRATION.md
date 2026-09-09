@@ -2,7 +2,7 @@
 
 Branch: `feature/ares-migration`.
 
-**Status: LingRush validated in-game** — win vs VeryHard Terran at 5:10 on the
+**Status: Speedling All-In validated in-game** — win vs VeryHard Terran at 5:10 on the
 first run after migration (`data/None-zerg.json`, `Result: 2`). UpgradeRush has
 still never been played; see "What still needs a real game" below.
 
@@ -57,16 +57,21 @@ code. They are the most likely causes if a game looks wrong.
    at 100 vespene. `Mining(workers_per_gas=3)` keeps them there. If the rush
    timing is now late on minerals, this is the first thing to try:
    `mediator.set_workers_per_gas(amount=0)` once speed is paid for.
-3. **Openings are shorter.** They end at speed/queen (LingRush) and second gas
+3. **Openings are shorter.** They end at speed/queen (Speedling All-In) and second gas
    (UpgradeRush); everything after is the dynamic macro plan. The old code had
    the whole game hard-coded in `on_step` ordering.
 4. **One macro action per frame.** A `MacroPlan` short-circuits on the first
    behavior that acts, so `MacroManager.behaviors()` order is the spending
    priority. At `GameStep: 2` that is roughly 11 actions/second.
-5. **Double evo chambers** come from `EVO_COUNT = 2` +
+5. **`BuildStructure` cannot place an in-base hatchery on Zerg.** It defers to
+   ares' `_do_zerg_build_placement`, which searches 30 tiles from the base
+   location and settles on the natural. `bot/behaviors/zerg/build_macro_hatch.py`
+   does its own tight search instead, constrained to the main's terrain height
+   and kept clear of every expansion.
+6. **Double evo chambers** come from `EVO_COUNT = 2` +
    `BuildStructure(to_count=2)`, because `UpgradeController` alone only ever
    builds one. Two are needed for +1 melee and +1 carapace in parallel.
-6. **Wave 1 gating is unchanged in intent**: LingRush leaves on ling speed;
+6. **Wave 1 gating is unchanged in intent**: Speedling All-In leaves on ling speed;
    UpgradeRush additionally waits until both +1s are within 10s of finishing
    (`PLUS1_RESEARCH_TIME = 114.0` is still the hardcoded estimate).
 7. **`already_pending_upgrade` returns a 0.0-1.0 float**, and the +1/+1 timing
@@ -99,7 +104,7 @@ Against a real ares-sc2 3.13.1 checkout with its actual dependencies:
 ## What still needs a real game
 
 - **The whole `UpgradeRush` opening.** `BuildSelection: Cycle` only advances
-  after a defeat, so while LingRush keeps winning this opening is never
+  after a defeat, so while Speedling All-In keeps winning this opening is never
   selected. Force it with `Debug: True` plus reordering the `test_123` cycle.
   Its supply numbers, the double evo chamber, the third hatch and the +1/+1
   wave gate have all never executed.
@@ -110,7 +115,7 @@ Against a real ares-sc2 3.13.1 checkout with its actual dependencies:
   natural rally that no longer exists in the same form.
 - **`UpgradeRush` economy**, which the old README already flagged as unfinished.
 
-Resolved by the first run: the LingRush opening supply numbers are fine (the
+Resolved by the first run: the Speedling All-In opening supply numbers are fine (the
 build runner reached the end and handed over), and macro hatch placement works.
 
 ## First run

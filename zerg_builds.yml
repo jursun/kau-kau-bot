@@ -19,38 +19,38 @@ BuildChoices:
     test_123:
         BotName: LocalDebug
         Cycle:
-            - LingRush
+            - Speedling All-In
             - UpgradeRush
 
     Terran:
         BotName: TerranRace
         Cycle:
-            - LingRush
+            - Speedling All-In
             - UpgradeRush
 
     Protoss:
         BotName: ProtossRace
         Cycle:
-            - LingRush
+            - Speedling All-In
             - UpgradeRush
 
     Zerg:
         BotName: ZergRace
         Cycle:
-            - LingRush
+            - Speedling All-In
             - UpgradeRush
 
     Random:
         BotName: RandomRace
         Cycle:
-            - LingRush
+            - Speedling All-In
             - UpgradeRush
 
 Builds:
-    # 12-pool ling rush. Overlord -> pool -> extractor, 3 on gas, speed ASAP.
+    # Speedling All-In: 12 pool. Overlord -> pool -> extractor, 3 on gas, speed ASAP.
     # Drone cap of 16 is enforced by ConstantWorkerProductionTill here and by
-    # LingRush.DRONE_TARGET in the dynamic macro plan afterwards.
-    LingRush:
+    # the economy targets in bot/builds/zerg/speedling_all_in.py afterwards.
+    Speedling All-In:
         ConstantWorkerProductionTill: 16
         AutoSupplyAtSupply: 14
         OpeningBuildOrder:
