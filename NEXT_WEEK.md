@@ -27,7 +27,10 @@ Notes from Jason (2026-09-07 wrap), re-scoped after the ares-sc2 migration:
 
 ## New, from the migration
 
-- Validate both openings in-game — see the "What still needs a real game"
-  section in [MIGRATION.md](MIGRATION.md).
-- Gas pull-off after speed is now implemented (`c.gas_workers(pull_off=...)`
-  in the Speedling All-In build). Worth eyeballing the timing on a real run.
+- Speedling All-In is validated: 9 straight wins vs VeryHard Terran, macro
+  hatch placement fixed, gas pull-off confirmed at ~124 vespene (`c.gas_workers`
+  in `bot/steps/common.py`), waves 25% bigger each time and mustering at the
+  natural before attacking. History archived at `data/archive/` — see
+  [MIGRATION.md](MIGRATION.md).
+- Now validating `UpgradeRush` in-game — see the "What still needs a real
+  game" section in [MIGRATION.md](MIGRATION.md).

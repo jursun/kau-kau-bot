@@ -16,7 +16,7 @@ BotDataEnabled: True
 # Local-only knobs. `Debug: True` makes ares use the `test_123` opponent id,
 # which is how you force a specific opening locally (see zerg_builds.yml).
 # MUST be False for a ladder zip — create_ladder_zip.py asserts on it.
-Debug: False
+Debug: True
 
 UseData: False  # overwritten by `UseData:` in zerg_builds.yml
 GameStep: 2

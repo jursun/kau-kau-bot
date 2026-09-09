@@ -107,10 +107,14 @@ Against a real ares-sc2 3.13.1 checkout with its actual dependencies:
 
 ## What still needs a real game
 
-- **The whole `UpgradeRush` opening.** `BuildSelection: Cycle` only advances
-  after a defeat, so while Speedling All-In keeps winning this opening is never
-  selected. Force it with `Debug: True` plus reordering the `test_123` cycle.
-  Its supply numbers, the double evo chamber, the third hatch and the +1/+1
+- **The whole `UpgradeRush` opening.** Now the active local test build:
+  `Debug: True` in `config.yml` plus `UpgradeRush` first in the `test_123`
+  cycle in `zerg_builds.yml`, and the archived win history at
+  `data/archive/` so `DataManager` doesn't just repeat the winning
+  Speedling All-In (it picks by matching the *name* of the last opening it
+  played against the current cycle, not by list position — reordering alone
+  does nothing while that name is still in the cycle and still won). Its
+  supply numbers, the double evo chamber, the third hatch and the +1/+1
   wave gate have all never executed.
 - **Evo chamber and lair/hive placement**, which only happens in UpgradeRush.
 - **`UpgradeRush` wave sizing and gas usage**, unvalidated for the same reason.

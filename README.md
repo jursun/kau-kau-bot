@@ -10,19 +10,25 @@ Zerg StarCraft II bot for [AI Arena](https://aiarena.net/), built on
 
 | Opening | Intent | State |
 |---------|--------|-------|
-| `Speedling All-In` | Overlord, pool, gas, metabolic boost, macro hatch, zergling flood into the enemy main | **Working on ares** - win vs VeryHard Terran at 5:10 |
-| `UpgradeRush` | Hatch-first 3-base mass lings behind double evo / lair / hive | **Ported, never run** - see below |
+| `Speedling All-In` | Overlord, pool, gas, metabolic boost, macro hatch, zergling flood into the enemy main | **Validated** - 9 straight wins vs VeryHard Terran (history archived at `data/archive/`) |
+| `UpgradeRush` | Hatch-first 3-base mass lings behind double evo / lair / hive | **Ported, currently being validated** - see below |
 
-`BuildSelection: Cycle` keeps the current opening while it wins, so Speedling All-In
-will not hand over to UpgradeRush on its own. To exercise UpgradeRush, set
-`Debug: True` in `config.yml` and put it first in the `test_123` cycle in
-`zerg_builds.yml`. **Set `Debug` back to `False` before building a ladder zip** -
+`Debug: True` is currently set in `config.yml` so local games use the
+`test_123` cycle in `zerg_builds.yml`, which now lists `UpgradeRush` first.
+**Set `Debug` back to `False` before building a ladder zip** -
 `scripts/create_ladder_zip.py` asserts on it.
 
 Ares picks the opening (`BuildSelection: Cycle` in `zerg_builds.yml`) and keeps
-it while it wins, switching after a defeat. To force one locally, set
-`Debug: True` in `config.yml` and put the opening you want first in the
-`test_123` cycle — this replaces the old `FORCE_BUILD` in `config.py`.
+it while it wins, switching after a defeat — but it does this **by name**, not
+by cycle position: `DataManager._choose_opening_cycle` looks up the last
+opening it played in `data/<opponent_id>-<race>.json` and, if that opening is
+still anywhere in the current cycle and won, repeats it regardless of where it
+sits in the list. Reordering the cycle only changes anything once that
+opening either isn't in the cycle or its last result there was a loss. To
+force a fresh switch: put the opening you want first in `test_123`'s cycle
+**and** move the local data file for that opponent id (`data/None-zerg.json`
+for a plain local game) out of the way — with no history, ares falls back to
+cycle position 0. This replaces the old `FORCE_BUILD` in `config.py`.
 
 ## Layout
 
