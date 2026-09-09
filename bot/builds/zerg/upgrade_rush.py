@@ -3,7 +3,7 @@
 Opening: `UpgradeRush` in `zerg_builds.yml` — 13 overlord, 15 hatch before
 pool, 16 pool, 17 gas, 19 overlord, metabolic boost, queen, second gas.
 
-After the opening the macro steps drone up (to a 60-worker cap, 3 extractors
+After the opening the macro steps drone up (to a 60-worker cap, 2 extractors
 max), take the third and beyond, and `UpgradeController` auto-techs evo ->
 lair -> hive on the way through +1/+1 to 3/3 and adrenal glands.
 
@@ -12,7 +12,17 @@ every wave after that is 25% bigger and leaves as soon as it is ready —
 no extra tech gate. Once wave 1 is out, production splits evenly between
 economy and army (see `common.split_production`) instead of drones having
 outright priority. Spore Crawlers start going up in each base's mineral
-line at the 4-minute mark.
+line at the 4-minute mark, capped at one per owned townhall.
+
+Once there's a queen to spare beyond one per base, it peels off injecting to
+spread creep (`routines.creep.spread_creep`); every burrowed tumor also
+spawns a follow-on tumor toward the enemy on its own cooldown
+(`routines.creep.spread_tumors`), so creep keeps crawling forward even
+between queen-placed tumors. An Overseer comes out of Lair for each wave
+released so far (capped at 3) and heads for wherever the biggest attacking
+squad is going — staying at the edge of enemy range rather than trailing
+into it (`routines.combat.escort_overseers`) — for vision and detection on
+the push.
 
 Still being validated in real games; the last several fixed spore_crawlers()
 crashing/over-building near the 4-minute mark (see ARCHITECTURE.md's
@@ -27,7 +37,7 @@ from sc2.ids.unit_typeid import UnitTypeId
 
 from bot.builds.definition import Army, BuildDefinition, Combat, Economy
 from bot.consts import FOCUS_MAIN, FOCUS_NATURAL, FULL_LING_UPGRADES, MASS_LING_COMP
-from bot.routines import combat, gates, scouting
+from bot.routines import combat, creep, gates, scouting
 from bot.steps import common as c
 from bot.steps import zerg as z
 
@@ -40,7 +50,7 @@ BUILD = BuildDefinition(
         workers_per_base=22,
         max_bases=5,
         gas_per_base=2,
-        max_gas=3,
+        max_gas=2,
         workers_per_gas=3,
         long_distance_mine=True,
     ),
@@ -48,12 +58,18 @@ BUILD = BuildDefinition(
         comp=MASS_LING_COMP,
         types=frozenset({UnitTypeId.ZERGLING}),
         upgrades=FULL_LING_UPGRADES,
+        # UpgradeController only ever builds one evo; two enable parallel +1/+1.
+        evolution_chambers=2,
+        evolution_chamber_gate=gates.upgrade_started(z.LING_SPEED),
     ),
     combat=Combat(
         routines=(
             combat.release_waves(),
             combat.defend_home(),
             combat.attack_squads(),
+            combat.escort_overseers(),
+            creep.spread_creep(),
+            creep.spread_tumors(),
             scouting.air_scout(UnitTypeId.OVERLORD),
         ),
         # Speed done + wave1_min massed is the only gate; later waves leave
@@ -67,10 +83,12 @@ BUILD = BuildDefinition(
     always=(c.mining(), c.gas_workers(), z.inject_larva()),
     macro_steps=(
         c.auto_supply(),
-        z.train_queens(per_base=1, maximum=4),
-        # UpgradeController only ever builds one evo; two enable parallel +1/+1.
-        z.evolution_chambers(2, gate=gates.upgrade_started(z.LING_SPEED)),
+        # One queen per base for injects, plus one to spare for creep spread.
+        z.train_queens(per_base=1, maximum=6, extra=1),
+        z.evolution_chambers(),
         z.spore_crawlers(per_base=1, gate=gates.after_time(240.0)),
+        # One Overseer per wave released so far, capped — see combat.escort_overseers.
+        z.overseers(per_wave=1, maximum=3),
         c.expansions(),
         c.gas_buildings(),
         c.upgrades(),

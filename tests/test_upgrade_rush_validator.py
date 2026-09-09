@@ -1,0 +1,374 @@
+"""Regression tests for `UpgradeRushValidator`.
+
+Drives `on_step` across fake frames with a minimal duck-typed stand-in for
+the BotAI/BotContext surface it reads, then inspects the real `validate()`
+output. Covers both the Stage 1 counting bugs carried over from the old
+`ZergRushValidator` (pool double-counting, supply-block grace period) and
+the new build-specific logic: the extractor cap this session's earlier fix
+introduced, resource-block detection gated on real tech eligibility (not
+just "hasn't happened yet"), and per-wave size/timing tracking.
+
+Runs under pytest, or standalone with no test dependency:
+
+    python -m tests.test_upgrade_rush_validator
+"""
+
+from __future__ import annotations
+
+import asyncio
+import sys
+from types import SimpleNamespace
+
+from sc2.ids.unit_typeid import UnitTypeId
+from sc2.ids.upgrade_id import UpgradeId
+
+from tests.upgrade_rush_validator import StepResult, UpgradeRushValidator
+
+
+class _Counted:
+    """Stands in for a `Units` collection: `.amount`, `.ready`, truthiness."""
+
+    def __init__(self, amount: int = 0, ready_amount: int | None = None):
+        self.amount = amount
+        self.ready = self if ready_amount is None else _Counted(ready_amount)
+
+    def __bool__(self) -> bool:
+        return self.amount > 0
+
+    def __iter__(self):
+        return iter(())
+
+
+class _FakeUnit:
+    def __init__(self, tag: int):
+        self.tag = tag
+
+
+class _FakeCtx:
+    """Duck-typed `BotContext`: just what the validator reads."""
+
+    def __init__(
+        self,
+        upgrades: tuple = (),
+        max_gas: int = 2,
+        wave1_min: int = 20,
+        wave_growth: float = 1.25,
+        evolution_chambers: int = 1,
+        evolution_chamber_gate=lambda ctx: True,
+    ):
+        self.build = SimpleNamespace(
+            army=SimpleNamespace(
+                upgrades=upgrades,
+                evolution_chambers=evolution_chambers,
+                evolution_chamber_gate=evolution_chamber_gate,
+            ),
+            economy=SimpleNamespace(worker_target=60, max_gas=max_gas),
+            combat=SimpleNamespace(wave1_min=wave1_min, wave_growth=wave_growth),
+        )
+        self.state = SimpleNamespace(wave_number=0)
+        self.attacking: list = []
+
+    def units_in_role(self, role) -> list:
+        return self.attacking
+
+
+class FakeAI(UpgradeRushValidator):
+    """Just enough of the BotAI surface for `UpgradeRushValidator.on_step`."""
+
+    def __init__(
+        self,
+        upgrades: tuple = (),
+        max_gas: int = 2,
+        evolution_chambers: int = 1,
+        evolution_chamber_gate=lambda ctx: True,
+    ):
+        self.time = 0.0
+        self.supply_left = 10
+        self.supply_used = 14
+        self.workers = _Counted(12)
+        self.gas_buildings = _Counted(0)
+        self.ctx = _FakeCtx(
+            upgrades,
+            max_gas=max_gas,
+            evolution_chambers=evolution_chambers,
+            evolution_chamber_gate=evolution_chamber_gate,
+        )
+        self._structure_counts: dict = {}
+        self._structure_ready_counts: dict = {}
+        self._pending_counts: dict = {}
+        self._pending_upgrades: set = set()
+        self._affordable: set = set()
+
+    def structures(self, unit_type) -> _Counted:
+        amount = self._structure_counts.get(unit_type, 0)
+        ready = self._structure_ready_counts.get(unit_type, amount)
+        return _Counted(amount, ready)
+
+    def already_pending(self, unit_type) -> int:
+        return self._pending_counts.get(unit_type, 0)
+
+    def already_pending_upgrade(self, upgrade) -> float:
+        return 1.0 if upgrade in self._pending_upgrades else 0.0
+
+    def pending_or_complete_upgrade(self, upgrade) -> bool:
+        return upgrade in self._pending_upgrades
+
+    def can_afford(self, item) -> bool:
+        return item in self._affordable
+
+    def tech_requirement_progress(self, structure_type) -> float:
+        return 1.0
+
+
+def _step(ai: FakeAI) -> None:
+    asyncio.run(ai.on_step(0))
+
+
+# ── Stage 1: carried over from ZergRushValidator ────────────────────────────
+
+
+def test_pool_under_construction_is_not_double_counted() -> None:
+    """A single pool, mid-build, must not read as `pool count: 2` — see
+    `already_pending`'s docstring ("buildings already in progress"): it
+    counts the same structure `structures(...).amount` already counts."""
+    ai = FakeAI()
+    ai._structure_counts[UnitTypeId.SPAWNINGPOOL] = 1
+    ai._pending_counts[UnitTypeId.SPAWNINGPOOL] = 1
+    for _ in range(5):
+        _step(ai)
+
+    result = ai.validate()
+    only_one_pool = next(
+        r for r in result["Stage 1: Opening Economy"] if r.name == "Only One Pool"
+    )
+    assert only_one_pool.passed, only_one_pool.detail
+
+
+def test_supply_block_within_grace_period_is_ignored() -> None:
+    ai = FakeAI()
+    ai.supply_left = 0
+    for frame in range(200):
+        ai.time = frame * 0.1  # up to 20.0s, well under the grace period
+        _step(ai)
+
+    assert ai._supply_blocked_frames == 0
+
+
+def test_supply_block_after_grace_period_still_counts() -> None:
+    ai = FakeAI()
+    ai.supply_left = 0
+    for frame in range(1000):
+        ai.time = 60.0 + frame * 0.1  # starts exactly at the grace period
+        _step(ai)
+
+    assert ai._supply_blocked_frames == 1000
+
+
+# ── Stage 1: extractor cap (this session's earlier fix) ─────────────────────
+
+
+def test_extractor_cap_respected_when_within_cap() -> None:
+    ai = FakeAI(max_gas=2)
+    ai.gas_buildings = _Counted(2)
+    _step(ai)
+
+    result = ai.validate()
+    cap_check = next(
+        r
+        for r in result["Stage 1: Opening Economy"]
+        if r.name == "Extractor Cap Respected"
+    )
+    assert cap_check.passed, cap_check.detail
+
+
+def test_extractor_cap_respected_flags_when_exceeded() -> None:
+    """Regression test for the earlier `_requested_zerg_placements` leak
+    (see ARCHITECTURE.md) that could pile extra extractors past the cap."""
+    ai = FakeAI(max_gas=2)
+    ai.gas_buildings = _Counted(3)
+    _step(ai)
+
+    result = ai.validate()
+    cap_check = next(
+        r
+        for r in result["Stage 1: Opening Economy"]
+        if r.name == "Extractor Cap Respected"
+    )
+    assert not cap_check.passed
+    assert "cap 2" in cap_check.detail
+
+
+# ── Stage 2/3: resource-block detection ──────────────────────────────────────
+
+
+def test_upgrade_not_yet_eligible_never_counts_as_resource_blocked() -> None:
+    """Melee Attacks +1 researches from an Evolution Chamber. With none
+    built yet, it isn't eligible - being unable to afford it shouldn't
+    count as a resource block, since money was never the blocker."""
+    ai = FakeAI(upgrades=(UpgradeId.ZERGMELEEWEAPONSLEVEL1,))
+    # No Evolution Chamber, and never affordable either.
+    for _ in range(50):
+        _step(ai)
+
+    tracker = ai._upgrades[0]
+    assert not tracker.started
+    assert tracker.blocked_frames == 0
+
+
+def test_upgrade_eligible_but_unaffordable_counts_as_resource_blocked() -> None:
+    ai = FakeAI(upgrades=(UpgradeId.ZERGMELEEWEAPONSLEVEL1,))
+    ai._structure_counts[UnitTypeId.EVOLUTIONCHAMBER] = 1
+    ai._structure_ready_counts[UnitTypeId.EVOLUTIONCHAMBER] = 1
+    for _ in range(30):
+        _step(ai)
+
+    tracker = ai._upgrades[0]
+    assert not tracker.started
+    assert tracker.blocked_frames == 30
+
+    # Once affordable, it starts and stops accumulating blocked frames.
+    ai._affordable.add(UpgradeId.ZERGMELEEWEAPONSLEVEL1)
+    ai._pending_upgrades.add(UpgradeId.ZERGMELEEWEAPONSLEVEL1)  # research fires
+    _step(ai)
+    assert tracker.started
+    assert tracker.blocked_frames == 30
+
+
+def test_upgrade_requiring_lair_waits_on_the_earlier_upgrade_in_list() -> None:
+    """Melee +2 needs Lair *and* comes after Melee +1 in the build's own
+    upgrade order - it must not count as resource-blocked while Melee +1
+    hasn't even started yet, even with a Lair sitting ready."""
+    ai = FakeAI(
+        upgrades=(UpgradeId.ZERGMELEEWEAPONSLEVEL1, UpgradeId.ZERGMELEEWEAPONSLEVEL2)
+    )
+    ai._structure_counts[UnitTypeId.EVOLUTIONCHAMBER] = 1
+    ai._structure_ready_counts[UnitTypeId.EVOLUTIONCHAMBER] = 1
+    ai._structure_counts[UnitTypeId.LAIR] = 1
+    ai._structure_ready_counts[UnitTypeId.LAIR] = 1
+    for _ in range(20):
+        _step(ai)
+
+    melee2 = ai._upgrades[1]
+    assert melee2.blocked_frames == 0
+
+    # Now Melee +1 is under way - Melee +2 becomes genuinely eligible.
+    ai._pending_upgrades.add(UpgradeId.ZERGMELEEWEAPONSLEVEL1)
+    for _ in range(15):
+        _step(ai)
+
+    assert melee2.blocked_frames == 15
+
+
+# ── Stage 2/3: the report is build-driven, not UpgradeRush-specific ─────────
+
+
+def test_a_build_with_no_tech_upgrades_gets_no_tech_structure_checks() -> None:
+    """`Speedling All-In` only ever researches Metabolic Boost - it has no
+    Evolution Chamber, Lair or Hive in its upgrade list at all. The report
+    should say so plainly instead of failing checks for milestones that
+    build was never going to reach."""
+    ai = FakeAI(upgrades=(UpgradeId.ZERGLINGMOVEMENTSPEED,))
+    _step(ai)
+
+    assert ai._structures == []
+    result = ai.validate()
+    assert result["Stage 2: Tech Structures"] == [
+        StepResult("No tech structures required by this build", True)
+    ]
+
+
+def test_evolution_chamber_target_and_gate_come_from_the_build_not_a_constant() -> None:
+    """A second Evolution Chamber must never count as resource-blocked while
+    this build's own gate hasn't opened - and must start counting the
+    instant it does - with nothing UpgradeRush-specific (no reference to
+    Metabolic Boost or any other hardcoded upgrade) making that decision."""
+    gate_open = False
+    ai = FakeAI(
+        upgrades=(UpgradeId.ZERGMELEEWEAPONSLEVEL1,),
+        evolution_chambers=2,
+        evolution_chamber_gate=lambda ctx: gate_open,
+    )
+    ai._structure_counts[UnitTypeId.EVOLUTIONCHAMBER] = 1
+    ai._structure_ready_counts[UnitTypeId.EVOLUTIONCHAMBER] = 1
+    for _ in range(25):
+        _step(ai)
+
+    evo = next(s for s in ai._structures if s.structure == UnitTypeId.EVOLUTIONCHAMBER)
+    assert not evo.started  # only 1 of this build's target of 2
+    assert evo.blocked_frames == 0  # gate closed - never eligible yet
+
+    gate_open = True
+    for _ in range(10):
+        _step(ai)
+    assert evo.blocked_frames == 10  # gate open, still unaffordable
+
+
+# ── Stage 4: attack waves ────────────────────────────────────────────────────
+
+
+def test_wave_release_records_size_time_and_next_expected_minimum() -> None:
+    ai = FakeAI(upgrades=())
+    ai.ctx.build.combat.wave1_min = 20
+    ai.ctx.build.combat.wave_growth = 1.25
+
+    wave1_units = [_FakeUnit(i) for i in range(21)]
+    ai.time = 300.0
+    ai.ctx.state.wave_number = 1
+    ai.ctx.attacking = wave1_units
+    _step(ai)
+
+    assert len(ai._waves) == 1
+    wave1 = ai._waves[0]
+    assert wave1.number == 1
+    assert wave1.time == 300.0
+    assert wave1.size == 21
+    assert wave1.expected_min == 20  # wave1_min, before any wave has landed
+    assert wave1.gap is None
+
+    # ceil(21 * 1.25) == 27 is what the *next* wave should be measured against.
+    assert ai._next_wave_expected_min == 27
+
+    wave2_units = wave1_units + [_FakeUnit(100 + i) for i in range(27)]
+    ai.time = 420.0
+    ai.ctx.state.wave_number = 2
+    ai.ctx.attacking = wave2_units
+    _step(ai)
+
+    assert len(ai._waves) == 2
+    wave2 = ai._waves[1]
+    assert wave2.size == 27
+    assert wave2.expected_min == 27
+    assert wave2.gap == 120.0
+
+    result = ai.validate()
+    wave_results = {r.name: r for r in result["Stage 4: Attack Waves"]}
+    assert wave_results["Wave 1"].passed
+    assert wave_results["Wave 2"].passed
+
+
+def test_no_wave_ever_released_fails_stage_4() -> None:
+    ai = FakeAI(upgrades=())
+    _step(ai)
+
+    result = ai.validate()
+    assert result["Stage 4: Attack Waves"] == [
+        r for r in result["Stage 4: Attack Waves"] if not r.passed
+    ]
+
+
+def main() -> int:
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    failures = 0
+    for test in tests:
+        try:
+            test()
+            print(f"  PASS  {test.__name__}")
+        except Exception as error:  # noqa: BLE001 - report, don't stop
+            failures += 1
+            print(f"  FAIL  {test.__name__}: {error}")
+    print(f"\n{len(tests) - failures}/{len(tests)} passed.")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

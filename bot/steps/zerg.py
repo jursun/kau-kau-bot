@@ -11,9 +11,15 @@ from typing import TYPE_CHECKING
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 
-from ares.behaviors.macro import BuildStructure, MacroPlan
+from ares.behaviors.macro import MacroPlan
 
-from bot.behaviors.zerg import BuildMacroHatch, InjectLarva, TrainQueens
+from bot.behaviors.zerg import (
+    BuildMacroHatch,
+    BuildSporeCrawler,
+    InjectLarva,
+    MorphOverseers,
+    TrainQueens,
+)
 from bot.builds.definition import _always
 from bot.core.types import Gate, MacroStep
 from bot.steps import common
@@ -31,11 +37,22 @@ def inject_larva(min_energy: int = 25) -> MacroStep:
     return step
 
 
-def train_queens(per_base: int = 1, maximum: int = 4) -> MacroStep:
+def train_queens(per_base: int = 1, maximum: int = 4, extra: int = 0) -> MacroStep:
+    """Keep one queen per base (for injects), plus `extra` more for other
+    duties (see `routines.creep.spread_creep`), capped at `maximum` total.
+
+    `TrainQueens.max_per_townhall` only feeds the internal
+    `min(to_count, len(townhalls) * max_per_townhall)` target formula — it
+    doesn't restrict which townhall trains what — so it's padded by `extra`
+    here too, otherwise that formula would silently clip the extra queen
+    back off (`base_count * per_base` alone is always < `to_count` once
+    `extra` is nonzero).
+    """
+
     def step(ctx: "BotContext"):
         return TrainQueens(
-            to_count=min(maximum, ctx.base_count * per_base),
-            max_per_townhall=per_base,
+            to_count=min(maximum, ctx.base_count * per_base + extra),
+            max_per_townhall=per_base + extra,
         )
 
     return step
@@ -57,47 +74,64 @@ def macro_hatch(count: int, gate: Gate = _always) -> MacroStep:
     return step
 
 
-def evolution_chambers(count: int, gate: Gate = _always) -> MacroStep:
-    """`UpgradeController` only ever builds one; a second enables +1/+1 in parallel."""
-    return common.structure(UnitTypeId.EVOLUTIONCHAMBER, count, gate)
+def evolution_chambers() -> MacroStep:
+    """`UpgradeController` only ever builds one; a build wanting more than
+    one +1/+1 tier researching in parallel needs another.
+
+    Count and gate both come from `ctx.build.army.evolution_chambers` /
+    `.evolution_chamber_gate` rather than being passed in here, so a build
+    states them once and `UpgradeRushValidator` can read the exact same
+    numbers instead of a second, separately-maintained copy.
+    """
+
+    def step(ctx: "BotContext"):
+        return common.structure(
+            UnitTypeId.EVOLUTIONCHAMBER,
+            ctx.build.army.evolution_chambers,
+            ctx.build.army.evolution_chamber_gate,
+        )(ctx)
+
+    return step
 
 
 def spore_crawlers(per_base: int, gate: Gate = _always) -> MacroStep:
-    """One Spore Crawler (mineral-line placement) per owned base, once `gate` passes.
+    """One Spore Crawler (mineral-line placement) per owned base, once `gate`
+    passes — capped overall at `per_base * (number of owned townhalls)`.
 
-    `BuildStructure.to_count_per_base` cannot be used here: it is checked via
-    `mediator.get_placements_dict[base_location]`, and that dict is only ever
-    populated by `PlacementManager._solve_terran_building_formation` /
-    `_solve_protoss_building_formation` — `_solve_zerg_building_formation` is
-    an unimplemented stub (`# TODO: Implement zerg placements`) in ares
-    v3.13.1. So for a Zerg bot the dict never gets a single key, and
-    `to_count_per_base` is a guaranteed `KeyError` the first time it runs,
-    for *any* location — not a location-matching bug (switching from
-    `townhall.position` to the canonical `ctx.bot.owned_expansions` key
-    didn't help; it crashed a real game a second time at a different
-    location entirely). Zerg placement goes through the completely separate
-    `ai.request_zerg_placement` -> `_do_zerg_build_placement` path instead
-    (see gotcha 1), which knows nothing about `placements_dict`.
+    Uses `BuildSporeCrawler` rather than `BuildStructure`: `BuildStructure`
+    cannot do this job on Zerg at all, for two separate reasons — see that
+    behavior's docstring. In short, `to_count_per_base` is a guaranteed
+    `KeyError` for a Zerg structure regardless of location (ares never
+    populates `placements_dict` for Zerg), and even placement without it
+    goes through `ai.request_zerg_placement`, which leaks: a single request
+    gets replayed by ares every frame for the rest of the game, piling
+    crawlers onto whichever base got requested first — the main, in
+    practice, since `owned_expansions` walks it first. `BuildSporeCrawler`
+    does placement and worker dispatch directly instead, so one call really
+    is one build.
 
-    So this counts existing/in-progress crawlers itself instead, the same
-    way `bot/behaviors/zerg/build_macro_hatch.py` rolls its own zerg-specific
-    logic rather than leaning on placement-solver machinery that only really
-    supports Terran/Protoss. `EXPANSION_GAP_THRESHOLD` (15) is python-sc2's
-    own radius for "close enough to belong to this base" — the same radius
-    `owned_expansions` itself uses to match a townhall to its expansion
-    location, so a crawler is credited to a base on the same terms a
-    townhall is.
+    `EXPANSION_GAP_THRESHOLD` (15) is python-sc2's own radius for "close
+    enough to belong to this base" — the same radius `owned_expansions`
+    itself uses to match a townhall to its expansion location, so a crawler
+    is credited to a base on the same terms a townhall is.
 
-    `ai.structure_pending(SPORECRAWLER)` gates the whole step, not just a
-    per-base count: a dispatched worker walking to build doesn't show up in
-    `structures()` yet, so counting only structures re-requests the same
-    still-uncovered base every frame for the whole walk time — a real game
-    ended up with several crawlers piled onto one base. `structure_pending`
-    is the same combined ready-or-pending count `BuildStructure.to_count`
-    already uses successfully elsewhere in this file (`_enough_existing`),
-    so nothing new is requested anywhere while one crawler is already in
-    flight, and `BuildStructure`'s own `max_on_route` is a second, redundant
-    line of defense rather than the only one.
+    Two throttles, not one:
+
+    - `ai.structure_pending(SPORECRAWLER)` gates the whole step: a
+      dispatched worker walking to build doesn't show up in `structures()`
+      until it arrives, so counting only placed structures would re-request
+      a build for the same still-"uncovered" base on every frame of that
+      walk. `structure_pending` is a combined ready-or-pending count, so
+      nothing new is requested anywhere while one crawler is already in
+      flight — bot-wide, not just at the base in question, which is a
+      stricter throttle than strictly necessary but fine, since only one
+      crawler was ever going to get built at a time regardless.
+    - The explicit `per_base * len(owned bases)` total cap is a second,
+      independent ceiling on top of that: an explicit invariant ("never
+      more than one Spore Crawler per townhall") that holds even if the
+      per-base loop below ever miscounts a base — e.g. two owned bases
+      whose crawlers sit within `radius` of each other and get double
+      credited to both.
 
     Bundled into their own `MacroPlan` so a base that already has enough
     doesn't block the next base's turn on the same frame (see
@@ -109,18 +143,18 @@ def spore_crawlers(per_base: int, gate: Gate = _always) -> MacroStep:
             return None
         if ctx.bot.structure_pending(UnitTypeId.SPORECRAWLER):
             return None
-        radius = ctx.bot.EXPANSION_GAP_THRESHOLD
+
+        bases = list(ctx.bot.owned_expansions)
         existing = ctx.bot.structures(UnitTypeId.SPORECRAWLER)
+        if existing.amount >= per_base * len(bases):
+            return None
+
+        radius = ctx.bot.EXPANSION_GAP_THRESHOLD
         plan = MacroPlan()
-        for location in ctx.bot.owned_expansions:
+        for location in bases:
             if len(existing.closer_than(radius, location)) >= per_base:
                 continue
-            plan.add(
-                BuildStructure(
-                    base_location=location,
-                    structure_id=UnitTypeId.SPORECRAWLER,
-                )
-            )
+            plan.add(BuildSporeCrawler(base_location=location))
         return plan
 
     return step
@@ -128,6 +162,25 @@ def spore_crawlers(per_base: int, gate: Gate = _always) -> MacroStep:
 
 def spine_crawlers(count: int, gate: Gate = _always) -> MacroStep:
     return common.structure(UnitTypeId.SPINECRAWLER, count, gate)
+
+
+def overseers(per_wave: int = 1, maximum: int = 3, gate: Gate = _always) -> MacroStep:
+    """Keep one Overseer per attack wave released so far, capped at `maximum`.
+
+    `MorphOverseers` handles the Lair-tech check itself, so this step is
+    safe to list before Lair even exists. See `routines.combat.escort_overseers`
+    for what actually sends them along with the army.
+    """
+
+    def step(ctx: "BotContext"):
+        if not gate(ctx):
+            return None
+        target = min(maximum, ctx.state.wave_number * per_wave)
+        if target <= 0:
+            return None
+        return MorphOverseers(to_count=target)
+
+    return step
 
 
 LING_SPEED: UpgradeId = UpgradeId.ZERGLINGMOVEMENTSPEED

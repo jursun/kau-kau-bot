@@ -16,6 +16,7 @@ from sc2.ids.unit_typeid import UnitTypeId
 from sc2.unit import Unit
 
 from ares.behaviors.macro.macro_behavior import MacroBehavior
+from ares.consts import UnitRole
 from ares.managers.manager_mediator import ManagerMediator
 
 if TYPE_CHECKING:
@@ -28,6 +29,13 @@ class InjectLarva(MacroBehavior):
 
     Register this directly (not inside a `MacroPlan`) so it runs every step —
     a `MacroPlan` short-circuits after the first behavior that acts.
+
+    Only considers queens holding `UnitRole.QUEEN_INJECT` (every queen is
+    born with that role — see `core/roles.py`) rather than every queen that
+    exists: a queen reassigned to `UnitRole.QUEEN_CREEP`
+    (`routines.creep.spread_creep`) would otherwise still get swept into
+    injecting whenever it's the closest one to a townhall, trading duties
+    with the actual creep queen instead of staying dedicated to either job.
 
     Attributes:
         min_energy: Energy a queen needs before it will be used for an inject.
@@ -42,7 +50,9 @@ class InjectLarva(MacroBehavior):
 
         available: list[Unit] = [
             q
-            for q in ai.units(UnitTypeId.QUEEN)
+            for q in mediator.get_units_from_role(
+                role=UnitRole.QUEEN_INJECT, unit_type=UnitTypeId.QUEEN
+            )
             if q.is_ready
             and q.energy >= self.min_energy
             and q.tag not in ai.unit_tags_received_action

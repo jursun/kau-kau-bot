@@ -47,6 +47,17 @@ class Army:
     """Unit types the combat engine assigns roles to and counts into waves."""
     upgrades: tuple[UpgradeId, ...] = ()
     """Researched in order; `UpgradeController` auto-techs toward each."""
+    evolution_chambers: int = 1
+    """`UpgradeController` only ever builds one on its own (see
+    `steps/zerg.py`'s `evolution_chambers`); a build wanting more than one
+    +1/+1 tier researching in parallel raises this. The single source of
+    truth for that count — `steps.zerg.evolution_chambers()` and
+    `UpgradeRushValidator` both read it from here rather than each build
+    passing its own literal around."""
+    evolution_chamber_gate: Gate = _always
+    """When to start wanting the *next* Evolution Chamber beyond the first
+    (e.g. once Metabolic Boost is under way) — read by both the same step
+    and the validator, for the same reason as `evolution_chambers` above."""
 
 
 @dataclass(frozen=True)

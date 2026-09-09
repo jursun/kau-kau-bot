@@ -18,6 +18,7 @@ import sys
 from unittest.mock import MagicMock
 
 from ares.behaviors.combat.group import AMoveGroup
+from ares.behaviors.combat.individual import KeepUnitSafe, MoveToSafeTarget
 from ares.managers.squad_manager import UnitSquad
 from sc2.position import Point2
 
@@ -159,6 +160,76 @@ def test_already_released_squad_ignores_rally_point() -> None:
         assert (target.x, target.y) == (attack.x, attack.y)
     finally:
         _restore_targeting(original)
+
+
+def test_escort_overseers_targets_the_biggest_squads_destination() -> None:
+    """Regression test: the first version AMoved straight at the squad's
+    live `squad_position`, which recedes as the squad advances - a slower
+    Overseer chasing that target never catches up. It should instead target
+    the same destination (`targeting.attack_target`) the squad itself is
+    walking toward, computed from the squad's position, and approach it via
+    ares' danger-aware `MoveToSafeTarget`/`KeepUnitSafe` rather than a bare
+    `AMove`."""
+    ctx = _ctx()
+    overseer = _unit(9, Point2((0.0, 0.0)))
+    ctx.bot.units.return_value = [overseer]
+    ctx.mediator.get_air_grid = "air-grid"
+
+    small = _squad([_unit(1, Point2((10.0, 10.0)))])
+    big = _squad([_unit(2, Point2((70.0, 70.0))), _unit(3, Point2((72.0, 70.0)))])
+    ctx.mediator.get_squads.return_value = [small, big]
+
+    destination = Point2((999.0, 999.0))
+    from_positions: list[Point2] = []
+
+    def _attack_target(_ctx: BotContext, from_pos: Point2) -> Point2:
+        from_positions.append(from_pos)
+        return destination
+
+    original = (targeting.rally_point, targeting.attack_target)
+    targeting.attack_target = _attack_target
+    try:
+        combat.escort_overseers()(ctx)
+    finally:
+        _restore_targeting(original)
+
+    assert from_positions == [big.squad_position]
+
+    registered = ctx.bot.register_behavior.call_args.args[0]
+    moves = [b for b in registered.micros if isinstance(b, MoveToSafeTarget)]
+    assert len(moves) == 1
+    assert moves[0].unit is overseer
+    assert moves[0].target == destination
+    assert moves[0].grid == "air-grid"
+
+    keep_safe = [b for b in registered.micros if isinstance(b, KeepUnitSafe)]
+    assert len(keep_safe) == 1
+    assert keep_safe[0].unit is overseer
+    assert keep_safe[0].grid == "air-grid"
+
+    # KeepUnitSafe must run first so an already-endangered Overseer retreats
+    # instead of being sent toward the target (CombatManeuver.execute is
+    # `any(...)` over micros - order decides which one wins).
+    assert isinstance(registered.micros[0], KeepUnitSafe)
+
+
+def test_escort_overseers_does_nothing_without_an_overseer() -> None:
+    ctx = _ctx()
+    ctx.bot.units.return_value = []
+
+    combat.escort_overseers()(ctx)
+
+    ctx.bot.register_behavior.assert_not_called()
+
+
+def test_escort_overseers_does_nothing_without_an_attacking_squad() -> None:
+    ctx = _ctx()
+    ctx.bot.units.return_value = [_unit(9)]
+    ctx.mediator.get_squads.return_value = []
+
+    combat.escort_overseers()(ctx)
+
+    ctx.bot.register_behavior.assert_not_called()
 
 
 def main() -> int:

@@ -7,9 +7,16 @@ from typing import TYPE_CHECKING
 
 from ares.behaviors.combat import CombatManeuver
 from ares.behaviors.combat.group import AMoveGroup, StutterGroupForward
-from ares.behaviors.combat.individual import AMove, AttackTarget, ShootTargetInRange
+from ares.behaviors.combat.individual import (
+    AMove,
+    AttackTarget,
+    KeepUnitSafe,
+    MoveToSafeTarget,
+    ShootTargetInRange,
+)
 from ares.consts import UnitRole, UnitTreeQueryType
 from cython_extensions import cy_closest_to, cy_distance_to_squared
+from sc2.ids.unit_typeid import UnitTypeId
 from sc2.units import Units
 
 from bot.core.types import CombatRoutine
@@ -159,6 +166,64 @@ def attack_squads(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
                     group=squad.squad_units, group_tags=squad.tags, target=target
                 )
             )
+            ctx.bot.register_behavior(maneuver)
+
+    return routine
+
+
+def escort_overseers() -> CombatRoutine:
+    """Send every Overseer toward the largest ATTACKING squad's destination,
+    hanging back at the edge of enemy range instead of trailing into it.
+
+    Two things went wrong with the first version of this (which just AMoved
+    every Overseer at the squad's live `squad_position`):
+
+    1. `squad_position` recedes as the squad advances, and Zerglings —
+       especially with Metabolic Boost, which this build researches — are
+       faster than an Overseer. A slower unit chasing a point that keeps
+       moving away from it never closes the gap. Targeting the same
+       destination `attack_squads` sends the squad toward instead
+       (`targeting.attack_target`) fixes that: it's a fixed point, so the
+       Overseer actually makes progress and tends to arrive ahead of or
+       alongside the wave rather than perpetually trailing it.
+    2. A bare `AMove` has no notion of danger, so the Overseer walked
+       straight up to (and into) whatever it was escorting. `MoveToSafeTarget`
+       resolves the destination down to the nearest *safe* spot near it
+       (`radius` controls how near) before pathing there, and paths with its
+       own built-in danger-sensing along the way — so it settles at the edge
+       of enemy unit/structure range rather than in the middle of it.
+       `KeepUnitSafe` runs first and, if the Overseer is already standing
+       somewhere dangerous, retreats it before anything else does — the same
+       "urgent response first, fall through to normal movement" shape
+       `_defender_maneuver` uses above (`CombatManeuver.execute` is `any(...)`
+       over `micros`, so it stops at the first behavior that acts).
+
+    Overseers aren't part of `build.army.types` (only the composition units
+    are — zerglings, here), so they never pick up an ATTACKING/DEFENDING
+    role of their own via `release_waves`/`attack_squads`. This just points
+    them at wherever the army is headed instead; see `steps.zerg.overseers`
+    for what keeps them supplied.
+    """
+
+    def routine(ctx: "BotContext") -> None:
+        overseers = ctx.bot.units(UnitTypeId.OVERSEER)
+        if not overseers:
+            return
+
+        squads = ctx.mediator.get_squads(
+            role=UnitRole.ATTACKING, squad_radius=SQUAD_RADIUS
+        )
+        if not squads:
+            return
+
+        biggest = max(squads, key=lambda squad: len(squad.squad_units))
+        target = targeting.attack_target(ctx, biggest.squad_position)
+        grid = ctx.mediator.get_air_grid
+
+        for overseer in overseers:
+            maneuver = CombatManeuver()
+            maneuver.add(KeepUnitSafe(unit=overseer, grid=grid))
+            maneuver.add(MoveToSafeTarget(unit=overseer, grid=grid, target=target))
             ctx.bot.register_behavior(maneuver)
 
     return routine

@@ -1,5 +1,6 @@
 """Regression tests for the composed macro steps that are hard to eyeball:
-`common.split_production` and `zerg.spore_crawlers`. Both lean on
+`common.split_production`, `zerg.spore_crawlers`, `zerg.train_queens` and
+`zerg.overseers`. The `spore_crawlers`/`split_production` cases lean on
 `MacroPlan.execute()`'s "stop at the first behavior that acts" semantics
 (see `macro_engine.py`), so what matters is the *order* and *shape* of the
 behaviors each step hands back, not just that it returns something.
@@ -23,6 +24,7 @@ from ares.behaviors.macro import (
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
 
+from bot.behaviors.zerg import BuildSporeCrawler, MorphOverseers, TrainQueens
 from bot.core.context import BotContext
 from bot.core.state import RunState
 from bot.steps import common as c
@@ -38,6 +40,7 @@ def _ctx(supply_workers: float = 10.0, supply_army: float = 10.0) -> BotContext:
     bot.owned_expansions = {}
     # No spore crawlers anywhere, and none in flight, by default; tests
     # override either per case.
+    bot.structures.return_value.amount = 0
     bot.structures.return_value.closer_than.return_value = []
     bot.structure_pending.return_value = 0
 
@@ -81,12 +84,34 @@ def test_split_production_never_drops_either_side() -> None:
     assert kinds == {BuildWorkers, SpawnController}
 
 
+def test_evolution_chambers_reads_count_and_gate_from_the_build() -> None:
+    """Regression test: `evolution_chambers()` used to take `count`/`gate`
+    as its own params, duplicating the same numbers `UpgradeRushValidator`
+    needed to know separately. Both now come from `ctx.build.army` — the
+    single source of truth for a per-build target count and gate."""
+    ctx = _ctx()
+    ctx.build.army.evolution_chambers = 2
+    ctx.build.army.evolution_chamber_gate = lambda _ctx: True
+
+    behavior = z.evolution_chambers()(ctx)
+
+    assert isinstance(behavior, BuildStructure)
+    assert behavior.structure_id == UnitTypeId.EVOLUTIONCHAMBER
+    assert behavior.to_count == 2
+
+
+def test_evolution_chambers_returns_none_before_its_build_gate() -> None:
+    ctx = _ctx()
+    ctx.build.army.evolution_chambers = 2
+    ctx.build.army.evolution_chamber_gate = lambda _ctx: False
+
+    assert z.evolution_chambers()(ctx) is None
+
+
 def test_spore_crawlers_places_one_per_owned_expansion() -> None:
-    # Regression test: `base_location` must be one of ares' own recognized
-    # base points, not a townhall's literal position — passing the latter
-    # crashed a real game with `KeyError: (60.5, 56.5)`. See the next test
-    # for why `to_count_per_base` itself (a second crash, at a *different*
-    # location) is avoided entirely rather than just fixing the location.
+    # Regression test: `BuildStructure` cannot be used here at all (two
+    # separate reasons — see `BuildSporeCrawler`'s docstring), so this
+    # dispatches its own placement/worker behavior per uncovered base.
     ctx = _ctx()
     main = Point2((10.0, 10.0))
     natural = Point2((50.0, 50.0))
@@ -97,17 +122,8 @@ def test_spore_crawlers_places_one_per_owned_expansion() -> None:
     assert isinstance(plan, MacroPlan)
     assert len(plan.macros) == 2
     for behavior, location in zip(plan.macros, (main, natural)):
-        assert isinstance(behavior, BuildStructure)
-        assert behavior.structure_id == UnitTypeId.SPORECRAWLER
+        assert isinstance(behavior, BuildSporeCrawler)
         assert behavior.base_location == location
-        # Regression test: `to_count_per_base` must stay unset (0). Ares
-        # never populates `placements_dict` for a Zerg bot
-        # (`_solve_zerg_building_formation` is a stub), so any use of
-        # `to_count_per_base` here is a guaranteed `KeyError` — crashed a
-        # real game a second time, at `(90.5, 132.5)`, even after the first
-        # crash's location fix. Per-base counting is done by
-        # `spore_crawlers` itself instead (see the next test).
-        assert behavior.to_count_per_base == 0
 
 
 def test_spore_crawlers_skips_bases_that_already_have_enough() -> None:
@@ -115,6 +131,7 @@ def test_spore_crawlers_skips_bases_that_already_have_enough() -> None:
     covered = Point2((10.0, 10.0))
     uncovered = Point2((50.0, 50.0))
     ctx.bot.owned_expansions = {covered: MagicMock(), uncovered: MagicMock()}
+    ctx.bot.structures.return_value.amount = 1
     ctx.bot.structures.return_value.closer_than.side_effect = (
         lambda _radius, location: [MagicMock()] if location == covered else []
     )
@@ -123,6 +140,21 @@ def test_spore_crawlers_skips_bases_that_already_have_enough() -> None:
 
     assert len(plan.macros) == 1
     assert plan.macros[0].base_location == uncovered
+
+
+def test_spore_crawlers_caps_at_one_per_owned_townhall() -> None:
+    """Regression test for "cap Spore Crawlers to the number of townhalls":
+    an explicit total-count ceiling independent of the per-base loop, so it
+    holds even if per-base counting (radius-based) ever double-credits a
+    crawler to two nearby bases."""
+    ctx = _ctx()
+    ctx.bot.owned_expansions = {
+        Point2((10.0, 10.0)): MagicMock(),
+        Point2((50.0, 50.0)): MagicMock(),
+    }
+    ctx.bot.structures.return_value.amount = 2  # already at the 2-base cap
+
+    assert z.spore_crawlers(per_base=1, gate=lambda _ctx: True)(ctx) is None
 
 
 def test_spore_crawlers_waits_while_one_is_already_in_flight() -> None:
@@ -141,7 +173,7 @@ def test_spore_crawlers_waits_while_one_is_already_in_flight() -> None:
 
 def test_spore_crawlers_collapses_a_macro_hatch_onto_its_base() -> None:
     """Two hatcheries at the same expansion location (main + a macro hatch)
-    must not produce two BuildStructure calls for that base."""
+    must not produce two BuildSporeCrawler calls for that base."""
     ctx = _ctx()
     main = Point2((10.0, 10.0))
     ctx.bot.owned_expansions = {main: MagicMock()}  # owned_expansions already
@@ -157,6 +189,61 @@ def test_spore_crawlers_returns_none_before_gate() -> None:
     ctx = _ctx()
     ctx.bot.owned_expansions = {Point2((10.0, 10.0)): MagicMock()}
     assert z.spore_crawlers(per_base=1, gate=lambda _ctx: False)(ctx) is None
+
+
+def test_train_queens_extra_is_not_clipped_by_max_per_townhall() -> None:
+    """Regression test: `max_per_townhall` feeds `TrainQueens`'s own
+    `min(to_count, len(townhalls) * max_per_townhall)` formula, so passing
+    `extra` without also widening `max_per_townhall` would silently clip the
+    extra queen straight back off."""
+    ctx = _ctx()
+    ctx.bot.townhalls.ready = [MagicMock(), MagicMock(), MagicMock()]  # 3 bases
+
+    behavior = z.train_queens(per_base=1, maximum=6, extra=1)(ctx)
+
+    assert isinstance(behavior, TrainQueens)
+    assert behavior.to_count == 4  # 3 bases + 1 extra
+    assert behavior.max_per_townhall == 2  # per_base + extra
+
+
+def test_train_queens_extra_still_respects_maximum() -> None:
+    ctx = _ctx()
+    ctx.bot.townhalls.ready = [MagicMock() for _ in range(5)]
+
+    behavior = z.train_queens(per_base=1, maximum=4, extra=1)(ctx)
+
+    assert behavior.to_count == 4  # capped, not 5 bases + 1
+
+
+def test_overseers_targets_one_per_wave_released() -> None:
+    ctx = _ctx()
+    ctx.state.wave_number = 2
+
+    behavior = z.overseers(per_wave=1, maximum=3)(ctx)
+
+    assert isinstance(behavior, MorphOverseers)
+    assert behavior.to_count == 2
+
+
+def test_overseers_caps_at_maximum() -> None:
+    ctx = _ctx()
+    ctx.state.wave_number = 5
+
+    behavior = z.overseers(per_wave=1, maximum=3)(ctx)
+
+    assert behavior.to_count == 3
+
+
+def test_overseers_none_before_first_wave() -> None:
+    ctx = _ctx()
+    assert ctx.state.wave_number == 0
+    assert z.overseers(per_wave=1, maximum=3)(ctx) is None
+
+
+def test_overseers_returns_none_before_gate() -> None:
+    ctx = _ctx()
+    ctx.state.wave_number = 2
+    assert z.overseers(per_wave=1, maximum=3, gate=lambda _ctx: False)(ctx) is None
 
 
 def main() -> int:

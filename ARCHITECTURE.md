@@ -145,7 +145,21 @@ regardless of what build is running.
   an unimplemented stub in ares v3.13.1, so the dict never gets a single
   zerg key, for any base, ever. Count existing/pending structures yourself
   instead — see `steps/zerg.py`'s `spore_crawlers()`, which also shows the
-  follow-on gotcha below.
+  follow-on gotchas below.
+- **`ai.request_zerg_placement()` (and so `BuildStructure` for any Zerg
+  structure) is unusable for anything requested more than once per game.**
+  It appends to `ai._requested_zerg_placements`, and `_after_step` replays
+  that ENTIRE list every single frame — the list is only ever cleared once,
+  at game start, never after being processed. So one request doesn't fire
+  once: `find_placement` + `select_worker` keep succeeding on it again next
+  frame, and the one after that, for the rest of the game, each success
+  producing one more structure. Whichever base gets requested earliest eats
+  the worst of it (in this codebase, the main — `owned_expansions` walks it
+  first). `bot/behaviors/zerg/build_spore_crawler.py` does the
+  find-placement / select-worker / build-with-specific-worker sequence
+  itself, synchronously, instead — the same reasoning
+  `build_macro_hatch.py` already applies to hatcheries, for the same
+  underlying reason (see the bullet above).
 - **Count pending, not just placed, structures when gating a build request
   per base.** A worker already dispatched to build something doesn't show
   up in `structures()` until it arrives and starts — only a second or two,
@@ -163,8 +177,87 @@ regardless of what build is running.
 - **`UpgradeController.auto_tech_up_enabled` only ever builds one
   Evolution Chamber.** A build that wants +1 melee and +1 carapace
   researching in parallel needs its own `BuildStructure(to_count=2)` step
-  for the second one — see `z.evolution_chambers()`.
+  for the second one — see `z.evolution_chambers()`. That count and its
+  gate live on `BuildDefinition.army.evolution_chambers` /
+  `.evolution_chamber_gate` (defaulting to `1`/always-on, so a build that
+  doesn't care never mentions them), not as arguments to
+  `z.evolution_chambers()` itself — it takes none, and reads both off
+  `ctx.build.army` at call time. That's what lets
+  `tests/upgrade_rush_validator.py` check the exact same target and gate
+  the step is building toward instead of a second, separately-maintained
+  copy of `2` and "once Speed is under way."
 - **`already_pending_upgrade` returns a 0.0-1.0 float**, not a count — how
   close a researching upgrade is to finishing, for gates like
   `gates.upgrades_within` that need to leave *before* an upgrade lands
   rather than waiting for it to actually finish.
+- **`ProductionController` is explicitly Terran/Protoss only** — it logs a
+  warning and no-ops for `Race.Zerg`. There's no generic ares controller for
+  "train unit type X up to a count" beyond `SpawnController` (larva-spawn,
+  driven by an army composition dict); anything else — queens
+  (`TrainQueens`), overseers (`MorphOverseers`) — is bot-owned, one-at-a-time
+  logic, same shape both times.
+- **`QueenSpreadCreep`'s docstring example doesn't match its own
+  constructor.** The example shows `QueenSpreadCreep(queen, queen.position,
+  target)`, but the dataclass only has one relevant field, `unit` — it works
+  out its own path and target internally via `mediator.get_next_tumor_on_path`
+  and `get_creep_coverage`. The call is just `QueenSpreadCreep(unit=queen)`.
+- **`TumorSpreadCreep` needs no cadence gating of your own.** Its own
+  `execute` already checks `AbilityId.BUILD_CREEPTUMOR_TUMOR in
+  self.unit.abilities` (the per-tumor cooldown) and
+  `mediator.should_calculate_tumor_spread` (ares' own internal throttle), so
+  it's safe to register one for every `UnitTypeId.CREEPTUMORBURROWED` in
+  `mediator.get_own_structures_dict` every frame — see
+  `routines/creep.py`'s `spread_tumors`. `QueenSpreadCreep` above and
+  `TumorSpreadCreep` are independent: nothing pauses the passive tumor->tumor
+  spread while the dedicated Queen is placing her own.
+- **A slower escort chasing a squad's live `squad_position` never catches
+  up if the squad is faster.** `squad_position` recedes as the squad
+  advances, so targeting it directly only works if the escort is at least
+  as fast as what it's escorting. `routines/combat.py`'s `escort_overseers`
+  targets the squad's actual destination instead
+  (`targeting.attack_target(ctx, squad.squad_position)`, the same call
+  `attack_squads` itself uses) — a fixed point the escort can actually make
+  progress toward, arriving ahead of or alongside the wave rather than
+  perpetually trailing it.
+- **`CombatManeuver.execute` is `any(...)` over its `micros`, in the order
+  added** — the first behavior that returns `True` wins and the rest never
+  run. That's what makes a "check something urgent first, fall through to
+  normal movement otherwise" maneuver just a matter of `add()` order:
+  `KeepUnitSafe` (returns `False` when already safe) added before
+  `MoveToSafeTarget` means an endangered unit retreats instead of being sent
+  toward its target — same shape `_defender_maneuver` already used for
+  shoot-in-range before attack-move. `MoveToSafeTarget` itself resolves a
+  destination down to the nearest *safe* spot within `radius` of it before
+  pathing there, so a unit sent at it settles at the edge of enemy range
+  instead of walking into the middle of it.
+- **The Zerg upgrade/tech tree doesn't need to be hand-encoded anywhere.**
+  `sc2.dicts.upgrade_researched_from.UPGRADE_RESEARCHED_FROM` plus
+  `sc2.dicts.unit_research_abilities.RESEARCH_INFO[researched_from][upgrade]`
+  (its own `"required_building"` key) give the same tech-tree facts
+  `UpgradeController` itself reads — which structure researches an upgrade,
+  and what extra structure it needs on top of that (e.g. Melee Attacks +2
+  needs Lair, +3 needs Hive). `ai.tech_requirement_progress(structure_type)`
+  answers "could I build/morph this right now" without separately walking
+  `ares.dicts.unit_tech_requirement.UNIT_TECH_REQUIREMENT`'s prerequisite
+  chains by hand (Hive's, for instance, is `[SPAWNINGPOOL, LAIR,
+  INFESTATIONPIT, LAIR]`). `tests/upgrade_rush_validator.py` builds its
+  entire Stage 2/3 milestone list this way, off `ctx.build.army.upgrades`,
+  so it can't silently drift out of sync with the build it's validating.
+- **`UpgradeRushValidator` is one class shared by every registered build,
+  not a per-build subclass — it stays correct per-build because every
+  number and gate it checks is read off `ctx.build` (or off python-sc2/
+  ares' own tech tables) rather than hardcoded for UpgradeRush by name.**
+  Stage 1's worker/gas targets come from `ctx.build.economy`; Stage 3's
+  upgrade list and Stage 4's wave-size math come from `ctx.build.army` /
+  `ctx.build.combat`; Stage 2's tech-structure checklist is derived off
+  `ctx.build.army.upgrades` via `UPGRADE_RESEARCHED_FROM` (so it's simply
+  empty for a build with no Lair/Hive-gated upgrades — Speedling All-In's
+  report shows "No tech structures required by this build" instead of
+  failing four checks it could never pass); and the Evolution Chamber
+  target/gate come from `ctx.build.army.evolution_chambers` /
+  `.evolution_chamber_gate` (see above), the last piece that used to be a
+  module constant plus a hardcoded `LING_SPEED` check. A build that wants
+  genuinely different validation behavior — not just different numbers —
+  is still a case for a new validator class; a build that just has
+  different targets, a different upgrade list, or no tech structures at
+  all is already handled by this one, for free.
