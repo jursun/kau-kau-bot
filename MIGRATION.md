@@ -129,18 +129,28 @@ Against a real ares-sc2 3.13.1 checkout with its actual dependencies:
 - **`UpgradeRush` economy**, tightened (60 workers, 3 extractors) but still
   unconfirmed against a real opponent.
 
-The first real UpgradeRush game crashed on `spore_crawlers()`'s very first
-attempt at the 4-minute mark, twice, at two different locations
-(`KeyError: (60.5, 56.5)`, then `KeyError: (90.5, 132.5)`). Root cause:
-`BuildStructure.to_count_per_base` is checked via
-`mediator.get_placements_dict[base_location]`, and that dict is never
-populated for a Zerg bot at all — `PlacementManager._solve_zerg_building_formation`
+`spore_crawlers()` took three real-game bugs to get right. The first real
+UpgradeRush game crashed on its very first attempt at the 4-minute mark,
+twice, at two different locations (`KeyError: (60.5, 56.5)`, then
+`KeyError: (90.5, 132.5)`). Root cause: `BuildStructure.to_count_per_base`
+is checked via `mediator.get_placements_dict[base_location]`, and that dict
+is never populated for a Zerg bot at all — `PlacementManager._solve_zerg_building_formation`
 is an unimplemented stub in ares v3.13.1 — so `to_count_per_base` is a
 guaranteed `KeyError` for a Zerg structure regardless of which location is
 passed. Fixed for real in `eb322a8` by dropping `to_count_per_base` entirely
-and having `spore_crawlers()` count existing crawlers itself (see
-`claude/ares-migration.md` gotcha 10 for the full two-attempt writeup).
-Nothing past that point in the game has been observed yet.
+and having `spore_crawlers()` count existing crawlers itself via
+`structures(SPORECRAWLER).closer_than(...)`.
+
+That count-existing-structures approach then piled several crawlers onto one
+base: a worker already dispatched to build one doesn't show up in
+`structures()` until it actually starts, so every frame during that walk
+re-requested a build for the same still-"uncovered" base. Fixed in `f6a52cd`
+by gating the whole step on `ai.structure_pending(SPORECRAWLER)` first — the
+same ready-or-pending count `BuildStructure.to_count` already uses
+successfully elsewhere in this file — so nothing new is requested anywhere
+while one crawler is already in flight (see `claude/ares-migration.md`
+gotcha 10 for the full three-attempt writeup). Nothing past that point in
+the game has been observed yet.
 
 Resolved by real games: the Speedling All-In opening supply numbers are fine (the
 build runner reached the end and handed over), macro hatch placement works
