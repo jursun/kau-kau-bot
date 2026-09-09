@@ -125,10 +125,18 @@ Against a real ares-sc2 3.13.1 checkout with its actual dependencies:
 - **Evo chamber and lair/hive placement**, which only happens in UpgradeRush.
 - **`UpgradeRush` wave sizing and gas usage**, unvalidated for the same
   reason — includes the newer 50/50 economy/army production split
-  (`common.split_production`) and per-base spore crawlers, neither of which
-  has fired in a real game yet.
+  (`common.split_production`) and per-base spore crawlers.
 - **`UpgradeRush` economy**, tightened (60 workers, 3 extractors) but still
   unconfirmed against a real opponent.
+
+The first real UpgradeRush game got as far as the 4-minute mark and crashed
+on `spore_crawlers()`'s very first attempt: `BuildStructure.to_count_per_base`
+looked up `mediator.get_placements_dict[townhall.position]`, but that dict is
+only keyed by the map's precomputed expansion-location points, not a
+townhall's literal position — `KeyError: (60.5, 56.5)` for the natural. Fixed
+in `130b17b` by iterating `ctx.bot.owned_expansions` instead (see
+`claude/ares-migration.md` gotcha 10 for the full writeup). Nothing past that
+point in the game has been observed yet.
 
 Resolved by real games: the Speedling All-In opening supply numbers are fine (the
 build runner reached the end and handed over), macro hatch placement works
