@@ -172,7 +172,16 @@ class ZergRushValidator:
                 self._pool_start_time = self.time
                 self._pool_start_supply = self.supply_used
                 self._workers_at_pool_start = self.workers.amount
-                self._pool_count = pool_count + pending
+                # Deliberately not `pool_count + pending` here: once the
+                # pool is placed but still building, already_pending()
+                # ALSO counts it (its own docstring: "buildings already
+                # in progress"), so pool_count and pending both equal 1
+                # for the same physical structure through its whole
+                # build time. Summing them double-counts one pool as two
+                # for the ~29s it takes to finish. The unconditional
+                # block below re-derives the true count every frame from
+                # self.structures(...).amount alone, so nothing is lost
+                # by not seeding _pool_count here.
 
         # Track max pool count (shouldn't build more than 1)
         current_pool = self.structures(UnitTypeId.SPAWNINGPOOL).amount
