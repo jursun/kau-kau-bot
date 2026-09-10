@@ -5,8 +5,10 @@ then two SCVs walk to the enemy third and put down the first two Barracks.
 
 After the opening: Barracks three and four go up at the same proxy as their
 triggers fire, all four never stop making Marines, SCVs trickle up to 22 on
-whatever minerals the Barracks leave behind, and the first five Marines
-leave with the builder SCVs in tow.
+whatever minerals the Barracks leave behind. The first five Marines muster
+and leave together with the builder SCVs in tow; every Marine after that
+streams to the front individually the moment it's trained — one wait, then
+none.
 
 Not yet validated in-game.
 """
@@ -32,12 +34,11 @@ PROXY_BARRACKS = 4
 WORKER_TARGET = 22
 
 # Five Marines is two Barracks' worth of production and the point at which
-# a VeryHard opening has nothing that beats them. Growth of 1.0 keeps
-# reinforcement waves small and constant (`release_waves` still enforces
-# `wave1_min + 1` as a floor) rather than making later Marines wait around
-# for a big group that this build has no economy to assemble.
+# a VeryHard opening has nothing that beats them. There is exactly one
+# muster: `combat.release_first_wave_then_stream()` waits for this many,
+# sends them together, and every Marine after that streams to the front
+# individually, with no further waiting and no wave-growth math.
 FIRST_WAVE = 5
-WAVE_GROWTH = 1.0
 
 
 def proxy_location(ctx) -> Point2:
@@ -79,7 +80,12 @@ BUILD = BuildDefinition(
     ),
     combat=Combat(
         routines=(
-            combat.release_waves(),
+            # One muster for the first five, then every later Marine streams
+            # to the front on its own — no more waves, no more waiting. See
+            # `combat.release_first_wave_then_stream`'s docstring for why
+            # omitting `RunState.mustering_tags` after wave 1 is what makes
+            # that happen: `attack_squads()` below reads it directly.
+            combat.release_first_wave_then_stream(),
             combat.defend_home(),
             combat.attack_squads(),
             # Steps 9 and 10 of the build order: the SCVs that finished the
@@ -93,7 +99,6 @@ BUILD = BuildDefinition(
         ),
         wave_gate=gates.always,  # no tech to wait on; size is the only gate
         wave1_min=FIRST_WAVE,
-        wave_growth=WAVE_GROWTH,
         # Marines spawn at the proxy, not at home. Without this they would
         # walk back to our own natural to muster before every attack.
         rally=proxy_location,
