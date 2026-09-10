@@ -285,3 +285,27 @@ regardless of what build is running.
   `enemy_army_value` does, since the cache doesn't) for the enemy's known
   army supply at that same instant. Every wave in the Stage 4 report now
   carries both numbers side by side.
+- **A disengaging squad needs its own tag set, separate from
+  `mustering_tags`, or it self-releases alone.** `attack_squads` now
+  checks `ENGAGE_SUPPLY_RATIO` (2x) against whatever enemy is actually in
+  range (`_enemies_near`, the same `close_enemy` `StutterGroupForward`
+  already uses) before letting a squad fight; falling short sends it back
+  to `targeting.rally_point` instead of standing and dying. The tempting
+  shortcut — reusing `mustering_tags` for this — is wrong: that set
+  auto-clears the instant a squad is merely *within `MUSTER_RADIUS`*,
+  with no idea whether reinforcements ever showed up, so a lone retreating
+  squad would resume attacking solo the moment it arrived. `retreating_tags`
+  (`RunState`) instead only clears when `release_waves` sweeps it into a
+  freshly-promoted wave's `mustering_tags` — so a disengaged squad always
+  waits for real reinforcement. The "combined might" merge itself needs no
+  new code: `mediator.get_squads()` groups by live proximity every frame,
+  so a retreating squad and a newly-released wave become one squad object
+  automatically once they're both sitting at the same rally point.
+- **`_maxed_and_ready` (200 supply, checked via `already_pending` against
+  every type in `ctx.build.army.types`) bypasses both the engagement ratio
+  and the wave-release size/tech gate at once**, on the reasoning that
+  once nothing is left to train there is no "next wave" worth retreating
+  or waiting for — the whole build's army is already whatever is standing
+  on the field. Reusing the same `bool` in both `release_waves` and
+  `attack_squads` (rather than two separate supply checks) is what keeps
+  them from disagreeing about whether the game has reached that point.

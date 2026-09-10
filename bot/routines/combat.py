@@ -14,7 +14,7 @@ from ares.behaviors.combat.individual import (
     MoveToSafeTarget,
     ShootTargetInRange,
 )
-from ares.consts import UnitRole, UnitTreeQueryType
+from ares.consts import WORKER_TYPES, UnitRole, UnitTreeQueryType
 from cython_extensions import cy_closest_to, cy_distance_to_squared
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.units import Units
@@ -33,9 +33,57 @@ MUSTER_RADIUS: float = 4.0
 before it is let off to attack, rather than trickling toward the enemy
 as units peel off from wherever they were defending."""
 
+ENGAGE_SUPPLY_RATIO: float = 2.0
+"""A squad only fights whatever enemy is actually in range once our supply
+there is at least this many times theirs - see `attack_squads`'s docstring
+for what happens to a squad that fails this check."""
+
+MAX_SUPPLY: float = 200.0
+"""Standard SC2 supply cap. Once here - and once `_army_fully_trained` says
+nothing is still incubating, so the count reflects units actually on the
+field - there is no "next wave" worth waiting for and nothing left to gain
+by holding back, so both `ENGAGE_SUPPLY_RATIO` and the wave-release gate
+are bypassed: see `_maxed_and_ready`."""
+
+
+def _supply_value(ctx: "BotContext", units) -> float:
+    """Total real supply cost of `units`, workers excluded - a worker caught
+    near a fight is neither a combat threat nor a combat asset.
+    `calculate_supply_cost` (not a flat per-type lookup) is what prices a
+    morphed unit correctly, e.g. a Ravager off the Roach it came from."""
+    return sum(
+        ctx.bot.calculate_supply_cost(unit.type_id)
+        for unit in units
+        if unit.type_id not in WORKER_TYPES
+    )
+
+
+def _army_fully_trained(ctx: "BotContext") -> bool:
+    """True once nothing in the build's own composition is still incubating
+    (a Zerg egg, or any other race's production queue) - so `supply_used`
+    reflects units actually on the field, not still cooking in production."""
+    return all(
+        ctx.bot.already_pending(unit_type) == 0 for unit_type in ctx.build.army.types
+    )
+
+
+def _maxed_and_ready(ctx: "BotContext") -> bool:
+    """See `MAX_SUPPLY`/`ENGAGE_SUPPLY_RATIO`."""
+    return ctx.bot.supply_used >= MAX_SUPPLY and _army_fully_trained(ctx)
+
 
 def release_waves() -> CombatRoutine:
-    """Promote defenders to attackers once the size and tech gates both pass."""
+    """Promote defenders to attackers once the size and tech gates both pass -
+    or unconditionally once `_maxed_and_ready` (200 supply, nothing left to
+    train): there is nothing to gain by continuing to wait once every
+    possible unit the build can field is already on the ground.
+
+    A wave release also sweeps up anything sitting in `RunState.retreating_tags`
+    (squads that fell back from an unfavorable fight - see `attack_squads`)
+    into the freshly-promoted wave's `mustering_tags`, so a disengaged squad
+    always ends up attacking together with the next wave rather than either
+    alone.
+    """
 
     def routine(ctx: "BotContext") -> None:
         plan = ctx.build.combat
@@ -44,26 +92,33 @@ def release_waves() -> CombatRoutine:
 
         defenders = ctx.units_in_role(UnitRole.DEFENDING)
         size = len(defenders)
-        if size < ctx.state.next_wave_size:
+        if size == 0:
             return
-        if not plan.wave_gate(ctx):
-            ctx.log_once(
-                f"wave_wait_{ctx.state.wave_number}",
-                f"GATHER wave {ctx.state.wave_number + 1} "
-                f"({size}/{ctx.state.next_wave_size}) - waiting on tech",
-            )
-            return
+
+        maxed = _maxed_and_ready(ctx)
+        if not maxed:
+            if size < ctx.state.next_wave_size:
+                return
+            if not plan.wave_gate(ctx):
+                ctx.log_once(
+                    f"wave_wait_{ctx.state.wave_number}",
+                    f"GATHER wave {ctx.state.wave_number + 1} "
+                    f"({size}/{ctx.state.next_wave_size}) - waiting on tech",
+                )
+                return
 
         tags = {u.tag for u in defenders}
         ctx.mediator.batch_assign_role(tags=tags, role=UnitRole.ATTACKING)
-        ctx.state.mustering_tags.update(tags)
+        ctx.state.mustering_tags.update(tags | ctx.state.retreating_tags)
+        ctx.state.retreating_tags.clear()
         ctx.state.wave_number += 1
         ctx.state.next_wave_size = max(
             plan.wave1_min + 1, math.ceil(size * plan.wave_growth)
         )
+        reason = " - 200 supply, nothing left to train" if maxed else ""
         ctx.log(
             f"WAVE {ctx.state.wave_number} attack "
-            f"(size={size}, next>={ctx.state.next_wave_size})"
+            f"(size={size}, next>={ctx.state.next_wave_size}){reason}"
         )
 
     return routine
@@ -126,19 +181,34 @@ def attack_squads(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
     waiting to form up; once a squad clusters within `MUSTER_RADIUS` of the
     rally point its tags are released and it attacks like any other squad
     from then on, even if it later drifts away from the rally point.
+
+    A squad that isn't still forming up only fights whatever enemy is
+    actually in range (`SQUAD_ENGAGE_RANGE`) once our supply there clears
+    `ENGAGE_SUPPLY_RATIO` against theirs (`_maxed_and_ready` bypasses this -
+    see `MAX_SUPPLY`). Falling short doesn't mean standing and dying: the
+    squad's tags go into `RunState.retreating_tags` and it falls back to the
+    same rally point a fresh wave musters at. Unlike `mustering_tags`,
+    `retreating_tags` does NOT auto-clear on arrival - it waits there until
+    `release_waves` sweeps it into whatever wave releases next, so a
+    disengaged squad always attacks again alongside reinforcements (and with
+    their combined supply re-checked against the ratio) instead of either
+    trickling back in alone or waiting out the game at the rally forever.
     """
 
     def routine(ctx: "BotContext") -> None:
         alive_attackers = {u.tag for u in ctx.units_in_role(UnitRole.ATTACKING)}
         ctx.state.mustering_tags &= alive_attackers
+        ctx.state.retreating_tags &= alive_attackers
 
         squads = ctx.mediator.get_squads(
             role=UnitRole.ATTACKING, squad_radius=squad_radius
         )
         rally = targeting.rally_point(ctx)
+        maxed = _maxed_and_ready(ctx)
         for squad in squads:
             position = squad.squad_position
             mustering = squad.tags & ctx.state.mustering_tags
+            retreating = squad.tags & ctx.state.retreating_tags
 
             if (
                 mustering
@@ -147,8 +217,23 @@ def attack_squads(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
                 ctx.state.mustering_tags -= mustering
                 mustering = set()
 
-            target = rally if mustering else targeting.attack_target(ctx, position)
             close_enemy = _enemies_near(ctx, position, SQUAD_ENGAGE_RANGE)
+
+            if not mustering and not retreating and close_enemy and not maxed:
+                our_supply = _supply_value(ctx, squad.squad_units)
+                enemy_supply = _supply_value(ctx, close_enemy)
+                if enemy_supply > 0 and our_supply < ENGAGE_SUPPLY_RATIO * enemy_supply:
+                    # Outnumbered - fall back rather than fight a losing
+                    # engagement; `release_waves` reunites this squad with
+                    # whatever attacks next.
+                    ctx.state.retreating_tags |= squad.tags
+                    retreating = squad.tags
+
+            target = (
+                rally
+                if (mustering or retreating)
+                else targeting.attack_target(ctx, position)
+            )
 
             maneuver = CombatManeuver()
             if close_enemy:

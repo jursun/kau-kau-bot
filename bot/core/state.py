@@ -21,4 +21,11 @@ class RunState:
     mustering_tags: set[int] = field(default_factory=set)
     """Attacking units still forming up at the rally point (see
     `bot.routines.combat.attack_squads`)."""
+    retreating_tags: set[int] = field(default_factory=set)
+    """Attacking units that disengaged an unfavorable fight and fell back to
+    the rally point - unlike `mustering_tags`, these do NOT auto-release on
+    arrival; they sit at the rally until `release_waves` sweeps them into
+    the next wave it promotes, so a disengaged squad always attacks again
+    alongside reinforcements rather than alone (see
+    `bot.routines.combat.attack_squads`/`release_waves`)."""
     log_once: LogOnce = field(default_factory=LogOnce)

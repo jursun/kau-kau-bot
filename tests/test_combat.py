@@ -40,7 +40,14 @@ def _ctx(wave1_min: int = 6, wave_growth: float = 1.25) -> BotContext:
     build.combat.wave1_min = wave1_min
     build.combat.wave_growth = wave_growth
     build.combat.wave_gate = lambda _ctx: True
-    return BotContext(bot=MagicMock(), build=build, state=RunState())
+    ctx = BotContext(bot=MagicMock(), build=build, state=RunState())
+    # Comfortably under `MAX_SUPPLY` and nothing pending by default, so
+    # `_maxed_and_ready` is False unless a test deliberately raises these -
+    # `already_pending` returning 0 for any argument means "nothing training".
+    ctx.bot.supply_used = 100.0
+    ctx.bot.already_pending.return_value = 0
+    ctx.bot.calculate_supply_cost.return_value = 1.0
+    return ctx
 
 
 def test_release_waves_grows_by_25_percent() -> None:
@@ -160,6 +167,154 @@ def test_already_released_squad_ignores_rally_point() -> None:
         assert (target.x, target.y) == (attack.x, attack.y)
     finally:
         _restore_targeting(original)
+
+
+# ── Engagement ratio: disengage/retreat/regroup ─────────────────────────────
+
+
+def test_outnumbered_squad_disengages_to_rally_instead_of_attacking() -> None:
+    """Our squad's supply must clear `ENGAGE_SUPPLY_RATIO` (2x) against
+    whatever enemy is actually in range before it fights - here it's a wash
+    (2 vs 2), so it should fall back to the rally point and mark its tags as
+    retreating rather than press the attack."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original = _patch_targeting(rally, attack)
+    try:
+        ctx = _ctx()
+        units = [_unit(1, Point2((10.0, 10.0))), _unit(2, Point2((12.0, 10.0)))]
+        enemies = [_unit(90), _unit(91)]  # 2 vs 2 supply - not double
+        ctx.mediator.get_units_in_range.return_value = [enemies]
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+
+        combat.attack_squads()(ctx)
+
+        registered = ctx.bot.register_behavior.call_args.args[0]
+        amoves = [b for b in registered.micros if isinstance(b, AMoveGroup)]
+        assert amoves[0].target == rally
+        assert ctx.state.retreating_tags == {1, 2}
+    finally:
+        _restore_targeting(original)
+
+
+def test_squad_with_double_supply_attacks_instead_of_retreating() -> None:
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original = _patch_targeting(rally, attack)
+    try:
+        ctx = _ctx()
+        units = [_unit(i, Point2((10.0, 10.0))) for i in range(4)]  # 4 supply
+        enemies = [_unit(90), _unit(91)]  # 2 supply - exactly double, should engage
+        ctx.mediator.get_units_in_range.return_value = [enemies]
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+
+        combat.attack_squads()(ctx)
+
+        registered = ctx.bot.register_behavior.call_args.args[0]
+        amoves = [b for b in registered.micros if isinstance(b, AMoveGroup)]
+        assert amoves[0].target == attack
+        assert ctx.state.retreating_tags == set()
+    finally:
+        _restore_targeting(original)
+
+
+def test_retreating_squad_does_not_auto_release_at_the_rally() -> None:
+    """Unlike `mustering_tags`, arriving at the rally must NOT clear
+    `retreating_tags` on its own - only `release_waves` sweeping it into a
+    fresh wave does, so a lone disengaged squad waits rather than wandering
+    back into the same losing fight alone."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original = _patch_targeting(rally, attack)
+    try:
+        ctx = _ctx()
+        units = [_unit(1, Point2((50.0, 50.0)))]  # already sitting at the rally
+        ctx.state.retreating_tags = {1}
+        ctx.mediator.get_units_from_role.return_value = units  # still alive
+        ctx.mediator.get_units_in_range.return_value = [[]]  # no close enemy now
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+
+        combat.attack_squads()(ctx)
+
+        registered = ctx.bot.register_behavior.call_args.args[0]
+        amoves = [b for b in registered.micros if isinstance(b, AMoveGroup)]
+        assert amoves[0].target == rally
+        assert ctx.state.retreating_tags == {1}, "must keep waiting, not self-release"
+    finally:
+        _restore_targeting(original)
+
+
+def test_release_waves_combines_retreating_tags_with_the_next_wave() -> None:
+    """A disengaged squad's tags must ride along with whatever wave
+    `release_waves` next promotes, so the two attack together."""
+    ctx = _ctx(wave1_min=6)
+    ctx.state.retreating_tags = {901, 902}
+    defenders = [_unit(i) for i in range(6)]
+    ctx.mediator.get_units_from_role.return_value = defenders
+
+    combat.release_waves()(ctx)
+
+    assert ctx.state.mustering_tags == {u.tag for u in defenders} | {901, 902}
+    assert ctx.state.retreating_tags == set()
+
+
+def test_maxed_and_fully_trained_bypasses_the_engagement_ratio() -> None:
+    """At 200 supply with nothing left to train there is no next wave worth
+    falling back for - the squad should attack even outnumbered."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original = _patch_targeting(rally, attack)
+    try:
+        ctx = _ctx()
+        ctx.bot.supply_used = 200.0
+        ctx.build.army.types = frozenset({"ZERGLING"})
+        ctx.bot.already_pending.return_value = 0  # nothing incubating
+        units = [_unit(1, Point2((10.0, 10.0)))]  # 1 supply
+        enemies = [_unit(90), _unit(91), _unit(92)]  # 3 supply - badly outnumbered
+        ctx.mediator.get_units_in_range.return_value = [enemies]
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+
+        combat.attack_squads()(ctx)
+
+        registered = ctx.bot.register_behavior.call_args.args[0]
+        amoves = [b for b in registered.micros if isinstance(b, AMoveGroup)]
+        assert amoves[0].target == attack
+        assert ctx.state.retreating_tags == set()
+    finally:
+        _restore_targeting(original)
+
+
+def test_maxed_and_fully_trained_bypasses_the_wave_gate_and_size() -> None:
+    """The 200-supply fallback should release defenders even if the wave
+    gate would otherwise refuse and even below the usual size threshold."""
+    ctx = _ctx(wave1_min=20)
+    ctx.build.combat.wave_gate = lambda _ctx: False  # would normally block
+    ctx.bot.supply_used = 200.0
+    ctx.build.army.types = frozenset({"ZERGLING"})
+    ctx.bot.already_pending.return_value = 0
+    defenders = [_unit(i) for i in range(3)]  # well under wave1_min=20
+    ctx.mediator.get_units_from_role.return_value = defenders
+
+    combat.release_waves()(ctx)
+
+    assert ctx.state.wave_number == 1
+    assert ctx.state.mustering_tags == {u.tag for u in defenders}
+
+
+def test_not_yet_maxed_still_respects_the_wave_gate() -> None:
+    """Sanity check: supply alone isn't enough - still training something
+    means the fallback must not fire yet."""
+    ctx = _ctx(wave1_min=20)
+    ctx.build.combat.wave_gate = lambda _ctx: False
+    ctx.bot.supply_used = 200.0
+    ctx.build.army.types = frozenset({"ZERGLING"})
+    ctx.bot.already_pending.return_value = 1  # still an egg incubating
+    defenders = [_unit(i) for i in range(3)]
+    ctx.mediator.get_units_from_role.return_value = defenders
+
+    combat.release_waves()(ctx)
+
+    assert ctx.state.wave_number == 0
 
 
 def test_escort_overseers_targets_the_biggest_squads_destination() -> None:
