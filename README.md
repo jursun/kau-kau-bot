@@ -1,6 +1,6 @@
 ﻿# KauKauBot
 
-you cook, we eat
+**_you cook, we eat_**
 
 Zerg StarCraft II bot for [AI Arena](https://aiarena.net/), built on
 [ares-sc2](https://github.com/AresSC2/ares-sc2).
@@ -9,8 +9,8 @@ Zerg StarCraft II bot for [AI Arena](https://aiarena.net/), built on
 
 | Opening | Intent | State |
 |---------|--------|-------|
-| `Speedling All-In` | Overlord, pool, gas, metabolic boost, macro hatch, zergling flood into the enemy main | Ladder Ready |
-| `Upgrade Rush` | Maximizing zergling upgrades with double evo | Ladder Ready |
+| Speedling All-In | Overlord, pool, gas, metabolic boost, macro hatch, zergling flood into the enemy main | Ladder Ready |
+| Upgrade Rush | Zerging flood by maximizing upgrades with double evo | Ladder Ready |
 
 ## Getting started
 
