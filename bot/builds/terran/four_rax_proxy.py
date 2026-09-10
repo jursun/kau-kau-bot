@@ -182,11 +182,27 @@ BUILD = BuildDefinition(
         t.proxy_crew(),
     ),
     macro_steps=(
-        # Supply first: a Barracks that cannot make Marines is the one way
-        # this build loses to itself. This is a safety net on top of the two
-        # Depots `PROXY_CREW` places explicitly — it only ever acts if those
-        # two turn out not to be enough.
-        c.auto_supply(),
+        # No `c.auto_supply()` here, deliberately. `PROXY_CREW` already
+        # places exactly two Depots (Z's home Depot, Y's proxy Depot) - the
+        # nine-step build order names precisely that many and no more. ares'
+        # generic `AutoSupply` doesn't know that: its own trigger fires once
+        # `supply_left <= 2` with zero production structures up yet, which
+        # tripped the instant the opening queued the 13th/14th SCV - well
+        # before Z had even spawned to build the Depot itself - and pulled a
+        # *different*, still-mining SCV to do it instead. That's the "SCV
+        # ahead of Z" bug: a second, generic supply mechanism racing the
+        # crew's own explicit one for the exact same structure. Once
+        # production structures exist, `AutoSupply` also scales its target
+        # Depot count up with them rather than stopping at two, which
+        # conflicts with this build's fixed structure count on principle,
+        # not just at the one collision that was actually observed - so this
+        # is left out rather than merely gated around the early window. If a
+        # crew member dies before placing its Depot there is no automatic
+        # replacement, consistent with every other crew task already having
+        # none if its worker dies (see `_drive_crew_member`'s dead-worker
+        # branch). See `terran_builds.yml` for the matching removal of
+        # `AutoSupplyAtSupply`, ares' other generic supply mechanism.
+        #
         # Marines outrank SCVs every frame. A `MacroPlan` stops at the first
         # step that acts, so SCVs are only built on frames where every ready
         # Barracks is already busy — which is exactly "squeeze out more SCVs

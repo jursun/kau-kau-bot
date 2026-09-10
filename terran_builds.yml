@@ -72,8 +72,20 @@ Builds:
     # consider this opening complete almost immediately, handing off to
     # `macro_steps` (Marines, the one remaining SCV) well before Barracks A
     # is anywhere close to done.
+    #
+    # No `AutoSupplyAtSupply` here (was 15; removed). It's ares' own
+    # build-runner-level generic supply mechanism, separate from anything in
+    # `macro_steps` — and PROXY_CREW already places exactly two Depots by
+    # design, at exactly the points the nine-step build order names. Leaving
+    # this set collided with that: `AutoSupplyAtSupply` and `c.auto_supply()`
+    # (also removed, from bot/builds/terran/four_rax_proxy.py's macro_steps —
+    # see its comment there) are two separate ares mechanisms that each pull
+    # a worker to build a Depot on their own supply-based trigger, neither
+    # aware the crew already has it covered. The "SCV ahead of Z" bug
+    # reported after the first real game was one of them firing before Z had
+    # even spawned to build its own Depot. Omitting the key leaves it at
+    # ares' own default (200), which this build's supply values never near.
     Four Rax Proxy:
         ConstantWorkerProductionTill: 14
-        AutoSupplyAtSupply: 15
         OpeningBuildOrder:
             - 12 scv
