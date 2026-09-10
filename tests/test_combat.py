@@ -17,7 +17,7 @@ from __future__ import annotations
 import sys
 from unittest.mock import MagicMock
 
-from ares.behaviors.combat.group import AMoveGroup, KeepGroupSafe, StutterGroupForward
+from ares.behaviors.combat.group import AMoveGroup, StutterGroupForward
 from ares.behaviors.combat.individual import KeepUnitSafe, MoveToSafeTarget
 from ares.managers.squad_manager import UnitSquad
 from sc2.position import Point2
@@ -47,7 +47,6 @@ def _ctx(wave1_min: int = 6, wave_growth: float = 1.25) -> BotContext:
     ctx.bot.supply_used = 100.0
     ctx.bot.already_pending.return_value = 0
     ctx.bot.calculate_supply_cost.return_value = 1.0
-    ctx.mediator.get_ground_grid = "ground-grid"
     return ctx
 
 
@@ -170,74 +169,20 @@ def test_already_released_squad_ignores_rally_point() -> None:
         _restore_targeting(original)
 
 
-# ── Engagement ratio: disengage/retreat/regroup ─────────────────────────────
+# ── Attack squads: no engagement ratio, no retreat ──────────────────────────
 
 
-def test_outnumbered_squad_disengages_to_rally_instead_of_attacking() -> None:
-    """Our squad's supply must clear `ENGAGE_SUPPLY_RATIO` (2x) against
-    whatever enemy is actually in range before it fights - here it's a wash
-    (2 vs 2), so it should fall back to the rally point and mark its tags as
-    retreating rather than press the attack."""
+def test_squad_attacks_regardless_of_how_outnumbered_it_is() -> None:
+    """There is no supply-ratio check and no retreat: a squad fights whatever
+    is in `SQUAD_ENGAGE_RANGE` with `StutterGroupForward` even when badly
+    outnumbered, and still heads for the real attack target, never rally."""
     rally = Point2((50.0, 50.0))
     attack = Point2((999.0, 999.0))
     original = _patch_targeting(rally, attack)
     try:
         ctx = _ctx()
-        units = [_unit(1, Point2((10.0, 10.0))), _unit(2, Point2((12.0, 10.0)))]
-        enemies = [_unit(90), _unit(91)]  # 2 vs 2 supply - not double
-        ctx.mediator.get_units_in_range.return_value = [enemies]
-        ctx.mediator.get_squads.return_value = [_squad(units)]
-
-        combat.attack_squads()(ctx)
-
-        registered = ctx.bot.register_behavior.call_args.args[0]
-        amoves = [b for b in registered.micros if isinstance(b, AMoveGroup)]
-        assert amoves[0].target == rally
-        assert ctx.state.retreating_tags == {1, 2}
-    finally:
-        _restore_targeting(original)
-
-
-def test_outnumbered_squad_gets_keep_group_safe_not_stutter_forward() -> None:
-    """Regression test for a real bug: `StutterGroupForward` only ever reads
-    its `target` argument to pick a representative unit - the orders it
-    actually issues always chase the enemy's centre regardless of what
-    `target` is, so handing it the rally point never produced a retreat, it
-    just kept fighting toward the enemy every frame. A retreating squad must
-    get `KeepGroupSafe` (which actually flees on the ground grid) and never
-    `StutterGroupForward`."""
-    rally = Point2((50.0, 50.0))
-    attack = Point2((999.0, 999.0))
-    original = _patch_targeting(rally, attack)
-    try:
-        ctx = _ctx()
-        units = [_unit(1, Point2((10.0, 10.0))), _unit(2, Point2((12.0, 10.0)))]
-        enemies = [_unit(90), _unit(91)]  # 2 vs 2 supply - not double
-        ctx.mediator.get_units_in_range.return_value = [enemies]
-        ctx.mediator.get_squads.return_value = [_squad(units)]
-
-        combat.attack_squads()(ctx)
-
-        registered = ctx.bot.register_behavior.call_args.args[0]
-        stutters = [b for b in registered.micros if isinstance(b, StutterGroupForward)]
-        assert stutters == [], "must never stutter toward the enemy while retreating"
-
-        safes = [b for b in registered.micros if isinstance(b, KeepGroupSafe)]
-        assert len(safes) == 1
-        assert safes[0].close_enemy == enemies
-        assert safes[0].grid == "ground-grid"
-    finally:
-        _restore_targeting(original)
-
-
-def test_squad_with_double_supply_attacks_instead_of_retreating() -> None:
-    rally = Point2((50.0, 50.0))
-    attack = Point2((999.0, 999.0))
-    original = _patch_targeting(rally, attack)
-    try:
-        ctx = _ctx()
-        units = [_unit(i, Point2((10.0, 10.0))) for i in range(4)]  # 4 supply
-        enemies = [_unit(90), _unit(91)]  # 2 supply - exactly double, should engage
+        units = [_unit(1, Point2((10.0, 10.0)))]  # 1 unit
+        enemies = [_unit(90), _unit(91), _unit(92), _unit(93)]  # badly outnumbered
         ctx.mediator.get_units_in_range.return_value = [enemies]
         ctx.mediator.get_squads.return_value = [_squad(units)]
 
@@ -246,78 +191,10 @@ def test_squad_with_double_supply_attacks_instead_of_retreating() -> None:
         registered = ctx.bot.register_behavior.call_args.args[0]
         amoves = [b for b in registered.micros if isinstance(b, AMoveGroup)]
         assert amoves[0].target == attack
-        assert ctx.state.retreating_tags == set()
 
         stutters = [b for b in registered.micros if isinstance(b, StutterGroupForward)]
-        assert len(stutters) == 1, "a favorable fight should still stutter-forward"
-        safes = [b for b in registered.micros if isinstance(b, KeepGroupSafe)]
-        assert safes == []
-    finally:
-        _restore_targeting(original)
-
-
-def test_retreating_squad_does_not_auto_release_at_the_rally() -> None:
-    """Unlike `mustering_tags`, arriving at the rally must NOT clear
-    `retreating_tags` on its own - only `release_waves` sweeping it into a
-    fresh wave does, so a lone disengaged squad waits rather than wandering
-    back into the same losing fight alone."""
-    rally = Point2((50.0, 50.0))
-    attack = Point2((999.0, 999.0))
-    original = _patch_targeting(rally, attack)
-    try:
-        ctx = _ctx()
-        units = [_unit(1, Point2((50.0, 50.0)))]  # already sitting at the rally
-        ctx.state.retreating_tags = {1}
-        ctx.mediator.get_units_from_role.return_value = units  # still alive
-        ctx.mediator.get_units_in_range.return_value = [[]]  # no close enemy now
-        ctx.mediator.get_squads.return_value = [_squad(units)]
-
-        combat.attack_squads()(ctx)
-
-        registered = ctx.bot.register_behavior.call_args.args[0]
-        amoves = [b for b in registered.micros if isinstance(b, AMoveGroup)]
-        assert amoves[0].target == rally
-        assert ctx.state.retreating_tags == {1}, "must keep waiting, not self-release"
-    finally:
-        _restore_targeting(original)
-
-
-def test_release_waves_combines_retreating_tags_with_the_next_wave() -> None:
-    """A disengaged squad's tags must ride along with whatever wave
-    `release_waves` next promotes, so the two attack together."""
-    ctx = _ctx(wave1_min=6)
-    ctx.state.retreating_tags = {901, 902}
-    defenders = [_unit(i) for i in range(6)]
-    ctx.mediator.get_units_from_role.return_value = defenders
-
-    combat.release_waves()(ctx)
-
-    assert ctx.state.mustering_tags == {u.tag for u in defenders} | {901, 902}
-    assert ctx.state.retreating_tags == set()
-
-
-def test_maxed_and_fully_trained_bypasses_the_engagement_ratio() -> None:
-    """At 200 supply with nothing left to train there is no next wave worth
-    falling back for - the squad should attack even outnumbered."""
-    rally = Point2((50.0, 50.0))
-    attack = Point2((999.0, 999.0))
-    original = _patch_targeting(rally, attack)
-    try:
-        ctx = _ctx()
-        ctx.bot.supply_used = 200.0
-        ctx.build.army.types = frozenset({"ZERGLING"})
-        ctx.bot.already_pending.return_value = 0  # nothing incubating
-        units = [_unit(1, Point2((10.0, 10.0)))]  # 1 supply
-        enemies = [_unit(90), _unit(91), _unit(92)]  # 3 supply - badly outnumbered
-        ctx.mediator.get_units_in_range.return_value = [enemies]
-        ctx.mediator.get_squads.return_value = [_squad(units)]
-
-        combat.attack_squads()(ctx)
-
-        registered = ctx.bot.register_behavior.call_args.args[0]
-        amoves = [b for b in registered.micros if isinstance(b, AMoveGroup)]
-        assert amoves[0].target == attack
-        assert ctx.state.retreating_tags == set()
+        assert len(stutters) == 1, "should stutter-forward and trade, not retreat"
+        assert stutters[0].enemies == enemies
     finally:
         _restore_targeting(original)
 

@@ -285,50 +285,21 @@ regardless of what build is running.
   `enemy_army_value` does, since the cache doesn't) for the enemy's known
   army supply at that same instant. Every wave in the Stage 4 report now
   carries both numbers side by side.
-- **A disengaging squad needs its own tag set, separate from
-  `mustering_tags`, or it self-releases alone.** `attack_squads` now
-  checks `ENGAGE_SUPPLY_RATIO` (2x) against whatever enemy is actually in
-  range (`_enemies_near`, the same `close_enemy` `StutterGroupForward`
-  already uses) before letting a squad fight; falling short sends it back
-  to `targeting.rally_point` instead of standing and dying. The tempting
-  shortcut — reusing `mustering_tags` for this — is wrong: that set
-  auto-clears the instant a squad is merely *within `MUSTER_RADIUS`*,
-  with no idea whether reinforcements ever showed up, so a lone retreating
-  squad would resume attacking solo the moment it arrived. `retreating_tags`
-  (`RunState`) instead only clears when `release_waves` sweeps it into a
-  freshly-promoted wave's `mustering_tags` — so a disengaged squad always
-  waits for real reinforcement. The "combined might" merge itself needs no
-  new code: `mediator.get_squads()` groups by live proximity every frame,
-  so a retreating squad and a newly-released wave become one squad object
-  automatically once they're both sitting at the same rally point.
-- **`_maxed_and_ready` (200 supply, checked via `already_pending` against
-  every type in `ctx.build.army.types`) bypasses both the engagement ratio
-  and the wave-release size/tech gate at once**, on the reasoning that
-  once nothing is left to train there is no "next wave" worth retreating
-  or waiting for — the whole build's army is already whatever is standing
-  on the field. Reusing the same `bool` in both `release_waves` and
-  `attack_squads` (rather than two separate supply checks) is what keeps
-  them from disagreeing about whether the game has reached that point.
 - **`StutterGroupForward` takes a `target` argument and completely ignores
   it once there are enemies.** Reading its source (ares v3.13.1) shows
   `target` is only ever used to sort the group and pick a representative
   unit for the duplicate-order check — every actual order it issues
   (`ATTACK`/`MOVE`) is aimed at `enemy_center`, computed from `enemies`, not
-  `target`. So the first version of the retreat logic — pass `target=rally`
-  to `StutterGroupForward` while a squad is disengaging — compiled, passed
-  every unit test (which only asserted on the `AMoveGroup` appended *after*
-  it), and did nothing in a real game: as long as `close_enemy` was
-  non-empty, `StutterGroupForward.execute()` always returned `True` and
-  `CombatManeuver`'s `any()` short-circuit (see the bullet above) meant the
-  `AMoveGroup(target=rally)` behind it never ran — the squad just kept
-  fighting toward the enemy it was supposedly retreating from. Fixed by
-  never handing a retreating squad `StutterGroupForward` at all: it now gets
-  `KeepGroupSafe` (group form of `_defender_maneuver`'s shoot-in-range-then-
-  flee shape — fires at whatever's already in range without closing
-  distance, then paths away from danger on `mediator.get_ground_grid`),
-  falling through to `AMoveGroup(target=rally)` once nothing's chasing it.
-  `tests/test_combat.py` now asserts the negative directly
-  (`test_outnumbered_squad_gets_keep_group_safe_not_stutter_forward`) —
-  the earlier tests only checked `AMoveGroup.target`, which was true but not
-  sufficient, since a higher-priority behavior can make that target
-  unreachable without the test ever noticing.
+  `target`. This is what sank an earlier attempt at a disengage-and-retreat
+  feature: passing `target=rally` to `StutterGroupForward` while a squad
+  was meant to be falling back compiled, passed every unit test (which only
+  asserted on the `AMoveGroup` appended *after* it), and did nothing in a
+  real game — `StutterGroupForward.execute()` always returned `True` while
+  `close_enemy` was non-empty, and `CombatManeuver`'s `any()` short-circuit
+  (see the bullet above) meant the `AMoveGroup(target=rally)` behind it
+  never ran. Worth remembering if a future retreat/kite feature reaches for
+  this behavior again: it is only ever safe to hand it a target other than
+  the enemy when there truly are no enemies in `enemies` that frame.
+  `attack_squads` no longer attempts a retreat at all (removed per Jason's
+  call — see the fixes list above — this build always fights whatever a
+  wave finds), but the framework fact stands on its own.
