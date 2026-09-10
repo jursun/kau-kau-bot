@@ -8,7 +8,7 @@ Zerg StarCraft II bot for [AI Arena](https://aiarena.net/), built on
 | Opening | Intent | State |
 |---------|--------|-------|
 | `Speedling All-In` | Overlord, pool, gas, metabolic boost, macro hatch, zergling flood into the enemy main | **Validated** - 9 straight wins vs VeryHard Terran (history archived at `data/archive/`) |
-| `UpgradeRush` | Hatch-first 3-base mass lings behind double evo / lair / hive | **Ported, currently being validated** - see below |
+| `UpgradeRush` | Hatch-first 3-base mass lings behind double evo / lair / hive | **Validated** - win vs VeryHard Terran at 8:54 (TorchesAIE_v4); split_production, pool-timing and larva-bottleneck (`overflow_hatcheries`) fixes landed since. Still on `feature/upgrade-rush`, not yet in the ladder-facing cycles - Speedling All-In stays primary there |
 
 `Debug: True` is currently set in `config.yml` so local games use the
 `test_123` cycle in `zerg_builds.yml`, which now lists `UpgradeRush` first.
