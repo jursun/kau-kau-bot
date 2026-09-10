@@ -98,6 +98,12 @@ class WorkerTask:
     """Free-text name for logs and the validation report, e.g. "Barracks D".
     Purely descriptive - never read for control flow. Defaults to
     `structure_id`'s own name when blank."""
+    closest_to: PointLocator | None = None
+    """Optional bias for *which* precalculated spot at `where` gets picked -
+    forwarded to `mediator.request_building_placement`'s own `closest_to`.
+    `where` still supplies the base location (which expansion's formation to
+    draw from); this only orders the candidates within it. `None` leaves
+    ares' own placement choice alone."""
 
 
 @dataclass(frozen=True)

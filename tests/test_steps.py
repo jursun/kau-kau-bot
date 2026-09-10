@@ -207,7 +207,7 @@ def test_spore_crawlers_skips_bases_that_already_have_enough() -> None:
     ctx.bot.owned_expansions = {covered: MagicMock(), uncovered: MagicMock()}
     ctx.bot.structures.return_value.amount = 1
     ctx.bot.structures.return_value.closer_than.side_effect = (
-        lambda _radius, location: [MagicMock()] if location == covered else []
+        lambda _radius, location: ([MagicMock()] if location == covered else [])
     )
 
     plan = z.spore_crawlers(per_base=1, gate=lambda _ctx: True)(ctx)
@@ -318,6 +318,22 @@ def test_overseers_returns_none_before_gate() -> None:
     ctx = _ctx()
     ctx.state.wave_number = 2
     assert z.overseers(per_wave=1, maximum=3, gate=lambda _ctx: False)(ctx) is None
+
+
+# --- common.build_workers --------------------------------------------------
+
+
+def test_build_workers_trains_up_to_the_worker_target_by_default() -> None:
+    ctx = _ctx()
+    behavior = c.build_workers()(ctx)
+
+    assert isinstance(behavior, BuildWorkers)
+    assert behavior.to_count == ctx.worker_target
+
+
+def test_build_workers_returns_none_before_its_gate() -> None:
+    ctx = _ctx()
+    assert c.build_workers(gate=lambda _ctx: False)(ctx) is None
 
 
 def main() -> int:

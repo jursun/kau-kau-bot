@@ -70,8 +70,19 @@ def auto_supply() -> MacroStep:
     return step
 
 
-def build_workers() -> MacroStep:
+def build_workers(gate: Gate = _always) -> MacroStep:
+    """Train workers up to `ctx.worker_target`, once `gate` passes.
+
+    Attributes:
+        gate: Extra condition beyond `MacroPlan`'s usual "only if nothing
+            higher-priority acted this frame" - e.g. a build that wants its
+            *next* worker held back until some other condition of its own,
+            not merely whenever resources allow it.
+    """
+
     def step(ctx: "BotContext"):
+        if not gate(ctx):
+            return None
         return BuildWorkers(to_count=ctx.worker_target)
 
     return step

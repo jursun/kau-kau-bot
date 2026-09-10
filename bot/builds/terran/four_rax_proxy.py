@@ -21,13 +21,16 @@ the exact task lists.
     9. 16 Depot                     (Y, at the proxy, after Barracks B)
 
 After the opening: all four Barracks never stop making Marines. Worker
-production stops for good at 14 — the starting 12 plus the two "SCV" line
+production caps for good at 14 — the starting 12 plus the two "SCV" line
 items in the build order above (step 1, which becomes `Z`, and step 6,
 which stays on minerals) — so nothing pulls resources away from Marines
-past that point. The first five Marines muster and leave together with
-whichever crew SCVs have finished their tasks by then; every Marine after
-that streams to the front individually the moment it's trained — one wait,
-then none.
+past that point. Step 6's SCV doesn't train the moment step 1's does,
+though: it waits for the 3rd Barracks (Barracks C, Z's own second task) to
+have started construction first, matching the build order's own placement
+of "6. SCV" after "5. 13 Barracks C". The first five Marines muster and
+leave together with whichever crew SCVs have finished their tasks by then;
+every Marine after that streams to the front individually the moment it's
+trained — one wait, then none.
 
 Not yet validated in-game.
 """
@@ -94,6 +97,22 @@ def home_location(ctx) -> Point2:
     return ctx.production_location
 
 
+def ramp_location(ctx) -> Point2:
+    """Biases Z's home Depot toward the main ramp rather than wherever ares'
+    placement solver would otherwise pick around the main.
+
+    `ai.main_base_ramp.top_center` is python-sc2's own centroid of the
+    ramp's upper tiles - the point at the top of the ramp, on the main's
+    side - passed through as `WorkerTask.closest_to` on Z's first task,
+    which `steps.terran._drive_crew_member` forwards to `request_building_
+    placement`'s own `closest_to`. This only orders the candidates within
+    `home_location`'s precalculated formation; it doesn't request a wall-off
+    placement or any particular tile, just "closest to the ramp" among the
+    spots already available.
+    """
+    return ctx.bot.main_base_ramp.top_center
+
+
 def _marine_training_started(ctx) -> bool:
     """Gate for Barracks D (X's second task): build order step 8 wants this
     *after* step 7 ("Marine"), not merely after Barracks A. Barracks A alone
@@ -101,6 +120,16 @@ def _marine_training_started(ctx) -> bool:
     which is too early — the build order calls for Marine production to have
     actually begun first."""
     return gates.training_started(UnitTypeId.MARINE)(ctx)
+
+
+def _third_barracks_started(ctx) -> bool:
+    """Gate for the build order's second "SCV" line (step 6): wants this
+    *after* step 5 ("13 Barracks C" - the 3rd Barracks overall), not the
+    moment step 1's SCV (`Z`) is claimed. `structure_started` counts ready
+    + pending the way ares itself does (ARCHITECTURE.md gotcha 8), so this
+    goes true the instant Barracks C's construction begins, not once it
+    completes."""
+    return gates.structure_started(UnitTypeId.BARRACKS, 3)(ctx)
 
 
 # The nine-step opening, expressed as one task list per crew worker. See
@@ -122,7 +151,12 @@ PROXY_CREW = ProxyCrewPlan(
         WorkerTask(UnitTypeId.SUPPLYDEPOT, proxy_location, label="Depot (proxy)"),
     ),
     z_tasks=(
-        WorkerTask(UnitTypeId.SUPPLYDEPOT, home_location, label="Depot (home)"),
+        WorkerTask(
+            UnitTypeId.SUPPLYDEPOT,
+            home_location,
+            closest_to=ramp_location,
+            label="Depot (home)",
+        ),
         WorkerTask(UnitTypeId.BARRACKS, proxy_location, label="Barracks C"),
     ),
 )
@@ -208,6 +242,13 @@ BUILD = BuildDefinition(
         # Barracks is already busy — which is exactly "squeeze out more SCVs
         # when resources allow".
         c.spawn_army(),
-        c.build_workers(),
+        # Gated on the 3rd Barracks (Barracks C) having started, matching
+        # build order step 6's own placement after step 5. Without this gate
+        # nothing would stop the 14th SCV from training the moment worker
+        # count allowed it, regardless of build order — see terran_builds.
+        # yml's comment for the matching change there, since ares' own
+        # `ConstantWorkerProductionTill` has no way to express a gate like
+        # this one and had to be capped at 13 (Z only) instead.
+        c.build_workers(gate=_third_barracks_started),
     ),
 )

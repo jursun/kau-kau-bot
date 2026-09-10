@@ -426,6 +426,29 @@ def test_proxy_crew_issues_the_current_task_for_a_claimed_worker() -> None:
         "assign_role": False,
     }
     assert ctx.state.proxy_crew.x.queued is True
+    assert "closest_to" not in ctx.mediator.request_building_placement.call_args.kwargs
+
+
+def test_proxy_crew_forwards_closest_to_when_a_task_sets_it() -> None:
+    ramp = Point2((50.0, 50.0))
+    plan = ProxyCrewPlan(
+        x_tasks=(
+            WorkerTask(UnitTypeId.SUPPLYDEPOT, _proxy, closest_to=lambda _c: ramp),
+        ),
+        y_tasks=(WorkerTask(UnitTypeId.BARRACKS, _proxy),),
+        z_tasks=(WorkerTask(UnitTypeId.SUPPLYDEPOT, _proxy),),
+    )
+    ctx = _ctx()
+    ctx.build.crew = plan
+    ctx.state.proxy_crew.x.tag = 5
+    ctx.bot.unit_tag_dict = {5: _worker(5, HOME)}
+    ctx.mediator.request_building_placement.return_value = PROXY
+
+    t.proxy_crew()(ctx)
+
+    assert (
+        ctx.mediator.request_building_placement.call_args.kwargs["closest_to"] == ramp
+    )
 
 
 def test_proxy_crew_does_not_reissue_while_still_in_the_tracker() -> None:

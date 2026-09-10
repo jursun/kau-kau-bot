@@ -61,17 +61,22 @@ Builds:
     # X/Y/Z is already building the "real" one.
     #
     # So this opening only has to cover what's actually a supply-count
-    # trigger: `ConstantWorkerProductionTill` keeps SCVs flowing up to the
-    # build's own hard cap of 14 total (the starting 12 plus exactly two
-    # more — the build order's two "SCV" steps, the first of which the
-    # `on_unit_created` hook claims as Z the instant it spawns, see
-    # `claim_z_on_first_scv`; see `WORKER_TARGET` in
-    # bot/builds/terran/four_rax_proxy.py for the same number enforced past
-    # the opening). This is an all-in, not an economy build — nothing here
-    # trains a 15th SCV. The single `scv` line below is enough to let ares
-    # consider this opening complete almost immediately, handing off to
-    # `macro_steps` (Marines, the one remaining SCV) well before Barracks A
-    # is anywhere close to done.
+    # trigger: `ConstantWorkerProductionTill` keeps SCVs flowing up to 13 —
+    # the starting 12 plus exactly one more, the build order's first "SCV"
+    # step, which the `on_unit_created` hook claims as Z the instant it
+    # spawns (see `claim_z_on_first_scv`). It stops there on purpose: this
+    # setting has no way to express a gate, and the build order's *second*
+    # "SCV" step (step 6) isn't supposed to train until the 3rd Barracks has
+    # started construction — that gate lives in `four_rax_proxy.py`'s own
+    # `c.build_workers(gate=_third_barracks_started)` macro step instead,
+    # which only starts acting once `ConstantWorkerProductionTill` hands
+    # off (once supply_workers reaches 13 and this setting stops touching
+    # it). See `WORKER_TARGET` in bot/builds/terran/four_rax_proxy.py for
+    # the overall 14-worker cap that step enforces. This is an all-in, not
+    # an economy build — nothing here trains a 15th SCV. The single `scv`
+    # line below is enough to let ares consider this opening complete
+    # almost immediately, handing off to `macro_steps` (Marines, the one
+    # remaining SCV) well before Barracks A is anywhere close to done.
     #
     # No `AutoSupplyAtSupply` here (was 15; removed). It's ares' own
     # build-runner-level generic supply mechanism, separate from anything in
@@ -86,6 +91,6 @@ Builds:
     # even spawned to build its own Depot. Omitting the key leaves it at
     # ares' own default (200), which this build's supply values never near.
     Four Rax Proxy:
-        ConstantWorkerProductionTill: 14
+        ConstantWorkerProductionTill: 13
         OpeningBuildOrder:
             - 12 scv

@@ -145,6 +145,10 @@ def _drive_crew_member(ctx: "BotContext", member: "CrewMember", tasks: "tuple") 
     `assign_role=False` is load-bearing: see `bot.consts.PROXY_CREW_ROLE` for
     why the crew's own role must be the only thing that ever touches these
     workers' roles between claim and hand-off.
+
+    A task's `closest_to`, when set, is forwarded to `request_building_
+    placement` as-is - it only orders the precalculated spots `where`
+    already resolved to, e.g. biasing a home Depot toward the main ramp.
     """
     if member.tag is None or member.task_index >= len(tasks):
         return
@@ -166,9 +170,13 @@ def _drive_crew_member(ctx: "BotContext", member: "CrewMember", tasks: "tuple") 
     if not task.gate(ctx):
         return
 
-    placement = ctx.mediator.request_building_placement(
-        base_location=task.where(ctx), structure_type=task.structure_id
-    )
+    placement_kwargs = {
+        "base_location": task.where(ctx),
+        "structure_type": task.structure_id,
+    }
+    if task.closest_to is not None:
+        placement_kwargs["closest_to"] = task.closest_to(ctx)
+    placement = ctx.mediator.request_building_placement(**placement_kwargs)
     if placement is None:
         return  # try again next frame
 
