@@ -1,133 +1,60 @@
-"""In-game UpgradeRush Validator — tracks this build's own milestones.
+"""Shared validator engine — the tracking and report-formatting machinery
+every build's own validator is built from.
 
-This module provides an ``UpgradeRushValidator`` mixin that hooks into the
-python-sc2 bot lifecycle and evaluates a handful of stages, all read live off
-the running bot / `BotContext` so nothing here can drift out of sync with
-`bot/builds/zerg/upgrade_rush.py` or, for Stage 1B, any build declaring a
-`bot.builds.definition.ProxyCrewPlan`. Every stage past Stage 1 is entirely
-build-driven - present, absent, or titled differently purely because of what
-the live build declares, never because of which build it is by name (see
-`validate`'s own docstring for the exact conditions):
+`BaseValidator` does all of the actual game-state tracking (`on_step`) and
+report formatting. It has no opinion on which stages a report shows or what
+Stage 4 is called — that decision belongs to each build's own, separate
+validator class under `tests/validators/` (`FourRaxProxyValidator`,
+`UpgradeRushValidator`, `SpeedlingAllInValidator`, and whatever comes next).
+See `tests/validators/registry.py` for how a build's name maps to its
+validator class, and any of the concrete per-build files (they're all
+short) for what a new build actually has to add.
 
-  Stage 1: Opening Economy — workers, pool timing, extractor cap, supply
-  Stage 1B: Proxy Crew     — only for a build with `ctx.build.crew` set
-                             (e.g. `Four Rax Proxy`): when X/Y/Z were
-                             claimed, then one line per declared task (every
-                             Depot and Barracks the crew places), in the
-                             order they actually finished this game - not
-                             the order each sits in its own crew member's
-                             list, since a gated task (e.g. Barracks D, held
-                             until Marine training starts) can easily finish
-                             after a later, ungated one. Entirely absent for
-                             a build with no crew (`UpgradeRush`, `Speedling
-                             All-In`) - not even a placeholder line.
-  Stage 2: Tech Structures — Evolution Chamber x2, Lair, Infestation Pit, Hive
-                             - entirely absent for a build with no upgrades
-                             declared at all (e.g. `Four Rax Proxy`), rather
-                             than a placeholder line
-  Stage 3: Upgrades        — every upgrade in `ctx.build.army.upgrades`, in
-                             order - absent under the same condition as
-                             Stage 2, for the same build
-  Stage 4: <build's own    — one line per wave actually released: size, timing,
-           label>            and our supply released vs the enemy's known army
-                             supply at that moment. Titled from `ctx.build.
-                             combat.wave_stage_label`, e.g. "Attack Waves"
-                             (the default, kept by `UpgradeRush` and
-                             `Speedling All-In`) or "All-In Attack" (`Four
-                             Rax Proxy`'s own override)
+This split exists because of a real bug: `Four Rax Proxy`, `UpgradeRush` and
+`Speedling All-In` used to all run through one shared class
+(`tests.upgrade_rush_validator.UpgradeRushValidator`), and a change made
+"for" one build's report (adding Stage 1B, renaming Stage 4) silently
+changed the other two builds' reports too, since there was only one
+`validate()` method to edit. With plans for up to a dozen builds per race,
+the fix isn't "be more careful next time" — it's "make that impossible":
+each build's `validate()` now lives in its own file, so a bug or a change in
+Four Rax Proxy's report cannot touch UpgradeRush's. There is no shared
+method left for a change to leak through.
+
+Every check below still reads its thresholds and gates off `ai.ctx.build` —
+worker/gas targets, pool deadline, wave1_min, wave_growth, the Evolution
+Chamber target/gate, `wave_stage_label` — or off python-sc2/ares' own
+tech-requirement tables, never a number hardcoded for one build by name.
+That part of the original design was never the problem; only sharing one
+`validate()` method across builds was.
 
 Stages 2 and 3 additionally report *resource-blocked* time per milestone:
 how many frames the bot was tech-eligible for that milestone (everything but
-money was ready — the researching structure exists, any prerequisite
-building exists, every earlier upgrade in the build's own list is already
-under way) yet unable to afford it, as opposed to genuinely not being ready
-for it yet (still teching up, still building the prerequisite). That
-distinction is what makes "resource block" mean something specific rather
-than just "hasn't happened yet" — it isolates a real economic bottleneck
-from a research order that simply hasn't reached that point.
+money was ready) yet unable to afford it, as opposed to genuinely not being
+ready for it yet (still teching up, still building the prerequisite).
 
-Usage — mix into your bot BEFORE BotAI::
+`BaseValidator` is composition, not a mixin. Construct one with the live
+bot — ``BaseValidator(ai)``, or normally one of its subclasses — once
+``ai.ctx`` is set; `run.py`'s `build_bot_ai` does this the moment
+`KauKauBot.on_start` has picked an opening, since which validator applies
+isn't knowable any earlier than that (ares' own `BuildOrderRunner` decides
+the opening, and it can cycle between several builds game to game). Anything
+this class doesn't define itself — `ai.time`, `ai.workers`,
+`ai.structures(...)`, `ai.ctx`, `ai.mediator`, `ai.can_afford(...)`, and so
+on — is read straight off the bot via `__getattr__`, so every tracking
+method below reads exactly the way it always did back when this was a mixin
+sharing `self` with the bot directly.
 
-    from tests.upgrade_rush_validator import UpgradeRushValidator
+Usage, from `run.py`::
 
-    class MyBot(UpgradeRushValidator, BotAI):
-        async def on_step(self, iteration):
-            await super().on_step(iteration)
-            # ... your bot logic ...
+    from tests.validators.registry import validator_for_build
 
-When the game ends the validator prints a report like this, for a build
-with tech structures and upgrades declared (e.g. `UpgradeRush`)::
-
-    ══════════════════════════════════════════════════
-    UPGRADE RUSH VALIDATION REPORT
-    ══════════════════════════════════════════════════
-
-      Stage 1: Opening Economy
-        Workers Massed ............. PASS (max workers: 61 (target 60))
-        Workers Before Pool ........ PASS (workers at pool start: 14)
-        Pool Timing ................ PASS (pool at 14.2s)
-        Only One Pool ............... PASS (pool count: 1)
-        Extractor Built ............ PASS
-        Extractor Cap Respected .... PASS (max gas buildings: 2 (cap 2))
-        Supply Management ........... PASS (supply-blocked frames: 0)
-
-      Stage 2: Tech Structures
-        Evolution Chamber x2 ....... PASS (up at 210.4s)
-        Lair ........................ PASS (up at 245.1s, 38 blocked frames)
-        Infestation Pit ............. PASS (up at 401.7s)
-        Hive ........................ PASS (up at 430.9s)
-
-      Stage 3: Upgrades
-        Metabolic Boost ............. PASS (started 92.3s)
-        Melee Attacks +1 ............ PASS (started 205.0s)
-        ...
-
-      Stage 4: Attack Waves
-        Wave 1 ...................... PASS (t=302.1s size=21 (expected>=20))
-        Wave 2 ...................... PASS (t=418.6s size=26 (expected>=27))
-        ...
-
-    ══════════════════════════════════════════════════
-      21/23 passed  (91.3%)
-    ══════════════════════════════════════════════════
-
-For a build with `crew` set and no upgrades declared at all (`Four Rax
-Proxy`), Stage 1B replaces Stage 2/3 entirely rather than sitting alongside
-an absence of them, and Stage 4 carries this build's own
-`wave_stage_label` - the report goes Stage 1, Stage 1B, "Stage 4: All-In
-Attack"::
-
-      Stage 1B: Proxy Crew Choreography
-        Crew X claimed .............. PASS (claimed at 0.6s)
-        Crew Y claimed .............. PASS (claimed at 0.6s)
-        Crew Z claimed (13th SCV) ... PASS (claimed at 12.7s)
-        Depot (home) ................ PASS (done at 40.2s)
-        Barracks A .................. PASS (done at 86.4s)
-        Barracks B .................. PASS (done at 93.4s)
-        Barracks C .................. PASS (done at 118.9s)
-        Depot (proxy) ............... PASS (done at 122.1s)
-        Barracks D .................. PASS (done at 135.0s)
-
-Note Barracks D lands *after* Depot (proxy) here even though the build
-order names it first (step 8 vs step 9) - Barracks D is gated on Marine
-training having started, Depot (proxy) isn't, so which one actually
-finishes first is a live game outcome, not something fixed at declaration
-time. The six task lines are ordered by when they actually completed for
-exactly that reason - see `_ordered_crew_tasks`.
-
-Every threshold used comes from `ctx.build` — worker/gas targets, pool
-deadline, wave1_min, wave_growth, and both the Evolution Chamber target
-count and its gate (`ctx.build.army.evolution_chambers` /
-`.evolution_chamber_gate`) — or from
-python-sc2/ares' own tech-requirement tables (`UPGRADE_RESEARCHED_FROM`,
-`RESEARCH_INFO`, `tech_requirement_progress`). Nothing here re-hardcodes a
-number or a tech-tree fact by hand, and nothing here is specific to
-UpgradeRush by name: run it against `Speedling All-In` (`LING_SPEED_ONLY` —
-no Evolution Chamber, Lair or Hive in its upgrade list at all) and Stage 2
-reports "No tech structures required by this build" instead of failing four
-checks it was never going to pass. A different build gets a different
-report because the report is computed from that build's own declared data,
-not because there's a second validator class to maintain.
+    validator_cls = validator_for_build(ai.ctx.build.name)
+    validator = validator_cls(ai)
+    # each frame:
+    validator.on_step(iteration)
+    # at game end:
+    validator.on_end()
 """
 
 from __future__ import annotations
@@ -248,38 +175,23 @@ class _CrewTaskTracker:
     completed_time: Optional[float] = None
 
 
-# ── Validator mixin ─────────────────────────────────────────────────────────
+# ── Validator engine ────────────────────────────────────────────────────────
 
 
-class UpgradeRushValidator:
-    """Mixin that validates UpgradeRush's own milestones during a live game.
+class BaseValidator:
+    """Tracks every build's shared milestones during a live game and prints
+    the report at the end. See the module docstring for the composition
+    model (`BaseValidator(ai)`) and for why `validate()` — which stages
+    appear, and what Stage 4 is titled — belongs to a per-build subclass
+    instead of living here.
 
-    Mix this into your bot class BEFORE BotAI so that super() calls
-    reach the framework::
-
-        class MyBot(UpgradeRushValidator, BotAI):
-            async def on_step(self, iteration):
-                await super().on_step(iteration)  # triggers validator tracking
-                # your logic here
-
-    IMPORTANT: The validator's on_step does NOT call super().on_step()
-    because BotAI.on_step raises NotImplementedError. Instead, the bot's
-    own on_step calls super() which hits the validator first, then the
-    bot adds its logic after.
-
-    Reads `self.ctx` (a `bot.core.context.BotContext`) for build config and
-    wave state — set by `KauKauBot.on_start`, which runs before this mixin's
-    first `on_step` in `run.py`'s wiring, so it's always available once
-    tracking starts.
+    `BaseValidator.validate()` itself is not abstract: it's the safe,
+    minimal fallback (Stage 1 + Stage 4 only) `registry.validator_for_build`
+    returns for a build with no dedicated validator file yet, the same
+    "don't let a name mismatch end a game" reasoning as
+    `bot.core.registry.default_build`.
     """
 
-    # ── Timing thresholds (game seconds) ────────────────────────────────
-    POOL_DEADLINE: float = 50.0
-    """Fallback only, used when `self.ctx` isn't set yet. The real deadline
-    is `ctx.build.pool_deadline` — each build declares its own, since a
-    hatch-before-pool opening (e.g. `UpgradeRush`) has a genuinely later,
-    by-design pool time than an immediate-pool one (e.g. `Speedling
-    All-In`), and a single shared constant here can't reflect both."""
     SUPPLY_BLOCK_GRACE_PERIOD: float = 60.0
     # A fast opening is supply-blocked by design for a few seconds before
     # the pool even exists (drones and an extractor ahead of the second
@@ -290,14 +202,36 @@ class UpgradeRushValidator:
     """No wave should take longer than this to reform after the previous
     one releases. Past wave 1, a gap this long usually means macro fell
     over somewhere, not that the next wave is legitimately still massing."""
+    REPORT_TITLE: str = "VALIDATION REPORT"
+    """Printed report header. Every concrete build validator sets its own —
+    e.g. `FourRaxProxyValidator` sets "FOUR RAX PROXY VALIDATION REPORT" —
+    so this generic default only ever shows up for a build still running on
+    the `BaseValidator` fallback."""
 
-    def __init_subclass__(cls, **kwargs):
+    BUILD_NAME: Optional[str] = None
+    """Set by a concrete subclass to the exact `BuildDefinition.name` it
+    validates (e.g. "Four Rax Proxy") - `__init_subclass__` below uses it to
+    self-register into `_registry`, which `registry.validator_for_build`
+    reads. Left `None` on `BaseValidator` itself, which is why it never
+    registers."""
+
+    _registry: Dict[str, type] = {}
+
+    def __init_subclass__(cls, **kwargs) -> None:
         super().__init_subclass__(**kwargs)
-
-    def _init_validator_state(self) -> None:
-        """Initialize tracking state. Called from on_start or first on_step."""
-        if hasattr(self, "_validator_initialized"):
+        if cls.BUILD_NAME is None:
             return
+        existing = BaseValidator._registry.get(cls.BUILD_NAME)
+        if existing is not None and existing is not cls:
+            raise ValueError(
+                f"duplicate validator BUILD_NAME {cls.BUILD_NAME!r}: "
+                f"{existing.__name__} and {cls.__name__} both claim it - "
+                "each build gets exactly one validator class."
+            )
+        BaseValidator._registry[cls.BUILD_NAME] = cls
+
+    def __init__(self, ai) -> None:
+        self.ai = ai
         # Stage 1
         self._max_workers: int = 0
         self._workers_at_pool_start: int = 0
@@ -308,19 +242,33 @@ class UpgradeRushValidator:
         self._max_gas_buildings: int = 0
         self._gas_cap_exceeded: bool = False
         self._supply_blocked_frames: int = 0
-        # Stage 1B — built lazily by `_init_crew` once `ctx` exists.
-        self._crew_claims: Optional[List[_CrewClaimTracker]] = None
-        self._crew_tasks: Optional[List[_CrewTaskTracker]] = None
-        # Stage 2 / 3 — built lazily by `_init_milestones` once `ctx` exists.
-        self._structures: Optional[List[_StructureTracker]] = None
-        self._upgrades: Optional[List[_UpgradeTracker]] = None
+        # Stage 1B
+        self._crew_claims: List[_CrewClaimTracker] = []
+        self._crew_tasks: List[_CrewTaskTracker] = []
+        # Stage 2 / 3
+        self._structures: List[_StructureTracker] = []
+        self._upgrades: List[_UpgradeTracker] = []
         # Stage 4
         self._known_attacking_tags: set = set()
         self._last_wave_number: int = 0
         self._last_wave_time: Optional[float] = None
         self._next_wave_expected_min: int = 0
         self._waves: List[_WaveRecord] = []
-        self._validator_initialized: bool = True
+
+        # `ai.ctx` is guaranteed set by the time a validator is constructed
+        # (see the module docstring) - unlike the old mixin, which could be
+        # asked to track before `KauKauBot.on_start` had run, there is no
+        # "ctx might not exist yet" window to guard against here.
+        self._init_milestones()
+        self._init_crew()
+
+    def __getattr__(self, name: str):
+        """Delegate anything this object doesn't define itself to the live
+        bot - `ai.time`, `ai.workers`, `ai.structures(...)`, `ai.ctx`, and
+        so on. Only reached once normal lookup (this instance, then this
+        class and its bases) finds nothing, so it never shadows this
+        class's own state or methods."""
+        return getattr(self.ai, name)
 
     def _init_milestones(self) -> None:
         """Build the tech-structure/upgrade tracker lists from the live
@@ -329,9 +277,6 @@ class UpgradeRushValidator:
         `.evolution_chamber_gate`). Nothing here is a number this module
         made up on its own.
         """
-        if self._upgrades is not None:
-            return
-
         build_upgrades: tuple = tuple(self.ctx.build.army.upgrades)
         self._upgrades = [_make_upgrade_tracker(u) for u in build_upgrades]
 
@@ -371,12 +316,9 @@ class UpgradeRushValidator:
         """Build the claim/task tracker lists from `ctx.build.crew` (a
         `ProxyCrewPlan`, or `None` for a build that doesn't have one) -
         nothing here is specific to `Four Rax Proxy` by name; any build that
-        sets `crew` gets these checks, any build that doesn't gets the single
-        "not declared" line `_validate_crew` falls back to.
+        sets `crew` gets these checks, any build that doesn't gets the
+        single "not declared" line `_validate_crew` falls back to.
         """
-        if self._crew_claims is not None:
-            return
-
         plan = getattr(self.ctx.build, "crew", None)
         if plan is None:
             self._crew_claims = []
@@ -400,25 +342,12 @@ class UpgradeRushValidator:
             for index, task in enumerate(tasks)
         ]
 
-    # ── Lifecycle hooks ─────────────────────────────────────────────────
+    # ── Tracking (call once per frame) ────────────────────────────────────
 
-    async def on_start(self):
-        """Called at game start — initialize tracking."""
-        self._init_validator_state()
-
-    async def on_step(self, iteration: int):
-        """Called every frame — track milestones from live game state.
-
-        Does NOT call super().on_step() because BotAI.on_step raises
-        NotImplementedError. The bot's own on_step should call
-        ``await super().on_step(iteration)`` to trigger this tracking,
-        then add its own logic after.
-        """
-        self._init_validator_state()
-        if self.ctx is not None:
-            self._init_milestones()
-            self._init_crew()
-
+    def on_step(self, iteration: int) -> None:
+        """Track milestones from live game state. Call this every frame
+        from whatever's driving the bot - `run.py`'s `ValidatedKauKauBot`
+        calls it from its own `on_step`, right alongside `KauKauBot`'s."""
         # ── Stage 1 tracking ─────────────────────────────────────────
         worker_count = self.workers.amount
         if worker_count > self._max_workers:
@@ -436,7 +365,7 @@ class UpgradeRushValidator:
             self._extractor_built = True
         if gas_count > self._max_gas_buildings:
             self._max_gas_buildings = gas_count
-        if self.ctx is not None and gas_count > self.ctx.build.economy.max_gas:
+        if gas_count > self.ctx.build.economy.max_gas:
             self._gas_cap_exceeded = True
 
         if not self._pool_started:
@@ -463,18 +392,17 @@ class UpgradeRushValidator:
             self._track_crew()
 
         # ── Stage 2 / 3 tracking ─────────────────────────────────────
-        if self._upgrades is not None:
+        if self._upgrades:
             self._track_upgrades()
-        if self._structures is not None:
+        if self._structures:
             self._track_structures()
 
         # ── Stage 4 tracking ─────────────────────────────────────────
         self._track_waves()
 
-    async def on_end(self, game_result):
-        """Called at game end — print the validation report."""
-        report = self.validate()
-        self._print_report(report)
+    def on_end(self) -> None:
+        """Print the validation report. Call this once, at game end."""
+        self._print_report(self.validate())
 
     # ── Stage 1B tracking ───────────────────────────────────────────────
 
@@ -514,7 +442,6 @@ class UpgradeRushValidator:
     # ── Stage 2 / 3 tracking helpers ─────────────────────────────────────
 
     def _upgrades_before(self, upgrade: UpgradeId) -> List[UpgradeId]:
-        assert self._upgrades is not None
         before: List[UpgradeId] = []
         for tracker in self._upgrades:
             if tracker.upgrade == upgrade:
@@ -528,7 +455,6 @@ class UpgradeRushValidator:
         (see `ares/behaviors/macro/upgrade_controller.py`): it never reaches
         for something later in the list until everything before it is at
         least under way."""
-        assert self._upgrades is not None
         if structure == UnitTypeId.EVOLUTIONCHAMBER:
             return self.ctx.build.army.evolution_chamber_gate(self.ctx)
 
@@ -548,7 +474,6 @@ class UpgradeRushValidator:
         )
 
     def _track_upgrades(self) -> None:
-        assert self._upgrades is not None
         for tracker in self._upgrades:
             if tracker.started:
                 continue
@@ -572,7 +497,6 @@ class UpgradeRushValidator:
                 tracker.blocked_frames += 1
 
     def _track_structures(self) -> None:
-        assert self._structures is not None
         for tracker in self._structures:
             if tracker.started:
                 continue
@@ -605,9 +529,6 @@ class UpgradeRushValidator:
 
     def _track_waves(self) -> None:
         ctx = self.ctx
-        if ctx is None:
-            return
-
         attacking_units = ctx.units_in_role(UnitRole.ATTACKING)
         current_attacking = {u.tag for u in attacking_units}
         wave_number = ctx.state.wave_number
@@ -647,48 +568,23 @@ class UpgradeRushValidator:
     # ── Validation logic ─────────────────────────────────────────────────
 
     def validate(self) -> Dict[str, List[StepResult]]:
-        """Evaluate all milestones and return results grouped by stage.
+        """Evaluate this build's own milestones and return results grouped
+        by stage.
 
-        Every stage past Stage 1 is only in the returned dict when the live
-        build actually has something for it to report - each build's own
-        declared data decides its own report shape, and nothing here is
-        hardcoded to one build by name:
-
-        - Stage 1B (Proxy Crew) only appears for a build that declares
-          `ctx.build.crew` (e.g. `Four Rax Proxy`) - omitted entirely, not
-          included with a placeholder line, for a build that doesn't (e.g.
-          `UpgradeRush`, `Speedling All-In`). A build's report gaining a new
-          stage it never asked for is exactly the bug this guards against:
-          Stage 1B used to be unconditional, so a build with no crew still
-          got a trivially-passing "No proxy crew declared" line it never had
-          before Four Rax Proxy's crew mechanism existed.
-        - Stage 2 and Stage 3 only appear for a build with at least one
-          upgrade declared (`ctx.build.army.upgrades` non-empty, so
-          `self._upgrades` is too): tech structures only ever exist in this
-          report because some upgrade in the build's own list requires one
-          (see `_init_milestones`), so no upgrades declared means no
-          structures either, and a Marine all-in like `Four Rax Proxy` has
-          neither. A build with even one upgrade (e.g. `Speedling All-In`'s
-          Metabolic Boost) still gets both stages, Stage 2 falling back to
-          its own "no tech structures required" placeholder if that one
-          upgrade doesn't need any.
-        - Stage 4's title comes from `ctx.build.combat.wave_stage_label`
-          (default "Attack Waves") - a build that actually is an all-in
-          (`Four Rax Proxy` sets this to "All-In Attack") gets to say so
-          without changing what every other build's Stage 4 is called.
+        `BaseValidator`'s own version — Stage 1 and Stage 4 only, Stage 4
+        titled from `ctx.build.combat.wave_stage_label` the same as every
+        build — is the generic fallback for a build with no dedicated
+        validator class yet (see `registry.validator_for_build`). A build
+        with more to report than that (Proxy Crew Choreography, tech
+        structures, upgrades) gets its own subclass overriding this method —
+        see `FourRaxProxyValidator` / `UpgradeRushValidator` for the two
+        existing shapes, and either as a template for a new build's own
+        validator file.
         """
-        self._init_validator_state()
         stages: Dict[str, List[StepResult]] = {
             "Stage 1: Opening Economy": self._validate_economy(),
         }
-        if self._crew_claims:
-            stages["Stage 1B: Proxy Crew Choreography"] = self._validate_crew()
-        if self._upgrades:
-            stages["Stage 2: Tech Structures"] = self._validate_structures()
-            stages["Stage 3: Upgrades"] = self._validate_upgrades()
-        wave_label = (
-            self.ctx.build.combat.wave_stage_label if self.ctx else "Attack Waves"
-        )
+        wave_label = self.ctx.build.combat.wave_stage_label
         stages[f"Stage 4: {wave_label}"] = self._validate_waves()
         return stages
 
@@ -702,10 +598,10 @@ class UpgradeRushValidator:
         and no Extractor, so reporting "no pool" as a FAIL four lines running
         would bury the checks that do apply to it.
         """
-        target = self.ctx.build.economy.worker_target if self.ctx else 60
-        max_gas = self.ctx.build.economy.max_gas if self.ctx else 2
-        pool_deadline = self.ctx.build.pool_deadline if self.ctx else self.POOL_DEADLINE
-        race = self.ctx.build.race if self.ctx else Race.Zerg
+        target = self.ctx.build.economy.worker_target
+        max_gas = self.ctx.build.economy.max_gas
+        pool_deadline = self.ctx.build.pool_deadline
+        race = self.ctx.build.race
 
         results: List[StepResult] = [
             StepResult(
@@ -755,6 +651,11 @@ class UpgradeRushValidator:
         return results
 
     def _validate_crew(self) -> List[StepResult]:
+        """Proxy Crew Choreography (Stage 1B). Only meaningful for a build
+        that declares `ctx.build.crew` — call this from a subclass's
+        `validate()` only when that build actually has one (see
+        `FourRaxProxyValidator`); the fallback line below exists purely for
+        safety if it's ever called for a build that doesn't."""
         if not self._crew_claims and not self._crew_tasks:
             return [StepResult("No proxy crew declared by this build", True)]
 
@@ -866,16 +767,16 @@ class UpgradeRushValidator:
 
     # ── Report formatting ───────────────────────────────────────────────
 
-    @staticmethod
-    def _print_report(stages: Dict[str, List[StepResult]]) -> None:
-        """Print a human-readable validation report to stdout."""
+    def _print_report(self, stages: Dict[str, List[StepResult]]) -> None:
+        """Print a human-readable validation report to stdout, titled from
+        `self.REPORT_TITLE` — each concrete build validator's own."""
         total_passed = 0
         total_steps = 0
 
         width = 52
         print()
         print("═" * width)
-        print("UPGRADE RUSH VALIDATION REPORT")
+        print(self.REPORT_TITLE)
         print("═" * width)
 
         for stage_name, steps in stages.items():

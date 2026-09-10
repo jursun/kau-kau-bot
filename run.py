@@ -23,15 +23,15 @@ sys.path.append("ares-sc2/src")
 sys.path.append("ares-sc2")
 
 import yaml  # noqa: E402
+from ladder import run_ladder_game  # noqa: E402
 from loguru import logger  # noqa: E402
 from sc2 import maps  # noqa: E402
-from sc2.maps import Map  # noqa: E402
 from sc2.data import Difficulty, Race  # noqa: E402
 from sc2.main import run_game  # noqa: E402
+from sc2.maps import Map  # noqa: E402
 from sc2.player import Bot, Computer  # noqa: E402
 
 from bot.main import KauKauBot  # noqa: E402
-from ladder import run_ladder_game  # noqa: E402
 
 CONFIG_FILE: str = "config.yml"
 MAP_FILE_EXT: str = "SC2Map"
@@ -70,30 +70,42 @@ def load_config() -> dict:
 
 
 def build_bot_ai(validate: bool):
-    """Return a bot instance, optionally with the rush validator mixed in."""
+    """Return a bot instance, optionally with a build-specific validator
+    attached."""
     if not validate:
         return KauKauBot()
 
-    from tests.upgrade_rush_validator import UpgradeRushValidator
+    from tests.validators.registry import validator_for_build
 
-    class ValidatedKauKauBot(UpgradeRushValidator, KauKauBot):
-        """KauKauBot with the milestone validator layered on top.
+    class ValidatedKauKauBot(KauKauBot):
+        """KauKauBot with a build-specific milestone validator attached.
 
-        UpgradeRushValidator deliberately does not call `super().on_step`, so
-        each hook is dispatched explicitly here — KauKauBot's own hooks are
-        the ones that call into ares.
+        Which validator applies isn't known until ares has actually picked
+        an opening — `self.ctx.build.name` only exists once `KauKauBot.
+        on_start` sets it, so the validator can't be selected any earlier
+        than that (ares' own `BuildOrderRunner` can cycle between several
+        builds game to game; nothing here can guess ahead of it). `tests.
+        validators.registry.validator_for_build` maps that name to one of
+        the per-build validator classes under `tests/validators/`; the
+        chosen one is constructed fresh for this game (composition, not
+        inheritance — see `base_validator.BaseValidator`'s module
+        docstring) and driven explicitly from the hooks below, so a bug in
+        one build's validator file can never reach another build's report.
         """
 
+        validator = None
+
         async def on_start(self) -> None:
-            await UpgradeRushValidator.on_start(self)
             await KauKauBot.on_start(self)
+            validator_cls = validator_for_build(self.ctx.build.name)
+            self.validator = validator_cls(self)
 
         async def on_step(self, iteration: int) -> None:
-            await UpgradeRushValidator.on_step(self, iteration)
+            self.validator.on_step(iteration)
             await KauKauBot.on_step(self, iteration)
 
         async def on_end(self, game_result) -> None:
-            await UpgradeRushValidator.on_end(self, game_result)
+            self.validator.on_end()
             await KauKauBot.on_end(self, game_result)
 
     logger.info("Rush validation ENABLED - report prints at game end.")

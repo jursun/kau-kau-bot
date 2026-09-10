@@ -53,7 +53,8 @@ class Army:
     `steps/zerg.py`'s `evolution_chambers`); a build wanting more than one
     +1/+1 tier researching in parallel raises this. The single source of
     truth for that count — `steps.zerg.evolution_chambers()` and
-    `UpgradeRushValidator` both read it from here rather than each build
+    `tests.validators.base_validator.BaseValidator` (shared by every
+    build's own validator) both read it from here rather than each build
     passing its own literal around."""
     evolution_chamber_gate: Gate = _always
     """When to start wanting the *next* Evolution Chamber beyond the first
@@ -83,6 +84,13 @@ class Combat:
     also be sending half its defenders back to guard mineral lines."""
     focus: tuple[str, ...] = (FOCUS_MAIN,)
     """Ordered places to walk to when no enemy structure is visible."""
+    wave_stage_label: str = "Attack Waves"
+    """Each build's own validator (`tests/validators/<build>_validator.py`)
+    titles its wave stage "Stage 4: {this}" - read straight from here so a
+    build's own report reflects what it actually is (e.g. `Four Rax Proxy`
+    sets this to "All-In Attack") without touching any other build's
+    report. Defaults to the original, generic title every build had before
+    that override existed."""
 
 
 @dataclass(frozen=True)
@@ -120,8 +128,9 @@ class ProxyCrewPlan:
     which a build using this plan should set as that hook).
 
     Read by both `steps.terran.proxy_crew` (to run it) and
-    `tests.upgrade_rush_validator` (to report on it) - one declared plan,
-    not two things to keep in sync by hand.
+    `tests.validators.base_validator.BaseValidator._validate_crew` (to
+    report on it) - one declared plan, not two things to keep in sync by
+    hand.
     """
 
     x_tasks: tuple[WorkerTask, ...]
@@ -155,11 +164,12 @@ class BuildDefinition:
     `steps.terran.claim_z_on_first_scv`, for `crew.z_tasks` above)."""
     pool_deadline: float = 50.0
     """Latest acceptable Spawning Pool start time (game seconds), read by
-    `UpgradeRushValidator`'s "Pool Timing" check. Defaults to an immediate-pool
-    opening's expectation; a build whose `OpeningBuildOrder` deliberately
-    expands (or does anything else) before pool should raise this to match
-    its own opening rather than let the validator enforce a deadline
-    calibrated for a different build's timing."""
+    `tests.validators.base_validator.BaseValidator`'s "Pool Timing" check
+    (shared by every Zerg build's own validator). Defaults to an
+    immediate-pool opening's expectation; a build whose `OpeningBuildOrder`
+    deliberately expands (or does anything else) before pool should raise
+    this to match its own opening rather than let the validator enforce a
+    deadline calibrated for a different build's timing."""
 
     def __post_init__(self) -> None:
         total = sum(v["proportion"] for v in self.army.comp.values())

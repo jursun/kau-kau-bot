@@ -68,6 +68,7 @@ class _FakeCtx:
         max_gas: int = 2,
         wave1_min: int = 20,
         wave_growth: float = 1.25,
+        wave_stage_label: str = "Attack Waves",
         evolution_chambers: int = 1,
         evolution_chamber_gate=lambda ctx: True,
         pool_deadline: float = 50.0,
@@ -82,7 +83,11 @@ class _FakeCtx:
                 evolution_chamber_gate=evolution_chamber_gate,
             ),
             economy=SimpleNamespace(worker_target=60, max_gas=max_gas),
-            combat=SimpleNamespace(wave1_min=wave1_min, wave_growth=wave_growth),
+            combat=SimpleNamespace(
+                wave1_min=wave1_min,
+                wave_growth=wave_growth,
+                wave_stage_label=wave_stage_label,
+            ),
             pool_deadline=pool_deadline,
             crew=crew,
         )
@@ -105,6 +110,7 @@ class FakeAI(UpgradeRushValidator):
         self,
         upgrades: tuple = (),
         max_gas: int = 2,
+        wave_stage_label: str = "Attack Waves",
         evolution_chambers: int = 1,
         evolution_chamber_gate=lambda ctx: True,
         pool_deadline: float = 50.0,
@@ -122,6 +128,7 @@ class FakeAI(UpgradeRushValidator):
         self.ctx = _FakeCtx(
             upgrades,
             max_gas=max_gas,
+            wave_stage_label=wave_stage_label,
             evolution_chambers=evolution_chambers,
             evolution_chamber_gate=evolution_chamber_gate,
             pool_deadline=pool_deadline,
@@ -327,14 +334,19 @@ def _fake_crew_plan() -> SimpleNamespace:
     )
 
 
-def test_a_build_with_no_crew_plan_gets_a_single_not_declared_line() -> None:
+def test_a_build_with_no_crew_plan_gets_no_proxy_crew_stage() -> None:
+    """Regression test: Stage 1B used to be unconditional, so `UpgradeRush`
+    and `Speedling All-In` (neither declares `ctx.build.crew`) picked up a
+    trivially-passing "No proxy crew declared" line they never had before
+    `Four Rax Proxy`'s crew mechanism existed - a build's report gaining a
+    stage it never asked for. Stage 1B must now be left out of the dict
+    entirely for a build with no crew, mirroring how Stage 2/3 are left out
+    for a build with no upgrades."""
     ai = FakeAI(race=Race.Terran)  # crew defaults to None
     _step(ai)
 
     result = ai.validate()
-    assert result["Stage 1B: Proxy Crew Choreography"] == [
-        StepResult("No proxy crew declared by this build", True)
-    ]
+    assert "Stage 1B: Proxy Crew Choreography" not in result
 
 
 def test_crew_stage_lists_every_declared_claim_and_task() -> None:
@@ -595,7 +607,7 @@ def test_wave_release_records_size_time_and_next_expected_minimum() -> None:
     assert wave2.gap == 120.0
 
     result = ai.validate()
-    wave_results = {r.name: r for r in result["Stage 4: All-In Attack"]}
+    wave_results = {r.name: r for r in result["Stage 4: Attack Waves"]}
     assert wave_results["Wave 1"].passed
     assert wave_results["Wave 2"].passed
 
@@ -626,7 +638,7 @@ def test_wave_records_our_supply_against_enemy_army_supply() -> None:
 
     result = ai.validate()
     wave1_result = next(
-        r for r in result["Stage 4: All-In Attack"] if r.name == "Wave 1"
+        r for r in result["Stage 4: Attack Waves"] if r.name == "Wave 1"
     )
     assert "supply us=10 vs enemy=8" in wave1_result.detail
 
@@ -636,9 +648,22 @@ def test_no_wave_ever_released_fails_stage_4() -> None:
     _step(ai)
 
     result = ai.validate()
-    assert result["Stage 4: All-In Attack"] == [
-        r for r in result["Stage 4: All-In Attack"] if not r.passed
+    assert result["Stage 4: Attack Waves"] == [
+        r for r in result["Stage 4: Attack Waves"] if not r.passed
     ]
+
+
+def test_stage_4_title_comes_from_the_builds_own_wave_stage_label() -> None:
+    """`Four Rax Proxy` sets `combat.wave_stage_label="All-In Attack"` - the
+    report must use that build's own title, and must not leak it onto any
+    other build's report (the default `FakeAI()` used by every other test in
+    this section keeps the plain "Attack Waves" key, unaffected by this)."""
+    ai = FakeAI(upgrades=(), wave_stage_label="All-In Attack")
+    _step(ai)
+
+    result = ai.validate()
+    assert "Stage 4: All-In Attack" in result
+    assert "Stage 4: Attack Waves" not in result
 
 
 def main() -> int:

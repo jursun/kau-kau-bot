@@ -60,4 +60,4 @@ LocalGame:
     OpponentRace: Terran
     # VeryEasy .. VeryHard, plus CheatVision / CheatMoney / CheatInsane
     OpponentDifficulty: VeryHard
-    Realtime: True
+    Realtime: False

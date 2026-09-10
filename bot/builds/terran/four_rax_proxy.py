@@ -205,6 +205,10 @@ BUILD = BuildDefinition(
         # walk back to our own natural to muster before every attack.
         rally=proxy_location,
         focus=(FOCUS_MAIN, FOCUS_NATURAL),
+        # This build's own Validation Report title for Stage 4 - it really
+        # is an all-in (no expansion, no gas, one fixed structure count),
+        # unlike the generic "Attack Waves" default every other build keeps.
+        wave_stage_label="All-In Attack",
     ),
     crew=PROXY_CREW,
     on_unit_created=t.claim_z_on_first_scv(),

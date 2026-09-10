@@ -147,8 +147,9 @@ def evolution_chambers() -> MacroStep:
 
     Count and gate both come from `ctx.build.army.evolution_chambers` /
     `.evolution_chamber_gate` rather than being passed in here, so a build
-    states them once and `UpgradeRushValidator` can read the exact same
-    numbers instead of a second, separately-maintained copy.
+    states them once and `tests.validators.base_validator.BaseValidator`
+    (shared by every build's own validator) can read the exact same numbers
+    instead of a second, separately-maintained copy.
     """
 
     def step(ctx: "BotContext"):

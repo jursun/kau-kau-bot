@@ -160,9 +160,9 @@ def test_overflow_hatcheries_prefers_expansion_targeting_one_more_than_current()
 
 def test_evolution_chambers_reads_count_and_gate_from_the_build() -> None:
     """Regression test: `evolution_chambers()` used to take `count`/`gate`
-    as its own params, duplicating the same numbers `UpgradeRushValidator`
-    needed to know separately. Both now come from `ctx.build.army` — the
-    single source of truth for a per-build target count and gate."""
+    as its own params, duplicating the same numbers the validator needed to
+    know separately. Both now come from `ctx.build.army` — the single
+    source of truth for a per-build target count and gate."""
     ctx = _ctx()
     ctx.build.army.evolution_chambers = 2
     ctx.build.army.evolution_chamber_gate = lambda _ctx: True
