@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sc2.ids.unit_typeid import UnitTypeId
-
 from ares.behaviors.macro import (
     AutoSupply,
     BuildStructure,
@@ -22,6 +20,7 @@ from ares.behaviors.macro import (
     SpawnController,
     UpgradeController,
 )
+from sc2.ids.unit_typeid import UnitTypeId
 
 from bot.behaviors import SetGasWorkers
 from bot.builds.definition import _always
@@ -111,27 +110,40 @@ def spawn_army() -> MacroStep:
 
 
 def split_production(gate: Gate = _always) -> MacroStep:
-    """Alternate `build_workers`/`spawn_army` priority once `gate` passes, to
-    keep economy and army investment roughly even instead of one having
-    outright priority.
+    """Alternate `build_workers`/`spawn_army` priority once `gate` passes:
+    economy keeps first pick until workers reach `ctx.worker_target`, then
+    army takes over outright.
 
     `MacroPlan.execute()` runs its macros in order and stops at the first one
     that acts (see `macro_engine.py`) — so simply listing both unconditionally
     always favors whichever is listed first. This nests them in their own
-    `MacroPlan`, reordered each frame by whichever side currently has less
-    supply invested, so each gets a turn without ever wasting a frame outright
-    — if the preferred one has nothing to do, the plan falls through to the
-    other on the same frame.
+    `MacroPlan`, reordered each frame by whether economy has hit its target
+    yet, so neither wastes a frame outright — if the preferred one has
+    nothing to do, the plan falls through to the other on the same frame.
+
+    This compares `ctx.bot.supply_workers` against `ctx.worker_target` -
+    i.e. workers against their own target - rather than against
+    `ctx.bot.supply_army`. A worker and a zergling don't cost the same
+    supply (1.0 vs. 0.5), so a raw `supply_army < supply_workers` check
+    reads army as "behind" for most of the game regardless of how many
+    zerglings are actually out, handing it first pick far more often than
+    intended and never really "evening out" anything - comparing economy
+    to its own target sidesteps that unit mismatch entirely, and matches
+    what this is actually meant to gate: whether economy still needs
+    investment, not a tug-of-war between two differently-priced unit types.
 
     Before `gate` passes, economy keeps its usual priority (as if this were
-    still separate `build_workers()` then `spawn_army()` calls).
+    still separate `build_workers()` then `spawn_army()` calls) - which is
+    also what happens once `gate` passes and workers are still below target,
+    so `gate` only changes behavior once economy is maxed.
     """
 
     def step(ctx: "BotContext"):
         workers = BuildWorkers(to_count=ctx.worker_target)
         army = SpawnController(dict(ctx.build.army.comp))
 
-        if gate(ctx) and ctx.bot.supply_army < ctx.bot.supply_workers:
+        economy_at_target = ctx.bot.supply_workers >= ctx.worker_target
+        if gate(ctx) and economy_at_target:
             first, second = army, workers
         else:
             first, second = workers, army
@@ -144,9 +156,7 @@ def split_production(gate: Gate = _always) -> MacroStep:
     return step
 
 
-def structure(
-    structure_id: UnitTypeId, count: int, gate: Gate = _always
-) -> MacroStep:
+def structure(structure_id: UnitTypeId, count: int, gate: Gate = _always) -> MacroStep:
     """Keep `count` of a structure at the production location, once `gate` passes."""
 
     def step(ctx: "BotContext"):

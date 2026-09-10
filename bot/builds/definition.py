@@ -88,6 +88,13 @@ class BuildDefinition:
     """Priority-ordered. A `MacroPlan` stops at the first step that acts."""
     always: tuple[MacroStep, ...] = field(default_factory=tuple)
     """Registered every frame, including during the opening (mining, injects)."""
+    pool_deadline: float = 50.0
+    """Latest acceptable Spawning Pool start time (game seconds), read by
+    `UpgradeRushValidator`'s "Pool Timing" check. Defaults to an immediate-pool
+    opening's expectation; a build whose `OpeningBuildOrder` deliberately
+    expands (or does anything else) before pool should raise this to match
+    its own opening rather than let the validator enforce a deadline
+    calibrated for a different build's timing."""
 
     def __post_init__(self) -> None:
         total = sum(v["proportion"] for v in self.army.comp.values())

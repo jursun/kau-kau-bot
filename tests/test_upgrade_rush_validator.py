@@ -65,6 +65,7 @@ class _FakeCtx:
         wave_growth: float = 1.25,
         evolution_chambers: int = 1,
         evolution_chamber_gate=lambda ctx: True,
+        pool_deadline: float = 50.0,
     ):
         self.build = SimpleNamespace(
             army=SimpleNamespace(
@@ -74,6 +75,7 @@ class _FakeCtx:
             ),
             economy=SimpleNamespace(worker_target=60, max_gas=max_gas),
             combat=SimpleNamespace(wave1_min=wave1_min, wave_growth=wave_growth),
+            pool_deadline=pool_deadline,
         )
         self.state = SimpleNamespace(wave_number=0)
         self.attacking: list = []
@@ -91,6 +93,7 @@ class FakeAI(UpgradeRushValidator):
         max_gas: int = 2,
         evolution_chambers: int = 1,
         evolution_chamber_gate=lambda ctx: True,
+        pool_deadline: float = 50.0,
     ):
         self.time = 0.0
         self.supply_left = 10
@@ -105,6 +108,7 @@ class FakeAI(UpgradeRushValidator):
             max_gas=max_gas,
             evolution_chambers=evolution_chambers,
             evolution_chamber_gate=evolution_chamber_gate,
+            pool_deadline=pool_deadline,
         )
         self._structure_counts: dict = {}
         self._structure_ready_counts: dict = {}
@@ -182,6 +186,40 @@ def test_supply_block_after_grace_period_still_counts() -> None:
         _step(ai)
 
     assert ai._supply_blocked_frames == 1000
+
+
+# ── Stage 1: pool deadline comes from the build ─────────────────────────────
+
+
+def test_pool_timing_deadline_comes_from_the_build_not_a_shared_constant() -> None:
+    """A hatch-before-pool build (e.g. `UpgradeRush`, `pool_deadline=75.0`)
+    pools later than an immediate-pool one by design - the check must use
+    that build's own `ctx.build.pool_deadline`, not `POOL_DEADLINE` (a
+    fallback for when `ctx` isn't set yet, calibrated for an immediate-pool
+    opening)."""
+    ai = FakeAI(pool_deadline=75.0)
+    ai.time = 63.0  # past the class-level POOL_DEADLINE (50.0), within 75.0
+    ai._structure_counts[UnitTypeId.SPAWNINGPOOL] = 1
+    _step(ai)
+
+    result = ai.validate()
+    pool_check = next(
+        r for r in result["Stage 1: Opening Economy"] if r.name == "Pool Timing"
+    )
+    assert pool_check.passed, pool_check.detail
+
+
+def test_pool_timing_still_fails_past_the_builds_own_deadline() -> None:
+    ai = FakeAI(pool_deadline=75.0)
+    ai.time = 80.0
+    ai._structure_counts[UnitTypeId.SPAWNINGPOOL] = 1
+    _step(ai)
+
+    result = ai.validate()
+    pool_check = next(
+        r for r in result["Stage 1: Opening Economy"] if r.name == "Pool Timing"
+    )
+    assert not pool_check.passed
 
 
 # ── Stage 1: extractor cap (this session's earlier fix) ─────────────────────

@@ -128,8 +128,22 @@ regardless of what build is running.
   (see "Order is priority" above). This is also why two steps that should
   compete for the same frame — e.g. drones vs. army once
   `common.split_production` kicks in — have to be nested in their own
-  `MacroPlan` rather than statically ordered: nesting lets whichever side is
-  behind win the frame instead of one starving the other outright.
+  `MacroPlan` rather than statically ordered: nesting lets whichever side
+  should currently go first win the frame instead of one starving the other
+  outright.
+- **`split_production` used to compare `supply_army` against
+  `supply_workers` directly — don't.** A zergling costs 0.5 supply and a
+  drone costs 1.0, so that raw comparison read army as "behind" for nearly
+  the whole game regardless of actual zergling count, handing it first pick
+  far more often than the "keep both roughly even" docstring intended (and
+  a likely contributor to `UpgradeRushValidator`'s "Workers Massed" FAIL and
+  large resource-blocked-frame counts on later upgrades — production
+  competing hard for the same mineral bank). Fixed by comparing
+  `ctx.bot.supply_workers` against `ctx.worker_target` instead — economy
+  keeps priority until it hits its own target, then army takes over
+  outright. Comparing a side to its *own* target, not to the other side's
+  raw supply, is the pattern worth repeating if another "alternate
+  priority between two differently-costed things" step ever gets added.
 - **`BuildStructure` cannot place an in-base hatchery on Zerg.** For
   `Race.Zerg` it defers unconditionally to ares' own
   `_do_zerg_build_placement`, which searches ~30 tiles out from the base
@@ -301,5 +315,17 @@ regardless of what build is running.
   this behavior again: it is only ever safe to hand it a target other than
   the enemy when there truly are no enemies in `enemies` that frame.
   `attack_squads` no longer attempts a retreat at all (removed per Jason's
-  call — see the fixes list above — this build always fights whatever a
-  wave finds), but the framework fact stands on its own.
+  call — this build always fights whatever a wave finds), but the framework
+  fact stands on its own.
+- **A validator threshold calibrated for one build silently breaks for
+  another.** `UpgradeRushValidator`'s "Pool Timing" check used to compare
+  against a single hardcoded `POOL_DEADLINE = 50.0`, which fit
+  `Speedling All-In`'s immediate pool but not `UpgradeRush`'s deliberate
+  hatch-before-pool opening (expand at 15, pool at 16 — pool routinely lands
+  around 60s by design, not by lateness). Fixed by adding
+  `BuildDefinition.pool_deadline` (default 50.0) so each build states its
+  own expectation; `UpgradeRush` sets `pool_deadline=75.0`. `POOL_DEADLINE`
+  on the validator class is now only a fallback for when `ctx` isn't set
+  yet. Same lesson as the module's own stated philosophy elsewhere: a
+  number the validator enforces belongs on the build, not baked into the
+  validator.

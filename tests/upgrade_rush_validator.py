@@ -66,9 +66,10 @@ When the game ends the validator prints a report like::
       21/23 passed  (91.3%)
     ══════════════════════════════════════════════════
 
-Every threshold used comes from `ctx.build` — worker/gas targets, wave1_min,
-wave_growth, and both the Evolution Chamber target count and its gate
-(`ctx.build.army.evolution_chambers` / `.evolution_chamber_gate`) — or from
+Every threshold used comes from `ctx.build` — worker/gas targets, pool
+deadline, wave1_min, wave_growth, and both the Evolution Chamber target
+count and its gate (`ctx.build.army.evolution_chambers` /
+`.evolution_chamber_gate`) — or from
 python-sc2/ares' own tech-requirement tables (`UPGRADE_RESEARCHED_FROM`,
 `RESEARCH_INFO`, `tech_requirement_progress`). Nothing here re-hardcodes a
 number or a tech-tree fact by hand, and nothing here is specific to
@@ -86,13 +87,11 @@ import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
+from ares.consts import WORKER_TYPES, UnitRole
 from sc2.dicts.unit_research_abilities import RESEARCH_INFO
 from sc2.dicts.upgrade_researched_from import UPGRADE_RESEARCHED_FROM
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
-
-from ares.consts import WORKER_TYPES, UnitRole
-
 
 # ── Step result ─────────────────────────────────────────────────────────────
 
@@ -198,7 +197,12 @@ class UpgradeRushValidator:
     """
 
     # ── Timing thresholds (game seconds) ────────────────────────────────
-    POOL_DEADLINE: float = 50.0  # Pool started by ~0:50
+    POOL_DEADLINE: float = 50.0
+    """Fallback only, used when `self.ctx` isn't set yet. The real deadline
+    is `ctx.build.pool_deadline` — each build declares its own, since a
+    hatch-before-pool opening (e.g. `UpgradeRush`) has a genuinely later,
+    by-design pool time than an immediate-pool one (e.g. `Speedling
+    All-In`), and a single shared constant here can't reflect both."""
     SUPPLY_BLOCK_GRACE_PERIOD: float = 60.0
     # A fast opening is supply-blocked by design for a few seconds before
     # the pool even exists (drones and an extractor ahead of the second
@@ -502,6 +506,7 @@ class UpgradeRushValidator:
     def _validate_economy(self) -> List[StepResult]:
         target = self.ctx.build.economy.worker_target if self.ctx else 60
         max_gas = self.ctx.build.economy.max_gas if self.ctx else 2
+        pool_deadline = self.ctx.build.pool_deadline if self.ctx else self.POOL_DEADLINE
         return [
             StepResult(
                 "Workers Massed",
@@ -516,7 +521,7 @@ class UpgradeRushValidator:
             StepResult(
                 "Pool Timing",
                 self._pool_start_time is not None
-                and self._pool_start_time <= self.POOL_DEADLINE,
+                and self._pool_start_time <= pool_deadline,
                 (
                     f"pool at {self._pool_start_time:.1f}s"
                     if self._pool_start_time is not None

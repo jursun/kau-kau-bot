@@ -9,10 +9,12 @@ lair -> hive on the way through +1/+1 to 3/3 and adrenal glands.
 
 Wave 1 leaves once Speed is done and at least `wave1_min` lings are massed;
 every wave after that is 25% bigger and leaves as soon as it is ready —
-no extra tech gate. Once wave 1 is out, production splits evenly between
-economy and army (see `common.split_production`) instead of drones having
-outright priority. Spore Crawlers start going up in each base's mineral
-line at the 4-minute mark, capped at one per owned townhall.
+no extra tech gate. Once wave 1 is out, production priority alternates
+between economy and army (see `common.split_production`) — economy keeps
+first pick until workers hit their target, then army takes over — instead
+of drones having outright priority the whole game. Spore Crawlers start
+going up in each base's mineral line at the 4-minute mark, capped at one
+per owned townhall.
 
 Once there's a queen to spare beyond one per base, it peels off injecting to
 spread creep (`routines.creep.spread_creep`); every burrowed tumor also
@@ -23,10 +25,7 @@ wave releases and heads for wherever the biggest attacking squad is going —
 staying at the edge of enemy range rather than trailing into it
 (`routines.combat.escort_overseers`) — for vision and detection on the push.
 
-Still being validated in real games; the last several fixed spore_crawlers()
-crashing/over-building near the 4-minute mark (see ARCHITECTURE.md's
-"ares-sc2 quirks worth knowing" for the Zerg placement gotchas that caused
-it). No opponent has been beaten with it yet.
+Validated in-game: win vs VeryHard Terran at 8:54 (TorchesAIE_v4).
 """
 
 from __future__ import annotations
@@ -61,6 +60,11 @@ BUILD = BuildDefinition(
         evolution_chambers=2,
         evolution_chamber_gate=gates.upgrade_started(z.LING_SPEED),
     ),
+    # Hatch (15) comes before pool (16) by design (see the opening above), so
+    # the pool lands around a minute in rather than the ~15-20s of an
+    # immediate-pool opening; the default `pool_deadline` assumes the latter,
+    # so this build states its own.
+    pool_deadline=75.0,
     combat=Combat(
         routines=(
             combat.release_waves(),

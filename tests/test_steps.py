@@ -63,15 +63,33 @@ def test_split_production_favors_economy_before_gate() -> None:
     assert isinstance(plan.macros[1], SpawnController)
 
 
-def test_split_production_prioritizes_whichever_side_is_behind_once_gated() -> None:
-    economy_ahead = _ctx(supply_workers=40.0, supply_army=10.0)
-    plan = c.split_production(gate=lambda _ctx: True)(economy_ahead)
+def test_split_production_prioritizes_army_once_economy_hits_target() -> None:
+    # _ctx() gives worker_target=min(60, 22*1)=22 (see base_count->1 above).
+    economy_maxed = _ctx(supply_workers=22.0, supply_army=5.0)
+    plan = c.split_production(gate=lambda _ctx: True)(economy_maxed)
     assert isinstance(plan.macros[0], SpawnController), "army should go first"
     assert isinstance(plan.macros[1], BuildWorkers)
 
-    army_ahead = _ctx(supply_workers=10.0, supply_army=40.0)
-    plan = c.split_production(gate=lambda _ctx: True)(army_ahead)
+    economy_short = _ctx(supply_workers=10.0, supply_army=40.0)
+    plan = c.split_production(gate=lambda _ctx: True)(economy_short)
     assert isinstance(plan.macros[0], BuildWorkers), "economy should go first"
+    assert isinstance(plan.macros[1], SpawnController)
+
+
+def test_split_production_compares_workers_to_their_own_target_not_army_supply() -> (
+    None
+):
+    """Regression test: the old check compared raw `supply_army` against raw
+    `supply_workers`, which skews toward the army since a zergling costs half
+    a worker's supply - so a wave of cheap lings could out-race worker supply
+    and grab priority while economy was still short of its own target. This
+    asserts economy keeps priority in exactly that scenario."""
+    ctx = _ctx(supply_workers=20.0, supply_army=15.0)  # target is 22 - not maxed
+    plan = c.split_production(gate=lambda _ctx: True)(ctx)
+    assert isinstance(plan.macros[0], BuildWorkers), (
+        "economy hasn't hit its target yet, so it should go first even "
+        "though supply_army < supply_workers"
+    )
     assert isinstance(plan.macros[1], SpawnController)
 
 
