@@ -8,10 +8,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ares.behaviors.macro import ExpansionController, MacroPlan
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
-
-from ares.behaviors.macro import MacroPlan
 
 from bot.behaviors.zerg import (
     BuildMacroHatch,
@@ -70,6 +69,55 @@ def macro_hatch(count: int, gate: Gate = _always) -> MacroStep:
         if not gate(ctx):
             return None
         return BuildMacroHatch(to_count=count)
+
+    return step
+
+
+def overflow_hatcheries(mineral_threshold: int = 500) -> MacroStep:
+    """Keep adding hatcheries - a real expansion where a legal one is still
+    available, else a macro hatch in the main - whenever the bank is
+    floating more than `mineral_threshold` minerals.
+
+    Meant as a release valve for a mid/late-game larva bottleneck: once
+    `economy.max_bases` and any fixed `macro_hatch` target are both
+    reached, nothing earlier in `macro_steps` has anywhere left to put
+    surplus minerals - `BuildWorkers`/`SpawnController` (`split_production`)
+    are larva-limited at that point, not mineral-limited, so minerals pile
+    up with nowhere to go. More hatcheries mean more larva slots and more
+    inject targets, which actually addresses a larva bottleneck, rather
+    than just spending harder on the units the existing larva already
+    produces.
+
+    Belongs last in `macro_steps`: everything before it (queens, evolution
+    chambers, spore crawlers, expansions up to the build's own cap, gas,
+    upgrades, `split_production`) gets first refusal every frame, so this
+    only ever fires on a frame where nothing else could act *and* the bank
+    still shows a real surplus - exactly "floating minerals because we're
+    larva-capped, not because nothing wants them."
+
+    Bundled into one `MacroPlan` so a full map (no legal expansion left)
+    falls straight through to a macro hatch on the same frame instead of
+    wasting it. `ExpansionController` and `BuildMacroHatch` both count
+    `to_count` the same way (every townhall, main included - see
+    `BuildMacroHatch`'s docstring and ares' own `ExpansionController`
+    source), so handing them the same computed target keeps them working
+    toward one shared goal instead of racing each other for it.
+    """
+
+    def step(ctx: "BotContext"):
+        if ctx.bot.minerals < mineral_threshold:
+            return None
+
+        target = (
+            len(ctx.bot.townhalls)
+            + ctx.bot.not_started_but_in_building_tracker(UnitTypeId.HATCHERY)
+            + 1
+        )
+
+        plan = MacroPlan()
+        plan.add(ExpansionController(to_count=target))
+        plan.add(BuildMacroHatch(to_count=target))
+        return plan
 
     return step
 

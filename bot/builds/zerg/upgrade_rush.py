@@ -16,6 +16,14 @@ of drones having outright priority the whole game. Spore Crawlers start
 going up in each base's mineral line at the 4-minute mark, capped at one
 per owned townhall.
 
+A mid/late-game larva bottleneck shows up as minerals floating with
+nowhere to go once economy and army are both larva-limited rather than
+mineral-limited. `z.overflow_hatcheries()` catches that: whenever the bank
+is sitting on more than 500 floating minerals, it takes another base (or,
+if none are left, a macro hatch) beyond the normal `max_bases` cap - more
+hatcheries means more larva slots, which is the actual fix for a larva
+bottleneck.
+
 Once there's a queen to spare beyond one per base, it peels off injecting to
 spread creep (`routines.creep.spread_creep`); every burrowed tumor also
 spawns a follow-on tumor toward the enemy on its own cooldown
@@ -96,5 +104,8 @@ BUILD = BuildDefinition(
         c.gas_buildings(),
         c.upgrades(),
         c.split_production(gate=gates.after_wave(1)),
+        # Last: only fires when nothing above had anywhere to put a mineral
+        # surplus - see the module docstring and the step's own.
+        z.overflow_hatcheries(mineral_threshold=500),
     ),
 )

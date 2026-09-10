@@ -18,13 +18,19 @@ from unittest.mock import MagicMock
 from ares.behaviors.macro import (
     BuildStructure,
     BuildWorkers,
+    ExpansionController,
     MacroPlan,
     SpawnController,
 )
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
 
-from bot.behaviors.zerg import BuildSporeCrawler, MorphOverseers, TrainQueens
+from bot.behaviors.zerg import (
+    BuildMacroHatch,
+    BuildSporeCrawler,
+    MorphOverseers,
+    TrainQueens,
+)
 from bot.core.context import BotContext
 from bot.core.state import RunState
 from bot.steps import common as c
@@ -100,6 +106,36 @@ def test_split_production_never_drops_either_side() -> None:
     plan = c.split_production(gate=lambda _ctx: True)(ctx)
     kinds = {type(behavior) for behavior in plan.macros}
     assert kinds == {BuildWorkers, SpawnController}
+
+
+def test_overflow_hatcheries_does_nothing_below_the_mineral_threshold() -> None:
+    ctx = _ctx()
+    ctx.bot.minerals = 499
+
+    assert z.overflow_hatcheries(mineral_threshold=500)(ctx) is None
+
+
+def test_overflow_hatcheries_targets_one_more_than_current_townhall_count() -> None:
+    """Regression test for the larva-bottleneck fix: once the bank floats
+    past the threshold, both `ExpansionController` and `BuildMacroHatch`
+    should be handed the same target - current townhalls (ready + already
+    in the building tracker) plus one - so whichever can actually act
+    (a real expansion, or a macro hatch if none is left) takes the next
+    hatchery, and the other falls through on the same frame."""
+    ctx = _ctx()
+    ctx.bot.minerals = 600
+    ctx.bot.townhalls = [MagicMock(), MagicMock(), MagicMock()]  # 3 existing
+    ctx.bot.not_started_but_in_building_tracker.return_value = 1  # 1 pending
+
+    plan = z.overflow_hatcheries(mineral_threshold=500)(ctx)
+
+    assert isinstance(plan, MacroPlan)
+    expansion, macro_hatch = plan.macros
+    assert isinstance(expansion, ExpansionController)
+    assert isinstance(macro_hatch, BuildMacroHatch)
+    assert expansion.to_count == 5  # 3 existing + 1 pending + 1
+    assert macro_hatch.to_count == 5
+    ctx.bot.not_started_but_in_building_tracker.assert_called_with(UnitTypeId.HATCHERY)
 
 
 def test_evolution_chambers_reads_count_and_gate_from_the_build() -> None:
