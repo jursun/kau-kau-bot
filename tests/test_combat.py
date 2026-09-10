@@ -17,7 +17,7 @@ from __future__ import annotations
 import sys
 from unittest.mock import MagicMock
 
-from ares.behaviors.combat.group import AMoveGroup
+from ares.behaviors.combat.group import AMoveGroup, KeepGroupSafe, StutterGroupForward
 from ares.behaviors.combat.individual import KeepUnitSafe, MoveToSafeTarget
 from ares.managers.squad_manager import UnitSquad
 from sc2.position import Point2
@@ -47,6 +47,7 @@ def _ctx(wave1_min: int = 6, wave_growth: float = 1.25) -> BotContext:
     ctx.bot.supply_used = 100.0
     ctx.bot.already_pending.return_value = 0
     ctx.bot.calculate_supply_cost.return_value = 1.0
+    ctx.mediator.get_ground_grid = "ground-grid"
     return ctx
 
 
@@ -197,6 +198,38 @@ def test_outnumbered_squad_disengages_to_rally_instead_of_attacking() -> None:
         _restore_targeting(original)
 
 
+def test_outnumbered_squad_gets_keep_group_safe_not_stutter_forward() -> None:
+    """Regression test for a real bug: `StutterGroupForward` only ever reads
+    its `target` argument to pick a representative unit - the orders it
+    actually issues always chase the enemy's centre regardless of what
+    `target` is, so handing it the rally point never produced a retreat, it
+    just kept fighting toward the enemy every frame. A retreating squad must
+    get `KeepGroupSafe` (which actually flees on the ground grid) and never
+    `StutterGroupForward`."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original = _patch_targeting(rally, attack)
+    try:
+        ctx = _ctx()
+        units = [_unit(1, Point2((10.0, 10.0))), _unit(2, Point2((12.0, 10.0)))]
+        enemies = [_unit(90), _unit(91)]  # 2 vs 2 supply - not double
+        ctx.mediator.get_units_in_range.return_value = [enemies]
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+
+        combat.attack_squads()(ctx)
+
+        registered = ctx.bot.register_behavior.call_args.args[0]
+        stutters = [b for b in registered.micros if isinstance(b, StutterGroupForward)]
+        assert stutters == [], "must never stutter toward the enemy while retreating"
+
+        safes = [b for b in registered.micros if isinstance(b, KeepGroupSafe)]
+        assert len(safes) == 1
+        assert safes[0].close_enemy == enemies
+        assert safes[0].grid == "ground-grid"
+    finally:
+        _restore_targeting(original)
+
+
 def test_squad_with_double_supply_attacks_instead_of_retreating() -> None:
     rally = Point2((50.0, 50.0))
     attack = Point2((999.0, 999.0))
@@ -214,6 +247,11 @@ def test_squad_with_double_supply_attacks_instead_of_retreating() -> None:
         amoves = [b for b in registered.micros if isinstance(b, AMoveGroup)]
         assert amoves[0].target == attack
         assert ctx.state.retreating_tags == set()
+
+        stutters = [b for b in registered.micros if isinstance(b, StutterGroupForward)]
+        assert len(stutters) == 1, "a favorable fight should still stutter-forward"
+        safes = [b for b in registered.micros if isinstance(b, KeepGroupSafe)]
+        assert safes == []
     finally:
         _restore_targeting(original)
 

@@ -6,7 +6,7 @@ import math
 from typing import TYPE_CHECKING
 
 from ares.behaviors.combat import CombatManeuver
-from ares.behaviors.combat.group import AMoveGroup, StutterGroupForward
+from ares.behaviors.combat.group import AMoveGroup, KeepGroupSafe, StutterGroupForward
 from ares.behaviors.combat.individual import (
     AMove,
     AttackTarget,
@@ -193,6 +193,18 @@ def attack_squads(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
     disengaged squad always attacks again alongside reinforcements (and with
     their combined supply re-checked against the ratio) instead of either
     trickling back in alone or waiting out the game at the rally forever.
+
+    A retreating squad gets `KeepGroupSafe`, never `StutterGroupForward`:
+    despite taking a `target`, `StutterGroupForward` only ever reads it to
+    pick a representative unit - the actual orders it issues always chase
+    `enemies`' centre, so handing it the rally point as `target` while enemies
+    are still around does not make a squad retreat, it just keeps fighting
+    toward them (this was a real bug - see ARCHITECTURE.md). `KeepGroupSafe`
+    is the group version of `_defender_maneuver`'s per-unit shoot-in-range-
+    then-`KeepUnitSafe` shape: it fires at whatever's already in range without
+    closing distance, and otherwise paths away from danger on the ground
+    grid, falling through to the plain `AMoveGroup` toward rally once there's
+    nothing left to flee.
     """
 
     def routine(ctx: "BotContext") -> None:
@@ -205,6 +217,7 @@ def attack_squads(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
         )
         rally = targeting.rally_point(ctx)
         maxed = _maxed_and_ready(ctx)
+        ground_grid = ctx.mediator.get_ground_grid
         for squad in squads:
             position = squad.squad_position
             mustering = squad.tags & ctx.state.mustering_tags
@@ -236,7 +249,15 @@ def attack_squads(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
             )
 
             maneuver = CombatManeuver()
-            if close_enemy:
+            if retreating:
+                maneuver.add(
+                    KeepGroupSafe(
+                        group=squad.squad_units,
+                        close_enemy=close_enemy,
+                        grid=ground_grid,
+                    )
+                )
+            elif close_enemy:
                 maneuver.add(
                     StutterGroupForward(
                         group=squad.squad_units,

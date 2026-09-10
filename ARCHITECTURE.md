@@ -309,3 +309,26 @@ regardless of what build is running.
   on the field. Reusing the same `bool` in both `release_waves` and
   `attack_squads` (rather than two separate supply checks) is what keeps
   them from disagreeing about whether the game has reached that point.
+- **`StutterGroupForward` takes a `target` argument and completely ignores
+  it once there are enemies.** Reading its source (ares v3.13.1) shows
+  `target` is only ever used to sort the group and pick a representative
+  unit for the duplicate-order check — every actual order it issues
+  (`ATTACK`/`MOVE`) is aimed at `enemy_center`, computed from `enemies`, not
+  `target`. So the first version of the retreat logic — pass `target=rally`
+  to `StutterGroupForward` while a squad is disengaging — compiled, passed
+  every unit test (which only asserted on the `AMoveGroup` appended *after*
+  it), and did nothing in a real game: as long as `close_enemy` was
+  non-empty, `StutterGroupForward.execute()` always returned `True` and
+  `CombatManeuver`'s `any()` short-circuit (see the bullet above) meant the
+  `AMoveGroup(target=rally)` behind it never ran — the squad just kept
+  fighting toward the enemy it was supposedly retreating from. Fixed by
+  never handing a retreating squad `StutterGroupForward` at all: it now gets
+  `KeepGroupSafe` (group form of `_defender_maneuver`'s shoot-in-range-then-
+  flee shape — fires at whatever's already in range without closing
+  distance, then paths away from danger on `mediator.get_ground_grid`),
+  falling through to `AMoveGroup(target=rally)` once nothing's chasing it.
+  `tests/test_combat.py` now asserts the negative directly
+  (`test_outnumbered_squad_gets_keep_group_safe_not_stutter_forward`) —
+  the earlier tests only checked `AMoveGroup.target`, which was true but not
+  sufficient, since a higher-priority behavior can make that target
+  unreachable without the test ever noticing.
