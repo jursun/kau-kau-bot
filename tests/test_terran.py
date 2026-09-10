@@ -33,7 +33,6 @@ import sys
 from unittest.mock import MagicMock
 
 from ares.behaviors.combat import CombatManeuver
-from ares.behaviors.combat.individual import AMove
 from ares.behaviors.macro import BuildStructure
 from ares.consts import UnitRole
 from sc2.ids.unit_typeid import UnitTypeId
@@ -177,15 +176,47 @@ def test_does_not_reclaim_a_worker_it_already_owns() -> None:
     assert _run_claim(ctx, [already]) == []
 
 
-def _amove_targets(ctx: BotContext) -> list[Point2]:
+def _move_targets(ctx: BotContext) -> list[Point2]:
+    """Every `combat._Move` target registered - claimed workers never fight,
+    so this is the only movement behavior they ever issue."""
     targets: list[Point2] = []
     for call in ctx.bot.register_behavior.call_args_list:
         behavior = call.args[0]
-        if isinstance(behavior, AMove):
+        if isinstance(behavior, combat._Move):
             targets.append(behavior.target)
         elif isinstance(behavior, CombatManeuver):
-            targets.extend(b.target for b in behavior.micros if isinstance(b, AMove))
+            targets.extend(
+                b.target for b in behavior.micros if isinstance(b, combat._Move)
+            )
     return targets
+
+
+def _repair_pairs(ctx: BotContext) -> list[tuple[int, int]]:
+    """(worker tag, repair-target tag) for every `combat._Repair` registered."""
+    pairs: list[tuple[int, int]] = []
+    for call in ctx.bot.register_behavior.call_args_list:
+        behavior = call.args[0]
+        micros = behavior.micros if isinstance(behavior, CombatManeuver) else [behavior]
+        pairs.extend(
+            (m.unit.tag, m.target.tag) for m in micros if isinstance(m, combat._Repair)
+        )
+    return pairs
+
+
+def _by_role(proxy_workers: list, attacking: list):
+    """`get_units_from_role` side_effect: PROXY_WORKER gets the claimed
+    workers, ATTACKING (what `ctx.units_in_role` reads for the Marines)
+    gets the rest - a single `return_value` can't tell the two calls apart.
+    """
+
+    def _get(role=None, **_kwargs) -> list:
+        if role == UnitRole.PROXY_WORKER:
+            return proxy_workers
+        if role == UnitRole.ATTACKING:
+            return attacking
+        return []
+
+    return _get
 
 
 def test_claimed_workers_wait_at_the_proxy_before_the_first_wave() -> None:
@@ -195,19 +226,110 @@ def test_claimed_workers_wait_at_the_proxy_before_the_first_wave() -> None:
 
     combat.builder_workers_attack(_proxy, claim_gate=lambda _c: False)(ctx)
 
-    assert _amove_targets(ctx) == [PROXY], "should hold, not run in alone"
+    assert _move_targets(ctx) == [PROXY], "should hold, not run in alone"
 
 
-def test_claimed_workers_attack_once_the_first_wave_is_out() -> None:
+def test_claimed_workers_never_attack() -> None:
+    """The whole point of this round's change: claimed workers repair or
+    shield, but `AttackTarget`/`ShootTargetInRange` must never appear for
+    them regardless of what's in range."""
     ctx = _ctx()
     ctx.state.wave_number = 1
-    ctx.mediator.get_units_in_range.return_value = [[]]  # nothing in range
-    ctx.mediator.get_units_from_role.return_value = [_worker(1, PROXY)]
+    enemy = _worker(99, PROXY)
+    ctx.mediator.get_units_in_range.return_value = [[enemy]]  # enemy in range
+    ctx.mediator.get_units_from_role.side_effect = _by_role([_worker(1, PROXY)], [])
 
     combat.builder_workers_attack(_proxy, claim_gate=lambda _c: False)(ctx)
 
-    targets = _amove_targets(ctx)
-    assert targets == [ctx.bot.enemy_start_locations[0]], targets
+    for call in ctx.bot.register_behavior.call_args_list:
+        behavior = call.args[0]
+        micros = behavior.micros if isinstance(behavior, CombatManeuver) else [behavior]
+        assert all(
+            isinstance(m, (combat._Move, combat._Repair)) for m in micros
+        ), micros
+
+
+def test_claimed_workers_shield_the_attack_target_with_no_marines_alive() -> None:
+    """No Marine group means no `_shield_point` to stand in front of -
+    falls back to the same attack target the squads walk toward."""
+    ctx = _ctx()
+    ctx.state.wave_number = 1
+    ctx.mediator.get_units_from_role.side_effect = _by_role([_worker(1, PROXY)], [])
+
+    combat.builder_workers_attack(_proxy, claim_gate=lambda _c: False)(ctx)
+
+    assert _move_targets(ctx) == [ctx.bot.enemy_start_locations[0]]
+
+
+def test_claimed_workers_shield_the_marines_when_nothing_threatens_them() -> None:
+    ctx = _ctx()
+    ctx.state.wave_number = 1
+    marine = _worker(50, Point2((120.0, 120.0)))
+    ctx.mediator.get_units_from_role.side_effect = _by_role(
+        [_worker(1, PROXY)], [marine]
+    )
+    ctx.mediator.get_units_in_range.return_value = [[]]  # no threats
+
+    combat.builder_workers_attack(_proxy, claim_gate=lambda _c: False)(ctx)
+
+    assert _move_targets(ctx) == [marine.position]
+
+
+def test_claimed_workers_shield_point_biases_toward_the_nearest_threat() -> None:
+    ctx = _ctx()
+    ctx.state.wave_number = 1
+    marine = _worker(50, Point2((100.0, 100.0)))
+    threat = _worker(90, Point2((110.0, 100.0)))
+    ctx.mediator.get_units_from_role.side_effect = _by_role(
+        [_worker(1, PROXY)], [marine]
+    )
+    ctx.mediator.get_units_in_range.return_value = [[threat]]
+
+    combat.builder_workers_attack(_proxy, claim_gate=lambda _c: False)(ctx)
+
+    targets = _move_targets(ctx)
+    assert len(targets) == 1
+    # combat.SHIELD_OFFSET (2.0) tiles from the Marine centroid, toward the
+    # threat - not at the centroid, and not all the way to the threat.
+    assert (round(targets[0].x, 1), round(targets[0].y, 1)) == (102.0, 100.0)
+
+
+def test_claimed_workers_repair_a_wounded_ally_instead_of_shielding() -> None:
+    ctx = _ctx()
+    ctx.state.wave_number = 1
+    healthy = _worker(1, PROXY)
+    healthy.health, healthy.health_max = 45, 45
+    hurt = _worker(2, Point2((101.0, 100.0)))
+    hurt.health, hurt.health_max = 10, 45
+    marine = _worker(50, hurt.position)
+    ctx.mediator.get_units_from_role.side_effect = _by_role([healthy, hurt], [marine])
+    ctx.mediator.get_units_in_range.return_value = [[]]
+
+    combat.builder_workers_attack(_proxy, claim_gate=lambda _c: False)(ctx)
+
+    assert _repair_pairs(ctx) == [(1, 2)], "the healthy worker should repair hurt"
+    assert _move_targets(ctx) == [hurt.position], "hurt has no ally to repair, shields"
+
+
+def test_claimed_workers_repair_the_most_wounded_ally_when_several_are_hurt() -> None:
+    ctx = _ctx()
+    ctx.state.wave_number = 1
+    healthy = _worker(1, PROXY)
+    healthy.health, healthy.health_max = 45, 45
+    mildly_hurt = _worker(2, Point2((101.0, 100.0)))
+    mildly_hurt.health, mildly_hurt.health_max = 30, 45
+    badly_hurt = _worker(3, Point2((99.0, 100.0)))
+    badly_hurt.health, badly_hurt.health_max = 5, 45
+    marine = _worker(50, PROXY)
+    ctx.mediator.get_units_from_role.side_effect = _by_role(
+        [healthy, mildly_hurt, badly_hurt], [marine]
+    )
+    ctx.mediator.get_units_in_range.return_value = [[]]
+
+    combat.builder_workers_attack(_proxy, claim_gate=lambda _c: False)(ctx)
+
+    healthy_repairs = [target for source, target in _repair_pairs(ctx) if source == 1]
+    assert healthy_repairs == [3], "should pick the lowest-health ally, not the first"
 
 
 # --- targeting rally override --------------------------------------------

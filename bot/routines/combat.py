@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ares.behaviors.combat import CombatManeuver
@@ -15,8 +16,17 @@ from ares.behaviors.combat.individual import (
     ShootTargetInRange,
 )
 from ares.consts import UnitRole, UnitTreeQueryType
-from cython_extensions import cy_closest_to, cy_distance_to_squared
+from cython_extensions import (
+    cy_center,
+    cy_closest_to,
+    cy_distance_to,
+    cy_distance_to_squared,
+    cy_in_attack_range,
+    cy_towards,
+)
 from sc2.ids.unit_typeid import UnitTypeId
+from sc2.position import Point2
+from sc2.unit import Unit
 from sc2.units import Units
 
 from bot.builds.definition import _always
@@ -39,6 +49,14 @@ BUILDER_CLAIM_RADIUS: float = 30.0
 to consider it stranded there and claim it. Wide enough to cover a builder
 that has wandered a screen away after finishing, tight enough that a worker
 long-distance mining past the area is not swept up."""
+
+SHIELD_OFFSET: float = 2.0
+"""How far in front of the Marine group's centroid, toward the nearest
+threat, a claimed worker tries to stand - see `builder_workers_attack`."""
+
+REPAIR_SEARCH_RADIUS: float = 15.0
+"""How far a claimed worker looks for a damaged ally to repair before
+falling back to holding the shield position - see `builder_workers_attack`."""
 
 MAX_SUPPLY: float = 200.0
 """Standard SC2 supply cap. Once here - and once `_army_fully_trained` says
@@ -170,6 +188,61 @@ def _enemies_near(ctx: "BotContext", point, distance: float) -> Units:
     )[0]
 
 
+@dataclass
+class _Move:
+    """Plain move, no attack semantics - for a unit (a claimed worker) that
+    must never fight, where `AMove`'s attack-move risks it trading blows."""
+
+    unit: Unit
+    target: Point2
+
+    def execute(self, ai, config, mediator, **kwargs) -> bool:
+        self.unit.move(self.target)
+        return True
+
+
+@dataclass
+class _Repair:
+    """Repair a damaged ally. `EFFECT_REPAIR` auto-approaches the target if
+    it's out of range, so no separate pathing step is needed."""
+
+    unit: Unit
+    target: Unit
+
+    def execute(self, ai, config, mediator, **kwargs) -> bool:
+        self.unit.repair(self.target)
+        return True
+
+
+def _kite_maneuver(
+    unit: Unit, enemies: Units | list[Unit], min_engage_range: float, target
+) -> CombatManeuver:
+    """One unit's turn at `min_engage_range` kiting - see `attack_squads`.
+
+    Backs straight away from the nearest enemy(s) closer than
+    `min_engage_range`; otherwise shoots the lowest-health enemy already in
+    weapon range (`ShootTargetInRange`); otherwise advances on `target`.
+    """
+    maneuver = CombatManeuver()
+    in_range = cy_in_attack_range(unit, enemies)
+    crowding = [
+        e
+        for e in in_range
+        if cy_distance_to(unit.position, e.position) < min_engage_range
+    ]
+    if crowding:
+        retreat_from = (
+            Point2(cy_center(crowding)) if len(crowding) > 1 else crowding[0].position
+        )
+        retreat_to = Point2(cy_towards(retreat_from, unit.position, min_engage_range))
+        maneuver.add(_Move(unit=unit, target=retreat_to))
+    elif in_range:
+        maneuver.add(ShootTargetInRange(unit=unit, targets=in_range))
+    else:
+        maneuver.add(AMove(unit=unit, target=target))
+    return maneuver
+
+
 def _defender_maneuver(ctx: "BotContext", unit, home_threats, hold) -> CombatManeuver:
     maneuver = CombatManeuver()
     in_range = _enemies_near(ctx, unit, DEFENDER_ENGAGE_RANGE)
@@ -209,7 +282,9 @@ def defend_home() -> CombatRoutine:
     return routine
 
 
-def attack_squads(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
+def attack_squads(
+    squad_radius: float = SQUAD_RADIUS, min_engage_range: float | None = None
+) -> CombatRoutine:
     """Drive each ATTACKING squad at its nearest worthwhile target.
 
     A freshly-promoted wave musters at the rally point in front of our
@@ -220,11 +295,20 @@ def attack_squads(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
     rally point its tags are released and it attacks like any other squad
     from then on, even if it later drifts away from the rally point.
 
-    A squad that isn't still forming up fights whatever enemy is actually in
-    range (`SQUAD_ENGAGE_RANGE`) via `StutterGroupForward` unconditionally -
-    there is no supply-ratio check and no retreat. This build attacks with
-    everything a wave has; a squad that finds itself outnumbered stutter-
-    steps and trades rather than disengaging.
+    A squad that isn't still forming up and finds a nearby enemy
+    (`SQUAD_ENGAGE_RANGE`) fights with no supply-ratio check and no retreat -
+    this build attacks with everything a wave has. How it fights depends on
+    `min_engage_range`:
+
+    - Left `None` (every build but Four Rax Proxy today): `StutterGroupForward`
+      trades unconditionally as one group - a squad that finds itself
+      outnumbered stutter-steps and fights rather than disengaging.
+    - Set to a distance: each unit is driven individually via
+      `_kite_maneuver` instead - backing away from anything closer than
+      `min_engage_range`, otherwise shooting the lowest-health enemy already
+      in its own weapon range. For a ranged unit meant to poke rather than
+      trade (Four Rax Proxy's Marines), never `StutterGroupForward`'s "close
+      the gap when weapons are down" behavior.
     """
 
     def routine(ctx: "BotContext") -> None:
@@ -249,6 +333,13 @@ def attack_squads(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
             close_enemy = _enemies_near(ctx, position, SQUAD_ENGAGE_RANGE)
 
             target = rally if mustering else targeting.attack_target(ctx, position)
+
+            if close_enemy and min_engage_range is not None:
+                for unit in squad.squad_units:
+                    ctx.bot.register_behavior(
+                        _kite_maneuver(unit, close_enemy, min_engage_range, target)
+                    )
+                continue
 
             maneuver = CombatManeuver()
             if close_enemy:
@@ -329,16 +420,47 @@ def escort_overseers() -> CombatRoutine:
     return routine
 
 
+def _most_wounded_nearby(worker, allies, radius: float) -> Unit | None:
+    """The lowest-health other claimed worker within `radius`, if any is
+    actually damaged - else `None`. See `builder_workers_attack`."""
+    radius_sq = radius**2
+    wounded = [
+        u
+        for u in allies
+        if u.tag != worker.tag
+        and u.health < u.health_max
+        and cy_distance_to_squared(worker.position, u.position) <= radius_sq
+    ]
+    if not wounded:
+        return None
+    return min(wounded, key=lambda u: u.health)
+
+
+def _shield_point(ctx: "BotContext", marines: Units) -> Point2:
+    """A point `SHIELD_OFFSET` tiles in front of the Marines' centroid,
+    toward the nearest threat - or the centroid itself if nothing threatens
+    it yet. See `builder_workers_attack`."""
+    marine_center = Point2(cy_center(marines))
+    threats = _enemies_near(ctx, marine_center, DEFENDER_ENGAGE_RANGE)
+    if not threats:
+        return marine_center
+    nearest = cy_closest_to(position=marine_center, units=threats)
+    return Point2(cy_towards(marine_center, nearest.position, SHIELD_OFFSET))
+
+
 def builder_workers_attack(
     where: PointLocator,
     claim_gate: Gate = _always,
     claim_radius: float = BUILDER_CLAIM_RADIUS,
 ) -> CombatRoutine:
-    """Turn workers stranded at a proxy into attackers once the first wave goes.
+    """Turn workers stranded at a proxy into a screen for the push once the
+    first wave goes.
 
     A proxy build finishes with two or three SCVs standing on the far side of
     the map with nothing to do. Walking them home to mine is worth close to
-    nothing at that point; adding them to the push is worth a Marine each.
+    nothing at that point; standing between the Marines and the enemy,
+    soaking hits a Marine would otherwise take, is worth more than an SCV's
+    own trivial attack ever would be - so these workers never fight.
 
     Claiming is by *situation*, not by tag: a worker is claimed if it is near
     `where`, not in ares' building tracker, and not currently constructing.
@@ -356,9 +478,11 @@ def builder_workers_attack(
     already standing or under way" - after that there is nothing left for a
     builder to be saved for.
 
-    Before the first wave is released the claimed workers wait at the proxy
-    rather than running in alone; from wave 1 on they attack the same target
-    the squads do, shooting whatever comes into range on the way.
+    Before the first wave is released the claimed workers hold at the proxy.
+    From wave 1 on, each one repairs the most wounded other claimed worker
+    within `REPAIR_SEARCH_RADIUS` if one exists (`_most_wounded_nearby`), or
+    otherwise moves to `_shield_point` - standing between the Marine group
+    and the nearest threat rather than adding damage of its own.
 
     Attributes:
         where: Resolves the proxy location, fresh each frame.
@@ -396,22 +520,22 @@ def builder_workers_attack(
         # Hold at the proxy until the Marines actually leave.
         if ctx.state.wave_number < 1:
             for worker in workers:
-                ctx.bot.register_behavior(AMove(unit=worker, target=point))
+                ctx.bot.register_behavior(_Move(unit=worker, target=point))
             return
 
-        target = targeting.attack_target(ctx, point)
+        marines = ctx.units_in_role(UnitRole.ATTACKING)
+        shield_point = (
+            _shield_point(ctx, marines)
+            if marines
+            else targeting.attack_target(ctx, point)
+        )
         for worker in workers:
             maneuver = CombatManeuver()
-            in_range = _enemies_near(ctx, worker, DEFENDER_ENGAGE_RANGE)
-            if in_range:
-                maneuver.add(ShootTargetInRange(unit=worker, targets=in_range))
-                maneuver.add(
-                    AttackTarget(
-                        unit=worker,
-                        target=cy_closest_to(position=worker.position, units=in_range),
-                    )
-                )
-            maneuver.add(AMove(unit=worker, target=target))
+            ally = _most_wounded_nearby(worker, workers, REPAIR_SEARCH_RADIUS)
+            if ally is not None:
+                maneuver.add(_Repair(unit=worker, target=ally))
+            else:
+                maneuver.add(_Move(unit=worker, target=shield_point))
             ctx.bot.register_behavior(maneuver)
 
     return routine

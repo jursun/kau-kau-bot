@@ -32,6 +32,11 @@ leave together with whichever crew SCVs have finished their tasks by then;
 every Marine after that streams to the front individually the moment it's
 trained — one wait, then none.
 
+Combat micro, once a wave is out: Marines kite (`MARINE_MIN_ENGAGE_RANGE`)
+rather than trade in melee range; crew SCVs that finish their tasks and
+join the push never fight - they repair each other and shield the Marines
+instead (see `combat.builder_workers_attack`'s docstring).
+
 Not yet validated in-game.
 """
 
@@ -71,6 +76,13 @@ WORKER_TARGET = 14
 # sends them together, and every Marine after that streams to the front
 # individually, with no further waiting and no wave-growth math.
 FIRST_WAVE = 5
+
+# A Marine's attack range is 5 - kiting at this distance keeps a 2-tile
+# buffer, backing off anything that closes inside it rather than trading in
+# melee range. Passed to `combat.attack_squads`, which drives this per unit
+# (`combat._kite_maneuver`) instead of `StutterGroupForward`'s unconditional
+# group trade - see that routine's own docstring for the mechanism.
+MARINE_MIN_ENGAGE_RANGE = 3.0
 
 
 def proxy_location(ctx) -> Point2:
@@ -188,7 +200,7 @@ BUILD = BuildDefinition(
             # that happen: `attack_squads()` below reads it directly.
             combat.release_first_wave_then_stream(),
             combat.defend_home(),
-            combat.attack_squads(),
+            combat.attack_squads(min_engage_range=MARINE_MIN_ENGAGE_RANGE),
             # Every crew worker that has worked through its own task list
             # joins the push once all four Barracks are accounted for. This
             # doesn't know or care which of X/Y/Z it's claiming — see its

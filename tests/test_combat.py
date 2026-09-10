@@ -18,9 +18,15 @@ import sys
 from unittest.mock import MagicMock
 
 from ares.behaviors.combat.group import AMoveGroup, StutterGroupForward
-from ares.behaviors.combat.individual import KeepUnitSafe, MoveToSafeTarget
+from ares.behaviors.combat.individual import (
+    AMove,
+    KeepUnitSafe,
+    MoveToSafeTarget,
+    ShootTargetInRange,
+)
 from ares.consts import UnitRole
 from ares.managers.squad_manager import UnitSquad
+from cython_extensions import cy_distance_to
 from sc2.position import Point2
 
 from bot.core.context import BotContext
@@ -198,6 +204,108 @@ def test_squad_attacks_regardless_of_how_outnumbered_it_is() -> None:
         assert stutters[0].enemies == enemies
     finally:
         _restore_targeting(original)
+
+
+# ── min_engage_range kiting: _kite_maneuver and attack_squads' dispatch ─────
+
+
+def _patch_in_range(mapping: dict):
+    """`combat.cy_in_attack_range` needs real weapon-range game data - not
+    available on a MagicMock unit - so it's monkeypatched here the same way
+    `_patch_targeting` swaps out the module-level targeting functions.
+    `mapping` is unit tag -> the enemies that unit should read as in range.
+    """
+    original = combat.cy_in_attack_range
+    combat.cy_in_attack_range = lambda unit, enemies, *a, **k: mapping.get(unit.tag, [])
+    return original
+
+
+def _restore_in_range(original) -> None:
+    combat.cy_in_attack_range = original
+
+
+def test_kite_maneuver_retreats_from_an_enemy_inside_min_engage_range() -> None:
+    marine = _unit(1, Point2((100.0, 100.0)))
+    close_enemy = _unit(90, Point2((101.0, 100.0)))  # 1 tile away
+    original = _patch_in_range({1: [close_enemy]})
+    try:
+        maneuver = combat._kite_maneuver(
+            marine, [close_enemy], 3.0, Point2((999.0, 999.0))
+        )
+    finally:
+        _restore_in_range(original)
+
+    moves = [m for m in maneuver.micros if isinstance(m, combat._Move)]
+    assert len(moves) == 1, "should back away, not shoot or advance"
+    # Directly away from the enemy, ending exactly min_engage_range from it.
+    assert round(cy_distance_to(moves[0].target, close_enemy.position), 3) == 3.0
+
+
+def test_kite_maneuver_shoots_when_in_range_but_not_crowding() -> None:
+    marine = _unit(1, Point2((100.0, 100.0)))
+    far_enemy = _unit(90, Point2((104.0, 100.0)))  # in range, outside min_engage_range
+    original = _patch_in_range({1: [far_enemy]})
+    try:
+        maneuver = combat._kite_maneuver(
+            marine, [far_enemy], 3.0, Point2((999.0, 999.0))
+        )
+    finally:
+        _restore_in_range(original)
+
+    shoots = [m for m in maneuver.micros if isinstance(m, ShootTargetInRange)]
+    assert len(shoots) == 1, "in range and clear of the min-range buffer: shoot"
+    assert shoots[0].targets == [far_enemy]
+
+
+def test_kite_maneuver_advances_when_nothing_is_in_range() -> None:
+    marine = _unit(1, Point2((100.0, 100.0)))
+    distant_enemy = _unit(90, Point2((200.0, 200.0)))
+    original = _patch_in_range({1: []})
+    try:
+        maneuver = combat._kite_maneuver(
+            marine, [distant_enemy], 3.0, Point2((999.0, 999.0))
+        )
+    finally:
+        _restore_in_range(original)
+
+    amoves = [m for m in maneuver.micros if isinstance(m, AMove)]
+    assert len(amoves) == 1
+    assert amoves[0].target == Point2((999.0, 999.0))
+
+
+def test_attack_squads_dispatches_per_unit_kiting_when_min_engage_range_is_set() -> (
+    None
+):
+    """`min_engage_range` replaces the group `StutterGroupForward` trade
+    with one `_kite_maneuver` registered per unit - Four Rax Proxy's
+    Marines; every other build leaves it unset and is unaffected (see the
+    test above, which still gets `StutterGroupForward`)."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original_targeting = _patch_targeting(rally, attack)
+    original_in_range = _patch_in_range({})  # nothing in range for any unit
+    try:
+        ctx = _ctx()
+        units = [_unit(1, Point2((10.0, 10.0))), _unit(2, Point2((12.0, 10.0)))]
+        enemies = [_unit(90, Point2((11.0, 10.0)))]
+        ctx.mediator.get_units_in_range.return_value = [enemies]
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+
+        combat.attack_squads(min_engage_range=3.0)(ctx)
+
+        assert ctx.bot.register_behavior.call_count == 2, "one maneuver per unit"
+        registered = [c.args[0] for c in ctx.bot.register_behavior.call_args_list]
+        all_micros = [m for maneuver in registered for m in maneuver.micros]
+        assert not any(isinstance(m, StutterGroupForward) for m in all_micros)
+        assert not any(isinstance(m, AMoveGroup) for m in all_micros)
+        # Nothing in range for either unit (see `_patch_in_range` above), so
+        # each one's own maneuver just advances on the attack target.
+        amoves = [m for m in all_micros if isinstance(m, AMove)]
+        assert len(amoves) == 2
+        assert all(m.target == attack for m in amoves)
+    finally:
+        _restore_targeting(original_targeting)
+        _restore_in_range(original_in_range)
 
 
 def test_maxed_and_fully_trained_bypasses_the_wave_gate_and_size() -> None:
