@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 
 from ares.behaviors.combat.group import AMoveGroup, StutterGroupForward
 from ares.behaviors.combat.individual import KeepUnitSafe, MoveToSafeTarget
+from ares.consts import UnitRole
 from ares.managers.squad_manager import UnitSquad
 from sc2.position import Point2
 
@@ -300,6 +301,117 @@ def test_escort_overseers_does_nothing_without_an_attacking_squad() -> None:
     combat.escort_overseers()(ctx)
 
     ctx.bot.register_behavior.assert_not_called()
+
+
+# --- release_first_wave_then_stream ---------------------------------------
+
+
+def test_stream_waits_for_wave1_min_before_releasing() -> None:
+    ctx = _ctx(wave1_min=5)
+    routine = combat.release_first_wave_then_stream()
+
+    ctx.mediator.get_units_from_role.return_value = [_unit(i) for i in range(4)]
+    routine(ctx)
+
+    assert ctx.state.wave_number == 0
+    ctx.mediator.batch_assign_role.assert_not_called()
+
+
+def test_stream_respects_wave_gate_for_the_first_wave() -> None:
+    ctx = _ctx(wave1_min=5)
+    ctx.build.combat.wave_gate = lambda _ctx: False
+    routine = combat.release_first_wave_then_stream()
+
+    ctx.mediator.get_units_from_role.return_value = [_unit(i) for i in range(5)]
+    routine(ctx)
+
+    assert ctx.state.wave_number == 0
+    ctx.mediator.batch_assign_role.assert_not_called()
+
+
+def test_stream_releases_and_musters_the_first_wave() -> None:
+    ctx = _ctx(wave1_min=5)
+    routine = combat.release_first_wave_then_stream()
+    first_wave = [_unit(i) for i in range(5)]
+    ctx.mediator.get_units_from_role.return_value = first_wave
+
+    routine(ctx)
+
+    assert ctx.state.wave_number == 1
+    assert ctx.state.mustering_tags == {u.tag for u in first_wave}
+    ctx.mediator.batch_assign_role.assert_called_once_with(
+        tags={u.tag for u in first_wave}, role=UnitRole.ATTACKING
+    )
+
+
+def test_stream_does_not_wait_for_a_second_wave_size() -> None:
+    """Once wave 1 is out, a SINGLE new defender streams immediately - no
+    size floor, unlike `release_waves()`'s growth-based next threshold."""
+    ctx = _ctx(wave1_min=5)
+    routine = combat.release_first_wave_then_stream()
+    routine(_release_first_wave(ctx))
+
+    lone_reinforcement = [_unit(999)]
+    ctx.mediator.get_units_from_role.return_value = lone_reinforcement
+    ctx.mediator.batch_assign_role.reset_mock()
+
+    routine(ctx)
+
+    ctx.mediator.batch_assign_role.assert_called_once_with(
+        tags={999}, role=UnitRole.ATTACKING
+    )
+
+
+def test_stream_does_not_add_streamed_units_to_mustering_tags() -> None:
+    """The mechanism that makes streaming mean anything: a unit never added
+    to `mustering_tags` reads as already-formed to `attack_squads()`, so it
+    heads straight to the attack target instead of waiting at the rally."""
+    ctx = _ctx(wave1_min=5)
+    routine = combat.release_first_wave_then_stream()
+    routine(_release_first_wave(ctx))
+    before = set(ctx.state.mustering_tags)
+
+    ctx.mediator.get_units_from_role.return_value = [_unit(999)]
+    routine(ctx)
+
+    assert ctx.state.mustering_tags == before, "streamed unit must not muster"
+
+
+def test_stream_does_nothing_with_no_defenders() -> None:
+    ctx = _ctx(wave1_min=5)
+    ctx.mediator.get_units_from_role.return_value = []
+
+    combat.release_first_wave_then_stream()(ctx)
+
+    ctx.mediator.batch_assign_role.assert_not_called()
+
+
+def _release_first_wave(ctx: BotContext) -> BotContext:
+    """Run wave 1 through `release_first_wave_then_stream` and return ctx."""
+    routine = combat.release_first_wave_then_stream()
+    ctx.mediator.get_units_from_role.return_value = [
+        _unit(i) for i in range(ctx.build.combat.wave1_min)
+    ]
+    routine(ctx)
+    ctx.mediator.batch_assign_role.reset_mock()
+    return ctx
+
+
+def test_streamed_unit_is_not_held_at_rally_by_attack_squads() -> None:
+    """End-to-end across both routines: a unit released after wave 1 must
+    not sit at the rally point waiting - it should attack immediately."""
+    ctx = _ctx(wave1_min=5)
+    _release_first_wave(ctx)
+
+    stream_routine = combat.release_first_wave_then_stream()
+    ctx.mediator.get_units_from_role.return_value = [_unit(999)]
+    stream_routine(ctx)
+
+    squad = _squad([_unit(999)])
+    target = _amove_target(ctx, squad)
+    assert target == targeting.attack_target(
+        ctx, squad.squad_position
+    ), "a streamed unit must head to the attack target, not the rally point"
 
 
 def main() -> int:
