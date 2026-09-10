@@ -468,11 +468,17 @@ regardless of what build is running.
   call reserves its spot before the second one asks, so the two placements
   never collide — no extra locking needed on this codebase's side for two
   crew workers targeting the same base at once.
-- **ares/python-sc2 never fires `on_unit_created` for the units a game
-  starts with — a fact worth generalizing past the scout case it was first
-  used for.** `core/roles.py`'s scout assignment already relied on this (the
-  second Overlord is the first one seen by the hook, since the starting one
-  never fires it); `steps.terran.claim_z_on_first_scv` leans on the exact
-  same guarantee to identify "the 13th SCV" as "the first SCV creation event
-  this game ever raises" — no counting, because the *absence* of an event
-  for the starting 12 already did the counting.
+- **Whether `on_unit_created` fires for a game's starting units is not a
+  reliable guarantee — do not generalize the scout case past Zerg
+  Overlords.** `core/roles.py`'s scout assignment gets away with treating
+  "the first Overlord this hook sees" as "the second one" because it does,
+  empirically, skip the starting Overlord. `steps.terran.claim_z_on_first_scv`
+  originally copied that pattern for Terran's starting SCVs and was wrong: in
+  an actual game the event fired for one of the starting 12 as well, pulling
+  a third worker off the mineral line alongside X and Y instead of the
+  intended two. The fix doesn't lean on event-firing semantics at all — it
+  checks `len(ctx.bot.workers) >= 13` at the moment of the event, so only a
+  call that lands once a 13th SCV genuinely exists can claim one, regardless
+  of what fires the hook or when. Treat "does this event fire for starting
+  units" as unit-type-dependent and unverified until checked, not as a
+  cross-race guarantee.

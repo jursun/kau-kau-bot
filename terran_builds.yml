@@ -61,14 +61,19 @@ Builds:
     # X/Y/Z is already building the "real" one.
     #
     # So this opening only has to cover what's actually a supply-count
-    # trigger: `ConstantWorkerProductionTill` keeps SCVs flowing (including
-    # the 13th, which the `on_unit_created` hook claims as Z the instant it
-    # spawns — see `claim_z_on_first_scv`), and the single `scv` line below
-    # is enough to let ares consider this opening complete almost
-    # immediately, handing off to `macro_steps` (Marines, more SCVs) well
-    # before Barracks A is anywhere close to done.
+    # trigger: `ConstantWorkerProductionTill` keeps SCVs flowing up to the
+    # build's own hard cap of 14 total (the starting 12 plus exactly two
+    # more — the build order's two "SCV" steps, the first of which the
+    # `on_unit_created` hook claims as Z the instant it spawns, see
+    # `claim_z_on_first_scv`; see `WORKER_TARGET` in
+    # bot/builds/terran/four_rax_proxy.py for the same number enforced past
+    # the opening). This is an all-in, not an economy build — nothing here
+    # trains a 15th SCV. The single `scv` line below is enough to let ares
+    # consider this opening complete almost immediately, handing off to
+    # `macro_steps` (Marines, the one remaining SCV) well before Barracks A
+    # is anywhere close to done.
     Four Rax Proxy:
-        ConstantWorkerProductionTill: 16
+        ConstantWorkerProductionTill: 14
         AutoSupplyAtSupply: 15
         OpeningBuildOrder:
             - 12 scv

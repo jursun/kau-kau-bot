@@ -73,17 +73,22 @@ def proxy_barracks(
 
 
 def claim_z_on_first_scv() -> UnitCreatedHook:
-    """Claim the very first SCV creation event of the game as `z` in
+    """Claim the first SCV beyond the starting 12 as `z` in
     `ctx.state.proxy_crew` - a build's `on_unit_created` for a
     `ProxyCrewPlan` whose `z_tasks` should run on "the 13th SCV".
 
-    Why this works without counting to 13: ares/python-sc2 never fires
-    `on_unit_created` for the units a game starts with - `roles.
-    assign_on_created`'s own scout-assignment logic already relies on the
-    identical guarantee for the second Overlord. So the first SCV creation
-    event a game ever raises is necessarily the very first one trained after
-    the starting 12 - the 13th. Nothing here counts; the *absence* of an
-    event for the starting 12 is what does the counting.
+    Guards on `len(ctx.bot.workers) >= 13` at the moment of the event, not
+    merely "the first SCV-creation event seen". An earlier version trusted
+    ares/python-sc2 to never fire `on_unit_created` for a game's starting
+    units - the same guarantee `roles.assign_on_created`'s scout assignment
+    leans on for the second Overlord - and claimed whichever SCV triggered
+    the very first such event. In an actual game that claimed one of the
+    starting 12: a third worker was seen peeling off the mineral line at
+    game start alongside X and Y, instead of only the two of them, meaning
+    the event fired for a starting SCV too. Counting workers directly
+    sidesteps the assumption rather than depending on it - regardless of
+    what fires this event or when, only a call that lands once a 13th SCV
+    genuinely exists gets to claim one.
     """
 
     def hook(ctx: "BotContext", unit: "Unit") -> None:
@@ -91,6 +96,8 @@ def claim_z_on_first_scv() -> UnitCreatedHook:
             return
         crew = ctx.state.proxy_crew
         if crew.z.tag is not None:
+            return
+        if len(ctx.bot.workers) < 13:
             return
         crew.z.tag = unit.tag
         ctx.mediator.assign_role(tag=unit.tag, role=ctx.build.crew.role)

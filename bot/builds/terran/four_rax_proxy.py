@@ -20,11 +20,14 @@ the exact task lists.
                                       started training)
     9. 16 Depot                     (Y, at the proxy, after Barracks B)
 
-After the opening: all four Barracks never stop making Marines, SCVs trickle
-up to 22 on whatever minerals the crew leaves behind. The first five Marines
-muster and leave together with whichever crew SCVs have finished their tasks
-by then; every Marine after that streams to the front individually the
-moment it's trained — one wait, then none.
+After the opening: all four Barracks never stop making Marines. Worker
+production stops for good at 14 — the starting 12 plus the two "SCV" line
+items in the build order above (step 1, which becomes `Z`, and step 6,
+which stays on minerals) — so nothing pulls resources away from Marines
+past that point. The first five Marines muster and leave together with
+whichever crew SCVs have finished their tasks by then; every Marine after
+that streams to the front individually the moment it's trained — one wait,
+then none.
 
 Not yet validated in-game.
 """
@@ -51,12 +54,13 @@ from bot.steps import terran as t
 # Two go down as each of X/Y/Z's first task; the other two are their second.
 PROXY_BARRACKS = 4
 
-# Marines are what wins or loses this; SCVs are whatever is left over.
-# One base's worth of saturation, no expansion, no gas — nothing this build
-# makes costs gas, so a Refinery would be 75 minerals set on fire. Note this
-# counts all 22 SCVs the Command Center ever trains, X/Y/Z included — they
-# just never mine any of it.
-WORKER_TARGET = 22
+# The build order trains exactly two SCVs beyond the starting 12 (step 1,
+# which becomes Z, and step 6) and not one more — this is an all-in, not an
+# economy build, and every mineral past this point goes to Marines. No
+# expansion, no gas either — nothing this build makes costs gas, so a
+# Refinery would be 75 minerals set on fire. Counts all 14 SCVs the Command
+# Center ever trains, X/Y/Z included — they just never mine any of it.
+WORKER_TARGET = 14
 
 # Five Marines is two Barracks' worth of production and the point at which
 # a VeryHard opening has nothing that beats them. There is exactly one

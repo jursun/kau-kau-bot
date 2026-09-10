@@ -295,6 +295,7 @@ def test_claim_z_ignores_a_non_scv_unit() -> None:
 def test_claim_z_claims_the_first_scv_and_assigns_the_crew_role() -> None:
     ctx = _ctx()
     ctx.build.crew = _crew_plan(role=UnitRole.GATE_KEEPER)
+    ctx.bot.workers = [MagicMock() for _ in range(13)]  # the 13th now exists
     unit = MagicMock()
     unit.type_id = UnitTypeId.SCV
     unit.tag = 99
@@ -308,9 +309,30 @@ def test_claim_z_claims_the_first_scv_and_assigns_the_crew_role() -> None:
     }
 
 
+def test_claim_z_ignores_an_scv_event_before_a_13th_scv_actually_exists() -> None:
+    """Regression test: an earlier version trusted `on_unit_created` to never
+    fire for a game's starting units, and claimed whichever SCV triggered the
+    very first such event. In a real game that fired for one of the starting
+    12, pulling a third worker off the mineral line alongside X and Y.
+    Counting `ctx.bot.workers` directly is what fixes that - only a call
+    that lands once a 13th SCV genuinely exists may claim one."""
+    ctx = _ctx()
+    ctx.build.crew = _crew_plan()
+    ctx.bot.workers = [MagicMock() for _ in range(10)]
+    unit = MagicMock()
+    unit.type_id = UnitTypeId.SCV
+    unit.tag = 7
+
+    t.claim_z_on_first_scv()(ctx, unit)
+
+    assert ctx.state.proxy_crew.z.tag is None
+    ctx.mediator.assign_role.assert_not_called()
+
+
 def test_claim_z_ignores_every_scv_after_the_first() -> None:
     ctx = _ctx()
     ctx.build.crew = _crew_plan()
+    ctx.bot.workers = [MagicMock() for _ in range(13)]
     hook = t.claim_z_on_first_scv()
     first, second = MagicMock(), MagicMock()
     first.type_id = second.type_id = UnitTypeId.SCV
