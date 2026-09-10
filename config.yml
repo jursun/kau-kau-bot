@@ -32,7 +32,7 @@ DebugOptions:
     ActiveGrid: Ground
     ChatDebug: False
     DebugSpawn: False
-    ShowPathingCost: True
+    ShowPathingCost: False
     ResourceDebug: False
     ShowBuildingFormation: False
 

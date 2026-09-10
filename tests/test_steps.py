@@ -115,17 +115,38 @@ def test_overflow_hatcheries_does_nothing_below_the_mineral_threshold() -> None:
     assert z.overflow_hatcheries(mineral_threshold=500)(ctx) is None
 
 
-def test_overflow_hatcheries_targets_one_more_than_current_townhall_count() -> None:
-    """Regression test for the larva-bottleneck fix: once the bank floats
-    past the threshold, both `ExpansionController` and `BuildMacroHatch`
-    should be handed the same target - current townhalls (ready + already
-    in the building tracker) plus one - so whichever can actually act
-    (a real expansion, or a macro hatch if none is left) takes the next
-    hatchery, and the other falls through on the same frame."""
+def test_overflow_hatcheries_does_nothing_while_a_hatchery_is_already_pending() -> None:
+    """Regression test for the actual "went overboard with macro hatches"
+    bug: `ExpansionController.max_pending` and `BuildMacroHatch.max_on_route`
+    read the bot-wide pending-hatchery count very differently (the former
+    stays blocked for a hatchery's whole ~71s build time, the latter clears
+    the instant the drone starts building), so a macro hatch under
+    construction silently starved out `ExpansionController` while letting
+    `BuildMacroHatch` queue more macro hatches back to back. Gating the
+    whole step on `structure_pending(HATCHERY)` - the same broad count
+    `ExpansionController` itself uses - throttles both to one hatchery in
+    flight at a time, whichever kind it is."""
+    ctx = _ctx()
+    ctx.bot.minerals = 600
+    ctx.bot.structure_pending.return_value = 1  # a hatchery is already going up
+
+    assert z.overflow_hatcheries(mineral_threshold=500)(ctx) is None
+    ctx.bot.structure_pending.assert_called_with(UnitTypeId.HATCHERY)
+
+
+def test_overflow_hatcheries_prefers_expansion_targeting_one_more_than_current() -> (
+    None
+):
+    """Once nothing is pending, both `ExpansionController` and
+    `BuildMacroHatch` are handed the same target - current townhalls plus
+    one - with `ExpansionController` listed first so a real expansion is
+    always attempted before the macro hatch fallback; whichever can
+    actually act takes the next hatchery, the other falls through on the
+    same frame (`MacroPlan.execute`'s "stop at the first that acts")."""
     ctx = _ctx()
     ctx.bot.minerals = 600
     ctx.bot.townhalls = [MagicMock(), MagicMock(), MagicMock()]  # 3 existing
-    ctx.bot.not_started_but_in_building_tracker.return_value = 1  # 1 pending
+    ctx.bot.structure_pending.return_value = 0  # nothing already going up
 
     plan = z.overflow_hatcheries(mineral_threshold=500)(ctx)
 
@@ -133,9 +154,8 @@ def test_overflow_hatcheries_targets_one_more_than_current_townhall_count() -> N
     expansion, macro_hatch = plan.macros
     assert isinstance(expansion, ExpansionController)
     assert isinstance(macro_hatch, BuildMacroHatch)
-    assert expansion.to_count == 5  # 3 existing + 1 pending + 1
-    assert macro_hatch.to_count == 5
-    ctx.bot.not_started_but_in_building_tracker.assert_called_with(UnitTypeId.HATCHERY)
+    assert expansion.to_count == 4  # 3 existing + 1
+    assert macro_hatch.to_count == 4
 
 
 def test_evolution_chambers_reads_count_and_gate_from_the_build() -> None:

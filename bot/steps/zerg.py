@@ -95,24 +95,43 @@ def overflow_hatcheries(mineral_threshold: int = 500) -> MacroStep:
     still shows a real surplus - exactly "floating minerals because we're
     larva-capped, not because nothing wants them."
 
-    Bundled into one `MacroPlan` so a full map (no legal expansion left)
-    falls straight through to a macro hatch on the same frame instead of
-    wasting it. `ExpansionController` and `BuildMacroHatch` both count
-    `to_count` the same way (every townhall, main included - see
-    `BuildMacroHatch`'s docstring and ares' own `ExpansionController`
-    source), so handing them the same computed target keeps them working
-    toward one shared goal instead of racing each other for it.
+    A real expansion is strongly preferred over a macro hatch, and the
+    whole step is gated on `ai.structure_pending(HATCHERY) == 0` rather
+    than trusting `ExpansionController`/`BuildMacroHatch`'s own internal
+    pending checks - a first version that didn't do this piled up macro
+    hatches almost exclusively, because those two checks read the exact
+    same underlying count very differently. `ExpansionController.max_pending`
+    compares against `structure_pending`, which counts a hatchery as
+    "pending" for its entire ~71s build time (anything with
+    `build_progress < 1.0`), so it stayed blocked practically the whole
+    time a macro hatch was under construction. `BuildMacroHatch.max_on_route`
+    compares against `not_started_but_in_building_tracker`, a much
+    narrower count that clears the instant the drone starts building -
+    so once one macro hatch was underway, `ExpansionController` kept
+    declining while `BuildMacroHatch` was free to queue another, and
+    another, well before the first one even finished. Gating the whole
+    step on the same bot-wide `structure_pending` count keeps both
+    equally throttled to one hatchery in flight at a time - real or
+    macro - so `ExpansionController` (tried first) always gets a fair,
+    unblocked shot at the closest safe expansion, and `BuildMacroHatch`
+    only ever fires as an actual last resort, on a frame where no legal
+    expansion location was available at all.
+
+    Bundled into one `MacroPlan` so that actual fallback still happens on
+    the same frame instead of wasting it - `ExpansionController` and
+    `BuildMacroHatch` count `to_count` the same way (every townhall, main
+    included - see `BuildMacroHatch`'s docstring and ares' own
+    `ExpansionController` source), so handing them the same computed
+    target keeps them working toward one shared goal.
     """
 
     def step(ctx: "BotContext"):
         if ctx.bot.minerals < mineral_threshold:
             return None
+        if ctx.bot.structure_pending(UnitTypeId.HATCHERY):
+            return None
 
-        target = (
-            len(ctx.bot.townhalls)
-            + ctx.bot.not_started_but_in_building_tracker(UnitTypeId.HATCHERY)
-            + 1
-        )
+        target = len(ctx.bot.townhalls) + 1
 
         plan = MacroPlan()
         plan.add(ExpansionController(to_count=target))

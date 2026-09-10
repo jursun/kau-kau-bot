@@ -329,3 +329,28 @@ regardless of what build is running.
   yet. Same lesson as the module's own stated philosophy elsewhere: a
   number the validator enforces belongs on the build, not baked into the
   validator.
+- **`structure_pending` and `not_started_but_in_building_tracker` count the
+  same structure type very differently — don't mix them across two
+  behaviors expected to throttle each other.** `ExpansionController.max_pending`
+  checks `ai.structure_pending(base_townhall_type)`, which counts a
+  hatchery as pending for its *entire* build time (`build_progress < 1.0`,
+  ~71s) — but `BuildMacroHatch.max_on_route` checks
+  `ai.not_started_but_in_building_tracker(HATCHERY)`, which clears the
+  instant the drone starts building. `zerg.overflow_hatcheries()`
+  originally nested both behind the same computed `to_count`, trusting
+  each to throttle itself — but since a macro hatch is also just a
+  Hatchery, one under construction kept `ExpansionController` blocked for
+  its whole build time while `BuildMacroHatch`'s narrower gate cleared
+  almost immediately, letting it queue another macro hatch, and another,
+  long before the first even finished — exactly the "went overboard with
+  macro hatches" Jason reported, with real expansions barely getting a
+  turn. Fixed by gating the whole step on `ai.structure_pending(HATCHERY)`
+  itself (the same broad count `ExpansionController` already uses)
+  *before* trying either behavior, throttling both to one hatchery in
+  flight at a time regardless of kind — so `ExpansionController` (tried
+  first) gets a fair, unblocked shot at the nearest safe expansion every
+  time, and `BuildMacroHatch` only ever fires when no legal expansion
+  exists that frame. Same shape as `spore_crawlers()`'s own
+  `structure_pending` gate (see the postscript on gotcha 10) — worth
+  reaching for whenever two behaviors sharing a structure type are meant
+  to take turns rather than compete.
