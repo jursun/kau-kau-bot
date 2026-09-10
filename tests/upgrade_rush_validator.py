@@ -1,20 +1,29 @@
 """In-game UpgradeRush Validator — tracks this build's own milestones.
 
 This module provides an ``UpgradeRushValidator`` mixin that hooks into the
-python-sc2 bot lifecycle and evaluates five stages, all read live off the
-running bot / `BotContext` so nothing here can drift out of sync with
+python-sc2 bot lifecycle and evaluates a handful of stages, all read live off
+the running bot / `BotContext` so nothing here can drift out of sync with
 `bot/builds/zerg/upgrade_rush.py` or, for Stage 1B, any build declaring a
 `bot.builds.definition.ProxyCrewPlan`:
 
   Stage 1: Opening Economy — workers, pool timing, extractor cap, supply
   Stage 1B: Proxy Crew     — for a build with `ctx.build.crew` set (e.g.
-                             `Four Rax Proxy`): when X/Y/Z were claimed, and
-                             when each task in their declared lists (every
-                             Depot and Barracks the crew places) started and
-                             finished
+                             `Four Rax Proxy`): when X/Y/Z were claimed, then
+                             one line per declared task (every Depot and
+                             Barracks the crew places), in the order they
+                             actually finished this game - not the order
+                             each sits in its own crew member's list, since a
+                             gated task (e.g. Barracks D, held until Marine
+                             training starts) can easily finish after a
+                             later, ungated one
   Stage 2: Tech Structures — Evolution Chamber x2, Lair, Infestation Pit, Hive
-  Stage 3: Upgrades        — every upgrade in `ctx.build.army.upgrades`, in order
-  Stage 4: Attack Waves    — one line per wave actually released: size, timing,
+                             - omitted entirely for a build with no upgrades
+                             declared at all (e.g. `Four Rax Proxy`), rather
+                             than a placeholder line
+  Stage 3: Upgrades        — every upgrade in `ctx.build.army.upgrades`, in
+                             order - omitted under the same condition as
+                             Stage 2, for the same build
+  Stage 4: All-In Attack   — one line per wave actually released: size, timing,
                              and our supply released vs the enemy's known army
                              supply at that moment
 
@@ -37,7 +46,8 @@ Usage — mix into your bot BEFORE BotAI::
             await super().on_step(iteration)
             # ... your bot logic ...
 
-When the game ends the validator prints a report like::
+When the game ends the validator prints a report like this, for a build
+with tech structures and upgrades declared (e.g. `UpgradeRush`)::
 
     ══════════════════════════════════════════════════
     UPGRADE RUSH VALIDATION REPORT
@@ -52,17 +62,9 @@ When the game ends the validator prints a report like::
         Extractor Cap Respected .... PASS (max gas buildings: 2 (cap 2))
         Supply Management ........... PASS (supply-blocked frames: 0)
 
-      Stage 1B: Proxy Crew Choreography
-        Crew X claimed .............. PASS (claimed at 0.1s)
-        Crew Y claimed .............. PASS (claimed at 0.1s)
-        Crew Z claimed (13th SCV) ... PASS (claimed at 24.8s)
-        Barracks A ................... PASS (done at 61.4s)
-        Barracks D ................... PASS (done at 210.7s)
-        ...
-
       Stage 2: Tech Structures
         Evolution Chamber x2 ....... PASS (up at 210.4s)
-        Lair ........................ PASS (up at 245.1s, 38 resource-blocked frames beforehand)
+        Lair ........................ PASS (up at 245.1s, 38 blocked frames)
         Infestation Pit ............. PASS (up at 401.7s)
         Hive ........................ PASS (up at 430.9s)
 
@@ -71,14 +73,37 @@ When the game ends the validator prints a report like::
         Melee Attacks +1 ............ PASS (started 205.0s)
         ...
 
-      Stage 4: Attack Waves
-        Wave 1 ...................... PASS (t=302.1s size=21 (expected>=20) | supply us=21 vs enemy=14)
-        Wave 2 ...................... PASS (t=418.6s size=26 (expected>=27) gap=116.5s | supply us=26 vs enemy=22)
+      Stage 4: All-In Attack
+        Wave 1 ...................... PASS (t=302.1s size=21 (expected>=20))
+        Wave 2 ...................... PASS (t=418.6s size=26 (expected>=27))
         ...
 
     ══════════════════════════════════════════════════
       21/23 passed  (91.3%)
     ══════════════════════════════════════════════════
+
+For a build with `crew` set and no upgrades declared at all (`Four Rax
+Proxy`), Stage 1B replaces Stage 2/3 rather than sitting alongside a
+placeholder for them - the report goes straight from Stage 1 to Stage 1B to
+Stage 4::
+
+      Stage 1B: Proxy Crew Choreography
+        Crew X claimed .............. PASS (claimed at 0.6s)
+        Crew Y claimed .............. PASS (claimed at 0.6s)
+        Crew Z claimed (13th SCV) ... PASS (claimed at 12.7s)
+        Depot (home) ................ PASS (done at 40.2s)
+        Barracks A .................. PASS (done at 86.4s)
+        Barracks B .................. PASS (done at 93.4s)
+        Barracks C .................. PASS (done at 118.9s)
+        Depot (proxy) ............... PASS (done at 122.1s)
+        Barracks D .................. PASS (done at 135.0s)
+
+Note Barracks D lands *after* Depot (proxy) here even though the build
+order names it first (step 8 vs step 9) - Barracks D is gated on Marine
+training having started, Depot (proxy) isn't, so which one actually
+finishes first is a live game outcome, not something fixed at declaration
+time. The six task lines are ordered by when they actually completed for
+exactly that reason - see `_validate_crew`.
 
 Every threshold used comes from `ctx.build` — worker/gas targets, pool
 deadline, wave1_min, wave_growth, and both the Evolution Chamber target
@@ -612,15 +637,29 @@ class UpgradeRushValidator:
     # ── Validation logic ─────────────────────────────────────────────────
 
     def validate(self) -> Dict[str, List[StepResult]]:
-        """Evaluate all milestones and return results grouped by stage."""
+        """Evaluate all milestones and return results grouped by stage.
+
+        Stage 2 and Stage 3 are omitted entirely - not included with a
+        placeholder line - for a build with no upgrades declared at all
+        (`ctx.build.army.upgrades` empty, so `self._upgrades` is too): tech
+        structures only ever exist in this report because some upgrade in
+        the build's own list requires one (see `_init_milestones`), so no
+        upgrades declared means no structures either, and a Marine all-in
+        like `Four Rax Proxy` has neither. A build with even one upgrade
+        (e.g. `Speedling All-In`'s Metabolic Boost) still gets both stages,
+        Stage 2 falling back to its own "no tech structures required"
+        placeholder if that one upgrade doesn't need any.
+        """
         self._init_validator_state()
-        return {
+        stages: Dict[str, List[StepResult]] = {
             "Stage 1: Opening Economy": self._validate_economy(),
             "Stage 1B: Proxy Crew Choreography": self._validate_crew(),
-            "Stage 2: Tech Structures": self._validate_structures(),
-            "Stage 3: Upgrades": self._validate_upgrades(),
-            "Stage 4: Attack Waves": self._validate_waves(),
         }
+        if self._upgrades:
+            stages["Stage 2: Tech Structures"] = self._validate_structures()
+            stages["Stage 3: Upgrades"] = self._validate_upgrades()
+        stages["Stage 4: All-In Attack"] = self._validate_waves()
+        return stages
 
     def _validate_economy(self) -> List[StepResult]:
         """Worker, gas and supply checks.
@@ -696,7 +735,7 @@ class UpgradeRushValidator:
             )
             for claim in self._crew_claims
         ]
-        for task in self._crew_tasks:
+        for task in self._ordered_crew_tasks():
             if task.completed:
                 detail = f"done at {task.completed_time:.1f}s"
             elif task.started:
@@ -705,6 +744,30 @@ class UpgradeRushValidator:
                 detail = "not started"
             results.append(StepResult(task.label, task.completed, detail))
         return results
+
+    def _ordered_crew_tasks(self) -> List[_CrewTaskTracker]:
+        """`self._crew_tasks` in the order they actually finished this game,
+        not the declared order (each crew member's own task list, x/y/z in
+        turn) `_init_crew` built the list in.
+
+        That declared order is a fine default while nothing has happened
+        yet, but it stops meaning much once a gated task can finish after a
+        later, ungated one - `Four Rax Proxy`'s Barracks D (X's second task,
+        held until Marine training starts) regularly finishes after Depot
+        (proxy) (Y's second task, ungated) despite the build order naming
+        Barracks D first. Completed tasks sort by `completed_time`;
+        anything not yet completed keeps its original declared position,
+        trailing after everything that has finished.
+        """
+        return [
+            task
+            for _index, task in sorted(
+                enumerate(self._crew_tasks),
+                key=lambda pair: (
+                    (0, pair[1].completed_time) if pair[1].completed else (1, pair[0])
+                ),
+            )
+        ]
 
     @staticmethod
     def _milestone_detail(started: bool, started_time, blocked_frames: int) -> str:

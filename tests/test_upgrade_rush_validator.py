@@ -409,6 +409,35 @@ def test_crew_task_tracks_started_then_completed_without_double_counting() -> No
     assert not stage["Barracks B"].passed
 
 
+def test_crew_tasks_are_reported_in_completion_order_not_declared_order() -> None:
+    """Regression test: `_fake_crew_plan()`'s X declares Barracks A then
+    Barracks D, in that order - but the real build gates Barracks D on
+    Marine training having started, so it can genuinely finish after Y's
+    ungated second task (Depot (proxy)) even though Barracks D sits earlier
+    in X's own declared list. The report must reflect what actually
+    happened this game, not each crew member's own task order."""
+    ai = FakeAI(race=Race.Terran, crew=_fake_crew_plan())
+    crew = ai.ctx.state.proxy_crew
+    ai.time = 10.0
+    _step(ai)
+
+    crew.x.task_index = 1  # Barracks A (X's first task) completes
+    ai.time = 20.0
+    _step(ai)
+
+    crew.y.task_index = 2  # Depot (proxy) (Y's second task) completes
+    ai.time = 50.0
+    _step(ai)
+
+    crew.x.task_index = 2  # Barracks D (X's second task) finally completes
+    ai.time = 80.0
+    _step(ai)
+
+    names = [r.name for r in ai.validate()["Stage 1B: Proxy Crew Choreography"]]
+    assert names.index("Barracks A") < names.index("Depot (proxy)")
+    assert names.index("Depot (proxy)") < names.index("Barracks D")
+
+
 # ── Stage 2/3: resource-block detection ──────────────────────────────────────
 
 
@@ -488,6 +517,19 @@ def test_a_build_with_no_tech_upgrades_gets_no_tech_structure_checks() -> None:
     ]
 
 
+def test_a_build_with_no_upgrades_at_all_gets_no_tech_or_upgrade_stages() -> None:
+    """`Four Rax Proxy` declares no upgrades whatsoever - unlike `Speedling
+    All-In` above (which still has Metabolic Boost), Stage 2 and Stage 3
+    should be left out of the report entirely rather than each showing their
+    own trivially-passing placeholder line."""
+    ai = FakeAI(upgrades=(), race=Race.Terran)
+    _step(ai)
+
+    result = ai.validate()
+    assert "Stage 2: Tech Structures" not in result
+    assert "Stage 3: Upgrades" not in result
+
+
 def test_evolution_chamber_target_and_gate_come_from_the_build_not_a_constant() -> None:
     """A second Evolution Chamber must never count as resource-blocked while
     this build's own gate hasn't opened - and must start counting the
@@ -553,7 +595,7 @@ def test_wave_release_records_size_time_and_next_expected_minimum() -> None:
     assert wave2.gap == 120.0
 
     result = ai.validate()
-    wave_results = {r.name: r for r in result["Stage 4: Attack Waves"]}
+    wave_results = {r.name: r for r in result["Stage 4: All-In Attack"]}
     assert wave_results["Wave 1"].passed
     assert wave_results["Wave 2"].passed
 
@@ -584,7 +626,7 @@ def test_wave_records_our_supply_against_enemy_army_supply() -> None:
 
     result = ai.validate()
     wave1_result = next(
-        r for r in result["Stage 4: Attack Waves"] if r.name == "Wave 1"
+        r for r in result["Stage 4: All-In Attack"] if r.name == "Wave 1"
     )
     assert "supply us=10 vs enemy=8" in wave1_result.detail
 
@@ -594,8 +636,8 @@ def test_no_wave_ever_released_fails_stage_4() -> None:
     _step(ai)
 
     result = ai.validate()
-    assert result["Stage 4: Attack Waves"] == [
-        r for r in result["Stage 4: Attack Waves"] if not r.passed
+    assert result["Stage 4: All-In Attack"] == [
+        r for r in result["Stage 4: All-In Attack"] if not r.passed
     ]
 
 
