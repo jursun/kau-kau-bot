@@ -33,6 +33,7 @@ import sys
 from unittest.mock import MagicMock
 
 from ares.behaviors.combat import CombatManeuver
+from ares.behaviors.combat.individual import AMove, ShootTargetInRange
 from ares.behaviors.macro import BuildStructure
 from ares.consts import UnitRole
 from sc2.ids.unit_typeid import UnitTypeId
@@ -54,6 +55,7 @@ def _worker(tag: int, position: Point2) -> MagicMock:
     worker.tag = tag
     worker.position = position
     worker.is_constructing_scv = False
+    worker.is_structure = False
     return worker
 
 
@@ -176,35 +178,18 @@ def test_does_not_reclaim_a_worker_it_already_owns() -> None:
     assert _run_claim(ctx, [already]) == []
 
 
-def _move_targets(ctx: BotContext) -> list[Point2]:
-    """Every `combat._Move` target registered - claimed workers never fight,
-    so this is the only movement behavior they ever issue."""
+def _amove_targets(ctx: BotContext) -> list[Point2]:
+    """Every `AMove` target registered, wrapped in a `CombatManeuver` or
+    bare - the hold-at-proxy phase registers `AMove` directly, the
+    attack phase wraps it alongside `ShootTargetInRange`/`AttackTarget`."""
     targets: list[Point2] = []
     for call in ctx.bot.register_behavior.call_args_list:
         behavior = call.args[0]
-        if isinstance(behavior, combat._Move):
+        if isinstance(behavior, AMove):
             targets.append(behavior.target)
         elif isinstance(behavior, CombatManeuver):
-            targets.extend(
-                b.target for b in behavior.micros if isinstance(b, combat._Move)
-            )
+            targets.extend(b.target for b in behavior.micros if isinstance(b, AMove))
     return targets
-
-
-def _by_role(proxy_workers: list, attacking: list):
-    """`get_units_from_role` side_effect: PROXY_WORKER gets the claimed
-    workers, ATTACKING (what `ctx.units_in_role` reads for the Marines)
-    gets the rest - a single `return_value` can't tell the two calls apart.
-    """
-
-    def _get(role=None, **_kwargs) -> list:
-        if role == UnitRole.PROXY_WORKER:
-            return proxy_workers
-        if role == UnitRole.ATTACKING:
-            return attacking
-        return []
-
-    return _get
 
 
 def test_claimed_workers_wait_at_the_proxy_before_the_first_wave() -> None:
@@ -214,70 +199,42 @@ def test_claimed_workers_wait_at_the_proxy_before_the_first_wave() -> None:
 
     combat.builder_workers_attack(_proxy, claim_gate=lambda _c: False)(ctx)
 
-    assert _move_targets(ctx) == [PROXY], "should hold, not run in alone"
+    assert _amove_targets(ctx) == [PROXY], "should hold, not run in alone"
 
 
-def test_claimed_workers_never_attack() -> None:
-    """Claimed workers only ever shield - `AttackTarget`/`ShootTargetInRange`
-    (and, since Jason's correction, repair too) must never appear for them
-    regardless of what's in range. Every registered behavior must be a bare
-    `combat._Move`."""
+def test_claimed_workers_attack_once_the_first_wave_is_out() -> None:
     ctx = _ctx()
     ctx.state.wave_number = 1
-    enemy = _worker(99, PROXY)
-    ctx.mediator.get_units_in_range.return_value = [[enemy]]  # enemy in range
-    ctx.mediator.get_units_from_role.side_effect = _by_role([_worker(1, PROXY)], [])
+    ctx.mediator.get_units_in_range.return_value = [[]]  # nothing in range
+    ctx.mediator.get_units_from_role.return_value = [_worker(1, PROXY)]
 
     combat.builder_workers_attack(_proxy, claim_gate=lambda _c: False)(ctx)
 
-    for call in ctx.bot.register_behavior.call_args_list:
-        behavior = call.args[0]
-        assert isinstance(behavior, combat._Move), behavior
+    targets = _amove_targets(ctx)
+    assert targets == [ctx.bot.enemy_start_locations[0]], targets
 
 
-def test_claimed_workers_shield_the_attack_target_with_no_marines_alive() -> None:
-    """No Marine group means no `_shield_point` to stand in front of -
-    falls back to the same attack target the squads walk toward."""
+def test_claimed_workers_prioritize_enemy_units_over_structures() -> None:
+    """The whole point of this round's change: an enemy unit in range crowds
+    out an enemy structure as the target, same as every other attacker - see
+    `combat._prioritize_enemies`."""
     ctx = _ctx()
     ctx.state.wave_number = 1
-    ctx.mediator.get_units_from_role.side_effect = _by_role([_worker(1, PROXY)], [])
+    structure = _worker(90, PROXY)
+    structure.is_structure = True
+    enemy_unit = _worker(91, PROXY)
+    ctx.mediator.get_units_in_range.return_value = [[structure, enemy_unit]]
+    ctx.mediator.get_units_from_role.return_value = [_worker(1, PROXY)]
 
     combat.builder_workers_attack(_proxy, claim_gate=lambda _c: False)(ctx)
 
-    assert _move_targets(ctx) == [ctx.bot.enemy_start_locations[0]]
-
-
-def test_claimed_workers_shield_the_marines_when_nothing_threatens_them() -> None:
-    ctx = _ctx()
-    ctx.state.wave_number = 1
-    marine = _worker(50, Point2((120.0, 120.0)))
-    ctx.mediator.get_units_from_role.side_effect = _by_role(
-        [_worker(1, PROXY)], [marine]
-    )
-    ctx.mediator.get_units_in_range.return_value = [[]]  # no threats
-
-    combat.builder_workers_attack(_proxy, claim_gate=lambda _c: False)(ctx)
-
-    assert _move_targets(ctx) == [marine.position]
-
-
-def test_claimed_workers_shield_point_biases_toward_the_nearest_threat() -> None:
-    ctx = _ctx()
-    ctx.state.wave_number = 1
-    marine = _worker(50, Point2((100.0, 100.0)))
-    threat = _worker(90, Point2((110.0, 100.0)))
-    ctx.mediator.get_units_from_role.side_effect = _by_role(
-        [_worker(1, PROXY)], [marine]
-    )
-    ctx.mediator.get_units_in_range.return_value = [[threat]]
-
-    combat.builder_workers_attack(_proxy, claim_gate=lambda _c: False)(ctx)
-
-    targets = _move_targets(ctx)
-    assert len(targets) == 1
-    # combat.SHIELD_OFFSET (2.0) tiles from the Marine centroid, toward the
-    # threat - not at the centroid, and not all the way to the threat.
-    assert (round(targets[0].x, 1), round(targets[0].y, 1)) == (102.0, 100.0)
+    shoots = [
+        m
+        for call in ctx.bot.register_behavior.call_args_list
+        for m in call.args[0].micros
+        if isinstance(m, ShootTargetInRange)
+    ]
+    assert shoots[0].targets == [enemy_unit]
 
 
 # --- targeting rally override --------------------------------------------

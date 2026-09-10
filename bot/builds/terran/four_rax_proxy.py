@@ -33,10 +33,10 @@ every Marine after that streams to the front individually the moment it's
 trained — one wait, then none.
 
 Combat micro, once a wave is out: Marines kite (`MARINE_MIN_ENGAGE_RANGE`)
-rather than trade in melee range; crew SCVs that finish their tasks and
-join the push never fight or repair - they only ever Move, holding a
-shield position in front of the Marines (see `combat.builder_workers_
-attack`'s docstring).
+rather than trade in melee range; crew SCVs that finish their tasks join
+the push and attack alongside the Marines (see `combat.builder_workers_
+attack`'s docstring). Every attacking unit favors enemy units over enemy
+structures when picking a target (`combat._prioritize_enemies`).
 
 Not yet validated in-game.
 """

@@ -50,10 +50,6 @@ to consider it stranded there and claim it. Wide enough to cover a builder
 that has wandered a screen away after finishing, tight enough that a worker
 long-distance mining past the area is not swept up."""
 
-SHIELD_OFFSET: float = 2.0
-"""How far in front of the Marine group's centroid, toward the nearest
-threat, a claimed worker tries to stand - see `builder_workers_attack`."""
-
 MAX_SUPPLY: float = 200.0
 """Standard SC2 supply cap. Once here - and once `_army_fully_trained` says
 nothing is still incubating, so the count reflects units actually on the
@@ -176,12 +172,25 @@ def release_first_wave_then_stream() -> CombatRoutine:
     return routine
 
 
+def _prioritize_enemies(enemies: Units) -> Units:
+    """Enemy units outrank enemy structures as targets - a structure is only
+    worth returning when nothing else is in range. `EnemyGround` mixes both
+    into one tree (ares' own claim that it "ignores structures" doesn't hold
+    - `enemy_ground` is split straight off `all_enemy_units`, which includes
+    them), so every consumer of `_enemies_near` needs this or a Marine (or
+    anything else) walking past a building with real targets nearby would be
+    just as likely to shoot the building as the units."""
+    combat_units = [u for u in enemies if not u.is_structure]
+    return combat_units if combat_units else enemies
+
+
 def _enemies_near(ctx: "BotContext", point, distance: float) -> Units:
-    return ctx.mediator.get_units_in_range(
+    enemies = ctx.mediator.get_units_in_range(
         start_points=[point],
         distances=distance,
         query_tree=UnitTreeQueryType.EnemyGround,
     )[0]
+    return _prioritize_enemies(enemies)
 
 
 @dataclass
@@ -280,8 +289,10 @@ def attack_squads(
 
     A squad that isn't still forming up and finds a nearby enemy
     (`SQUAD_ENGAGE_RANGE`) fights with no supply-ratio check and no retreat -
-    this build attacks with everything a wave has. How it fights depends on
-    `min_engage_range`:
+    this build attacks with everything a wave has. `close_enemy` (from
+    `_enemies_near`) always favors enemy units over enemy structures - a
+    structure only ever shows up here when nothing else is in range. How the
+    squad fights depends on `min_engage_range`:
 
     - Left `None` (every build but Four Rax Proxy today): `StutterGroupForward`
       trades unconditionally as one group - a squad that finds itself
@@ -403,32 +414,16 @@ def escort_overseers() -> CombatRoutine:
     return routine
 
 
-def _shield_point(ctx: "BotContext", marines: Units) -> Point2:
-    """A point `SHIELD_OFFSET` tiles in front of the Marines' centroid,
-    toward the nearest threat - or the centroid itself if nothing threatens
-    it yet. See `builder_workers_attack`."""
-    marine_center = Point2(cy_center(marines))
-    threats = _enemies_near(ctx, marine_center, DEFENDER_ENGAGE_RANGE)
-    if not threats:
-        return marine_center
-    nearest = cy_closest_to(position=marine_center, units=threats)
-    return Point2(cy_towards(marine_center, nearest.position, SHIELD_OFFSET))
-
-
 def builder_workers_attack(
     where: PointLocator,
     claim_gate: Gate = _always,
     claim_radius: float = BUILDER_CLAIM_RADIUS,
 ) -> CombatRoutine:
-    """Turn workers stranded at a proxy into a screen for the push once the
-    first wave goes.
+    """Turn workers stranded at a proxy into attackers once the first wave goes.
 
     A proxy build finishes with two or three SCVs standing on the far side of
     the map with nothing to do. Walking them home to mine is worth close to
-    nothing at that point; standing between the Marines and the enemy,
-    soaking hits a Marine would otherwise take, is worth more than an SCV's
-    own trivial attack ever would be - so these workers never fight or
-    repair, and issue nothing but Move commands.
+    nothing at that point; adding them to the push is worth a Marine each.
 
     Claiming is by *situation*, not by tag: a worker is claimed if it is near
     `where`, not in ares' building tracker, and not currently constructing.
@@ -446,10 +441,10 @@ def builder_workers_attack(
     already standing or under way" - after that there is nothing left for a
     builder to be saved for.
 
-    Before the first wave is released the claimed workers hold at the proxy.
-    From wave 1 on, each one moves to `_shield_point` and nothing else -
-    standing between the Marine group and the nearest threat. No repair, no
-    attack, only ever a Move.
+    Before the first wave is released the claimed workers wait at the proxy
+    rather than running in alone; from wave 1 on they attack the same target
+    the squads do, shooting whatever comes into range on the way (enemy
+    units take priority over structures - see `_enemies_near`).
 
     Attributes:
         where: Resolves the proxy location, fresh each frame.
@@ -487,16 +482,22 @@ def builder_workers_attack(
         # Hold at the proxy until the Marines actually leave.
         if ctx.state.wave_number < 1:
             for worker in workers:
-                ctx.bot.register_behavior(_Move(unit=worker, target=point))
+                ctx.bot.register_behavior(AMove(unit=worker, target=point))
             return
 
-        marines = ctx.units_in_role(UnitRole.ATTACKING)
-        shield_point = (
-            _shield_point(ctx, marines)
-            if marines
-            else targeting.attack_target(ctx, point)
-        )
+        target = targeting.attack_target(ctx, point)
         for worker in workers:
-            ctx.bot.register_behavior(_Move(unit=worker, target=shield_point))
+            maneuver = CombatManeuver()
+            in_range = _enemies_near(ctx, worker, DEFENDER_ENGAGE_RANGE)
+            if in_range:
+                maneuver.add(ShootTargetInRange(unit=worker, targets=in_range))
+                maneuver.add(
+                    AttackTarget(
+                        unit=worker,
+                        target=cy_closest_to(position=worker.position, units=in_range),
+                    )
+                )
+            maneuver.add(AMove(unit=worker, target=target))
+            ctx.bot.register_behavior(maneuver)
 
     return routine

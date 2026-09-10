@@ -38,6 +38,7 @@ def _unit(tag: int, position: Point2 = Point2((0.0, 0.0))) -> MagicMock:
     unit = MagicMock()
     unit.tag = tag
     unit.position = position
+    unit.is_structure = False
     return unit
 
 
@@ -174,6 +175,32 @@ def test_already_released_squad_ignores_rally_point() -> None:
         assert (target.x, target.y) == (attack.x, attack.y)
     finally:
         _restore_targeting(original)
+
+
+# ── _enemies_near: enemy units outrank enemy structures ─────────────────────
+
+
+def test_enemies_near_prefers_units_over_structures() -> None:
+    ctx = _ctx()
+    structure = _unit(90)
+    structure.is_structure = True
+    unit = _unit(91)
+    ctx.mediator.get_units_in_range.return_value = [[structure, unit]]
+
+    result = combat._enemies_near(ctx, Point2((0.0, 0.0)), 10.0)
+
+    assert result == [unit], "a unit in range should crowd out a structure"
+
+
+def test_enemies_near_falls_back_to_a_structure_with_nothing_else_around() -> None:
+    ctx = _ctx()
+    structure = _unit(90)
+    structure.is_structure = True
+    ctx.mediator.get_units_in_range.return_value = [[structure]]
+
+    result = combat._enemies_near(ctx, Point2((0.0, 0.0)), 10.0)
+
+    assert result == [structure], "a structure is still a valid target alone"
 
 
 # ── Attack squads: no engagement ratio, no retreat ──────────────────────────
