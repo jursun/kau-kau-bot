@@ -1,4 +1,6 @@
-# KauKauBot
+﻿# KauKauBot
+
+**_you cook, we eat_**
 
 Zerg StarCraft II bot for [AI Arena](https://aiarena.net/), built on
 [ares-sc2](https://github.com/AresSC2/ares-sc2).
@@ -7,25 +9,127 @@ Zerg StarCraft II bot for [AI Arena](https://aiarena.net/), built on
 
 | Opening | Intent | State |
 |---------|--------|-------|
-| `Speedling All-In` | Overlord, pool, gas, metabolic boost, macro hatch, zergling flood into the enemy main | **Validated** - 9 straight wins vs VeryHard Terran (history archived at `data/archive/`) |
-| `UpgradeRush` | Hatch-first 3-base mass lings behind double evo / lair / hive | **Validated** - win vs VeryHard Terran at 8:54 (TorchesAIE_v4); split_production, pool-timing and larva-bottleneck (`overflow_hatcheries`) fixes landed since. Still on `feature/upgrade-rush`, not yet in the ladder-facing cycles - Speedling All-In stays primary there |
+| Speedling All-In | Overlord, pool, gas, metabolic boost, macro hatch, zergling flood into the enemy main | Ladder Ready |
+| Upgrade Rush | Zerging flood by maximizing upgrades with double evo | Ladder Ready |
 
-`Debug: True` is currently set in `config.yml` so local games use the
-`test_123` cycle in `zerg_builds.yml`, which now lists `UpgradeRush` first.
-**Set `Debug` back to `False` before building a ladder zip** -
-`scripts/create_ladder_zip.py` asserts on it.
+## Getting started
+
+**Needs:** Python 3.11 or 3.12, Git, StarCraft II, and the AI Arena map pack
+in your SC2 Maps folder.
+
+### Install Poetry
+
+Poetry doesn't come with Python — every `poetry` command below assumes it's
+already installed. Use the official installer:
+
+```bash
+# macOS / Linux / WSL
+curl -sSL https://install.python-poetry.org | python3 -
+```
+
+```powershell
+# Windows (PowerShell)
+(Invoke-WebRequest -Uri https://install.python-poetry.org -UseBasicParsing).Content | py -
+```
+
+**If `poetry` then comes back "not recognized"** (common on Windows — the
+installer's shim didn't land on PATH), don't fight PATH: install via pip
+instead, and swap `py -m poetry ...` in for `poetry ...` in every command
+below — it works identically:
+
+```powershell
+py -m pip install --user poetry
+py -m poetry --version   # confirms it's reachable this way
+```
+
+### Clone with the `ares-sc2` submodule
+
+> **Don't `git clone` without `--recursive`.** This repo vendors ares-sc2 as
+> a git submodule; a plain clone leaves `ares-sc2/` empty and every step
+> after this one fails with confusing `ModuleNotFoundError`s that don't
+> obviously point back to a missing submodule.
+
+```bash
+git clone --recursive git@github.com:jursun/kau-kau-bot.git
+cd kau-kau-bot
+```
+
+Already cloned without `--recursive`? Fetch the submodule now rather than
+re-cloning:
+
+```bash
+git submodule update --init --recursive
+```
+
+### Install dependencies
+
+```bash
+poetry install --no-root
+```
+
+`--no-root` is deliberate: the root package declaration only exists so Poetry
+can resolve the `ares-sc2` path dependency, and `run.py` puts the submodule on
+`sys.path` itself.
+
+Set `LocalGame.MapPath` in `config.yml` if your Maps folder is non-standard.
+
+Ares pins Python `>=3.11,<3.13`, so 3.13 will not resolve. On Windows, point
+Poetry at a supported interpreter by absolute path — `poetry env use 3.11`
+usually fails to discover it:
+
+```powershell
+$py311 = py -3.11 -c "import sys; print(sys.executable)"
+py -m poetry env use $py311
+py -m poetry install --no-root
+```
+
+### Play / validate
+
+```bash
+# vs the built-in computer, faster than realtime
+poetry run python run.py
+
+# with rush milestone checks (prefer UTF-8 logs on Windows)
+set PYTHONUTF8=1
+poetry run python run.py --validate
+```
+
+`run.py` flags override `config.yml`: `--map`, `--opponent-race`,
+`--difficulty`, `--realtime`.
+
+Cross-check registered builds against `<race>_builds.yml` (no pytest required):
+
+```bash
+python -m tests.test_builds
+```
+
+### Force an opening locally
 
 Ares picks the opening (`BuildSelection: Cycle` in `zerg_builds.yml`) and keeps
-it while it wins, switching after a defeat — but it does this **by name**, not
-by cycle position: `DataManager._choose_opening_cycle` looks up the last
-opening it played in `data/<opponent_id>-<race>.json` and, if that opening is
-still anywhere in the current cycle and won, repeats it regardless of where it
-sits in the list. Reordering the cycle only changes anything once that
-opening either isn't in the cycle or its last result there was a loss. To
-force a fresh switch: put the opening you want first in `test_123`'s cycle
-**and** move the local data file for that opponent id (`data/None-zerg.json`
-for a plain local game) out of the way — with no history, ares falls back to
-cycle position 0. This replaces the old `FORCE_BUILD` in `config.py`.
+it while it wins, switching after a defeat — **by name**, not by cycle
+position. `DataManager._choose_opening_cycle` looks up the last opening in
+`data/<opponent_id>-<race>.json` and, if that opening is still in the cycle and
+won, repeats it no matter where it sits in the list.
+
+To force a specific opening:
+
+1. Set `Debug: True` in `config.yml` so local games use the `test_123` cycle.
+2. Put the opening you want first under `BuildChoices.test_123.Cycle` in
+   `zerg_builds.yml` (YAML key for Upgrade Rush is still `UpgradeRush`).
+3. Clear the local data file for that opponent id (`data/None-zerg.json` for a
+   plain local game, or the whole `data/` folder). With no history, ares falls
+   back to cycle position 0.
+
+This replaces the old `FORCE_BUILD` in `config.py`.
+
+**Set `Debug` back to `False` before building a ladder zip** —
+`scripts/create_ladder_zip.py` asserts on it.
+
+### Updating ares
+
+```bash
+poetry run python scripts/update_ares.py
+```
 
 ## Layout
 
@@ -65,107 +169,6 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full pattern and a template.
 
 A `MacroPlan` short-circuits on the first behavior that acts, so the order of
 `macro_steps` *is* the spending priority.
-
-### Checking builds
-
-```bash
-python -m tests.test_builds     # no pytest required
-```
-
-Cross-checks every registered build against `<race>_builds.yml` in both
-directions. Name drift between the two is the most likely bug once there are
-many builds, and it would otherwise only show up mid-game.
-
-## Local setup
-
-**Needs:** Python 3.11 or 3.12, Git, StarCraft II, and the AI Arena map pack
-in your SC2 Maps folder.
-
-### 1. Install Poetry
-
-Poetry doesn't come with Python — every `poetry` command below assumes it's
-already installed. Use the official installer:
-
-```bash
-# macOS / Linux / WSL
-curl -sSL https://install.python-poetry.org | python3 -
-```
-
-```powershell
-# Windows (PowerShell)
-(Invoke-WebRequest -Uri https://install.python-poetry.org -UseBasicParsing).Content | py -
-```
-
-**If `poetry` then comes back "not recognized"** (common on Windows — the
-installer's shim didn't land on PATH), don't fight PATH: install via pip
-instead, and swap `py -m poetry ...` in for `poetry ...` in every command
-below — it works identically:
-
-```powershell
-py -m pip install --user poetry
-py -m poetry --version   # confirms it's reachable this way
-```
-
-### 2. Clone the repo — with the `ares-sc2` submodule
-
-> **Don't `git clone` without `--recursive`.** This repo vendors ares-sc2 as
-> a git submodule; a plain clone leaves `ares-sc2/` empty and every step
-> after this one fails with confusing `ModuleNotFoundError`s that don't
-> obviously point back to a missing submodule.
-
-```bash
-git clone --recursive git@github.com:jursun/kau-kau-bot.git
-cd kau-kau-bot
-```
-
-Already cloned without `--recursive`? Fetch the submodule now rather than
-re-cloning:
-
-```bash
-git submodule update --init --recursive
-```
-
-### 3. Install dependencies
-
-```bash
-poetry install --no-root
-```
-
-`--no-root` is deliberate: the root package declaration only exists so Poetry
-can resolve the `ares-sc2` path dependency, and `run.py` puts the submodule on
-`sys.path` itself.
-
-Set `LocalGame.MapPath` in `config.yml` if your Maps folder is non-standard.
-
-Ares pins Python `>=3.11,<3.13`, so 3.13 will not resolve. On Windows, point
-Poetry at a supported interpreter by absolute path — `poetry env use 3.11`
-usually fails to discover it:
-
-```powershell
-$py311 = py -3.11 -c "import sys; print(sys.executable)"
-py -m poetry env use $py311
-py -m poetry install --no-root
-```
-
-### Play / validate
-
-```bash
-# vs the built-in computer, faster than realtime
-poetry run python run.py
-
-# with rush milestone checks (prefer UTF-8 logs on Windows)
-set PYTHONUTF8=1
-poetry run python run.py --validate
-```
-
-`run.py` flags override `config.yml`: `--map`, `--opponent-race`,
-`--difficulty`, `--realtime`.
-
-### Updating ares
-
-```bash
-poetry run python scripts/update_ares.py
-```
 
 ## Ladder package
 
