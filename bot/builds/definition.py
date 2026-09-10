@@ -112,6 +112,16 @@ class WorkerTask:
     `where` still supplies the base location (which expansion's formation to
     draw from); this only orders the candidates within it. `None` leaves
     ares' own placement choice alone."""
+    verify: Gate | None = None
+    """Extra check before this task is considered done, once the worker's
+    tag drops out of the building tracker - see `steps.terran.
+    _drive_crew_member`. `None` (every task but one, today) trusts tracker
+    departure alone, same as before this field existed. Set it when a task
+    has been seen to silently fail: a bad placement can make
+    `build_with_specific_worker` issue a command the game rejects, so the
+    worker never actually enters the tracker and "departure" reads true on
+    the very next frame with nothing built. A failed `verify` re-issues the
+    same task instead of advancing past a structure that was never built."""
 
 
 @dataclass(frozen=True)

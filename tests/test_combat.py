@@ -27,6 +27,7 @@ from ares.behaviors.combat.individual import (
 from ares.consts import UnitRole
 from ares.managers.squad_manager import UnitSquad
 from cython_extensions import cy_distance_to
+from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
 
 from bot.core.context import BotContext
@@ -201,6 +202,33 @@ def test_enemies_near_falls_back_to_a_structure_with_nothing_else_around() -> No
     result = combat._enemies_near(ctx, Point2((0.0, 0.0)), 10.0)
 
     assert result == [structure], "a structure is still a valid target alone"
+
+
+def test_enemies_near_ignores_eggs_and_larva() -> None:
+    """Zerg's production units are never worth attacking - not even as a
+    last resort with nothing else in range, unlike a structure."""
+    ctx = _ctx()
+    egg = _unit(90)
+    egg.type_id = UnitTypeId.EGG
+    larva = _unit(91)
+    larva.type_id = UnitTypeId.LARVA
+    ctx.mediator.get_units_in_range.return_value = [[egg, larva]]
+
+    result = combat._enemies_near(ctx, Point2((0.0, 0.0)), 10.0)
+
+    assert result == [], "no worthwhile target - should not fall back to Egg/Larva"
+
+
+def test_enemies_near_still_prefers_a_real_unit_over_an_egg() -> None:
+    ctx = _ctx()
+    egg = _unit(90)
+    egg.type_id = UnitTypeId.EGG
+    zergling = _unit(91)
+    ctx.mediator.get_units_in_range.return_value = [[egg, zergling]]
+
+    result = combat._enemies_near(ctx, Point2((0.0, 0.0)), 10.0)
+
+    assert result == [zergling]
 
 
 # ── Attack squads: no engagement ratio, no retreat ──────────────────────────

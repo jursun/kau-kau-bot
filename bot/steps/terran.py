@@ -149,6 +149,15 @@ def _drive_crew_member(ctx: "BotContext", member: "CrewMember", tasks: "tuple") 
     A task's `closest_to`, when set, is forwarded to `request_building_
     placement` as-is - it only orders the precalculated spots `where`
     already resolved to, e.g. biasing a home Depot toward the main ramp.
+
+    A task's optional `verify` runs once tracker departure would otherwise
+    mark it done, and must pass before `task_index` actually advances - see
+    `WorkerTask.verify`'s own docstring for why. A failed `verify` clears
+    `queued` and leaves `task_index` alone, so the very next call re-issues
+    the identical task: fresh `request_building_placement` call, fresh
+    `build_with_specific_worker` call. No separate retry counter or backoff
+    needed - a task that keeps failing just keeps retrying every frame,
+    exactly like a task stuck on `placement is None` already does below.
     """
     if member.tag is None or member.task_index >= len(tasks):
         return
@@ -162,8 +171,15 @@ def _drive_crew_member(ctx: "BotContext", member: "CrewMember", tasks: "tuple") 
 
     if member.queued:
         if member.tag not in ctx.mediator.get_building_tracker_dict:
-            member.task_index += 1
             member.queued = False
+            task = tasks[member.task_index]
+            if task.verify is None or task.verify(ctx):
+                member.task_index += 1
+            else:
+                ctx.log(
+                    f"PROXY CREW: {task.label or task.structure_id.name.title()} "
+                    "did not verify - retrying"
+                )
         return
 
     task = tasks[member.task_index]

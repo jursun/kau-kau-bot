@@ -161,7 +161,19 @@ PROXY_CREW = ProxyCrewPlan(
     ),
     y_tasks=(
         WorkerTask(UnitTypeId.BARRACKS, proxy_location, label="Barracks B"),
-        WorkerTask(UnitTypeId.SUPPLYDEPOT, proxy_location, label="Depot (proxy)"),
+        WorkerTask(
+            UnitTypeId.SUPPLYDEPOT,
+            proxy_location,
+            label="Depot (proxy)",
+            # Redundancy for a bad-placement race: this is the 2nd Depot
+            # overall (Z's home one is the 1st), so once both are ready or
+            # pending the task is genuinely done. Without this, a placement
+            # the game silently rejects can make Y's worker leave the
+            # building tracker without ever having built anything, and
+            # `_drive_crew_member` would move on believing it had - see
+            # `WorkerTask.verify`.
+            verify=gates.structure_started(UnitTypeId.SUPPLYDEPOT, 2),
+        ),
     ),
     z_tasks=(
         WorkerTask(

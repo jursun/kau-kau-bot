@@ -508,6 +508,53 @@ def test_proxy_crew_advances_once_the_worker_leaves_the_tracker() -> None:
     assert ctx.state.proxy_crew.x.queued is False
 
 
+def test_proxy_crew_retries_a_task_that_fails_verify() -> None:
+    """`WorkerTask.verify` is the redundancy for a placement the game
+    silently rejects: tracker departure alone must not be enough to advance
+    when the task also declares a `verify` that hasn't passed."""
+    ctx = _ctx()
+    plan = ProxyCrewPlan(
+        x_tasks=(WorkerTask(UnitTypeId.SUPPLYDEPOT, _proxy, verify=lambda _c: False),),
+        y_tasks=(WorkerTask(UnitTypeId.BARRACKS, _proxy),),
+        z_tasks=(WorkerTask(UnitTypeId.SUPPLYDEPOT, _proxy),),
+    )
+    ctx.build.crew = plan
+    ctx.state.proxy_crew.x.tag = 5
+    ctx.state.proxy_crew.x.queued = True
+    ctx.bot.unit_tag_dict = {5: _worker(5, PROXY)}
+    ctx.mediator.get_building_tracker_dict = {}  # left the tracker...
+    ctx.mediator.request_building_placement.return_value = PROXY
+
+    t.proxy_crew()(ctx)  # frame 1: sees departure, but verify says not done
+
+    assert ctx.state.proxy_crew.x.task_index == 0
+    assert ctx.state.proxy_crew.x.queued is False
+    ctx.mediator.build_with_specific_worker.assert_not_called()
+
+    t.proxy_crew()(ctx)  # frame 2: not queued anymore - retries the task
+
+    ctx.mediator.build_with_specific_worker.assert_called_once()
+
+
+def test_proxy_crew_advances_once_a_verified_task_passes() -> None:
+    ctx = _ctx()
+    plan = ProxyCrewPlan(
+        x_tasks=(WorkerTask(UnitTypeId.SUPPLYDEPOT, _proxy, verify=lambda _c: True),),
+        y_tasks=(WorkerTask(UnitTypeId.BARRACKS, _proxy),),
+        z_tasks=(WorkerTask(UnitTypeId.SUPPLYDEPOT, _proxy),),
+    )
+    ctx.build.crew = plan
+    ctx.state.proxy_crew.x.tag = 5
+    ctx.state.proxy_crew.x.queued = True
+    ctx.bot.unit_tag_dict = {5: _worker(5, PROXY)}
+    ctx.mediator.get_building_tracker_dict = {}
+
+    t.proxy_crew()(ctx)
+
+    assert ctx.state.proxy_crew.x.task_index == 1
+    assert ctx.state.proxy_crew.x.queued is False
+
+
 def test_proxy_crew_holds_a_gated_task_until_its_gate_passes() -> None:
     ctx = _ctx()
     plan = ProxyCrewPlan(

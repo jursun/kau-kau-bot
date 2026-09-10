@@ -172,6 +172,15 @@ def release_first_wave_then_stream() -> CombatRoutine:
     return routine
 
 
+IGNORED_ENEMY_TYPES: frozenset[UnitTypeId] = frozenset(
+    {UnitTypeId.EGG, UnitTypeId.LARVA}
+)
+"""Zerg production units, not real targets - see `_enemies_near`. Only Zerg
+ever fields these, so there is nothing to gate on "when attacking Zerg" -
+filtering them out unconditionally already has that exact effect against
+every other race, where the filter simply never matches anything."""
+
+
 def _prioritize_enemies(enemies: Units) -> Units:
     """Enemy units outrank enemy structures as targets - a structure is only
     worth returning when nothing else is in range. `EnemyGround` mixes both
@@ -190,7 +199,8 @@ def _enemies_near(ctx: "BotContext", point, distance: float) -> Units:
         distances=distance,
         query_tree=UnitTreeQueryType.EnemyGround,
     )[0]
-    return _prioritize_enemies(enemies)
+    worthwhile = [u for u in enemies if u.type_id not in IGNORED_ENEMY_TYPES]
+    return _prioritize_enemies(worthwhile)
 
 
 @dataclass
@@ -291,8 +301,10 @@ def attack_squads(
     (`SQUAD_ENGAGE_RANGE`) fights with no supply-ratio check and no retreat -
     this build attacks with everything a wave has. `close_enemy` (from
     `_enemies_near`) always favors enemy units over enemy structures - a
-    structure only ever shows up here when nothing else is in range. How the
-    squad fights depends on `min_engage_range`:
+    structure only ever shows up here when nothing else is in range - and
+    never includes an Egg or Larva at all (`IGNORED_ENEMY_TYPES`), Zerg's
+    two production units and not real targets. How the squad fights depends
+    on `min_engage_range`:
 
     - Left `None` (every build but Four Rax Proxy today): `StutterGroupForward`
       trades unconditionally as one group - a squad that finds itself
@@ -444,7 +456,8 @@ def builder_workers_attack(
     Before the first wave is released the claimed workers wait at the proxy
     rather than running in alone; from wave 1 on they attack the same target
     the squads do, shooting whatever comes into range on the way (enemy
-    units take priority over structures - see `_enemies_near`).
+    units take priority over structures, and Eggs/Larva are never a target
+    at all - see `_enemies_near`).
 
     Attributes:
         where: Resolves the proxy location, fresh each frame.
