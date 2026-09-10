@@ -1,11 +1,17 @@
 """In-game UpgradeRush Validator — tracks this build's own milestones.
 
 This module provides an ``UpgradeRushValidator`` mixin that hooks into the
-python-sc2 bot lifecycle and evaluates four stages, all read live off the
+python-sc2 bot lifecycle and evaluates five stages, all read live off the
 running bot / `BotContext` so nothing here can drift out of sync with
-`bot/builds/zerg/upgrade_rush.py`:
+`bot/builds/zerg/upgrade_rush.py` or, for Stage 1B, any build declaring a
+`bot.builds.definition.ProxyCrewPlan`:
 
   Stage 1: Opening Economy — workers, pool timing, extractor cap, supply
+  Stage 1B: Proxy Crew     — for a build with `ctx.build.crew` set (e.g.
+                             `Four Rax Proxy`): when X/Y/Z were claimed, and
+                             when each task in their declared lists (every
+                             Depot and Barracks the crew places) started and
+                             finished
   Stage 2: Tech Structures — Evolution Chamber x2, Lair, Infestation Pit, Hive
   Stage 3: Upgrades        — every upgrade in `ctx.build.army.upgrades`, in order
   Stage 4: Attack Waves    — one line per wave actually released: size, timing,
@@ -45,6 +51,14 @@ When the game ends the validator prints a report like::
         Extractor Built ............ PASS
         Extractor Cap Respected .... PASS (max gas buildings: 2 (cap 2))
         Supply Management ........... PASS (supply-blocked frames: 0)
+
+      Stage 1B: Proxy Crew Choreography
+        Crew X claimed .............. PASS (claimed at 0.1s)
+        Crew Y claimed .............. PASS (claimed at 0.1s)
+        Crew Z claimed (13th SCV) ... PASS (claimed at 24.8s)
+        Barracks A ................... PASS (done at 61.4s)
+        Barracks D ................... PASS (done at 210.7s)
+        ...
 
       Stage 2: Tech Structures
         Evolution Chamber x2 ....... PASS (up at 210.4s)
@@ -172,6 +186,33 @@ class _WaveRecord:
     enemy_supply: float
 
 
+@dataclass
+class _CrewClaimTracker:
+    """One of a `ProxyCrewPlan`'s three worker slots (x/y/z), tracked from
+    `ctx.state.proxy_crew` by whether it has a tag yet."""
+
+    member: str
+    label: str
+    started: bool = False
+    started_time: Optional[float] = None
+
+
+@dataclass
+class _CrewTaskTracker:
+    """One `WorkerTask` in a `ProxyCrewPlan` slot's list, tracked by watching
+    that slot's `task_index`/`queued` in `ctx.state.proxy_crew` - the same
+    tracker-membership signal `steps.terran.proxy_crew` itself uses to know
+    "still working it" from "done", read here instead of re-derived."""
+
+    member: str
+    index: int
+    label: str
+    started: bool = False
+    started_time: Optional[float] = None
+    completed: bool = False
+    completed_time: Optional[float] = None
+
+
 # ── Validator mixin ─────────────────────────────────────────────────────────
 
 
@@ -232,6 +273,9 @@ class UpgradeRushValidator:
         self._max_gas_buildings: int = 0
         self._gas_cap_exceeded: bool = False
         self._supply_blocked_frames: int = 0
+        # Stage 1B — built lazily by `_init_crew` once `ctx` exists.
+        self._crew_claims: Optional[List[_CrewClaimTracker]] = None
+        self._crew_tasks: Optional[List[_CrewTaskTracker]] = None
         # Stage 2 / 3 — built lazily by `_init_milestones` once `ctx` exists.
         self._structures: Optional[List[_StructureTracker]] = None
         self._upgrades: Optional[List[_UpgradeTracker]] = None
@@ -288,6 +332,39 @@ class UpgradeRushValidator:
         self._structures = structures
         self._next_wave_expected_min = self.ctx.build.combat.wave1_min
 
+    def _init_crew(self) -> None:
+        """Build the claim/task tracker lists from `ctx.build.crew` (a
+        `ProxyCrewPlan`, or `None` for a build that doesn't have one) -
+        nothing here is specific to `Four Rax Proxy` by name; any build that
+        sets `crew` gets these checks, any build that doesn't gets the single
+        "not declared" line `_validate_crew` falls back to.
+        """
+        if self._crew_claims is not None:
+            return
+
+        plan = getattr(self.ctx.build, "crew", None)
+        if plan is None:
+            self._crew_claims = []
+            self._crew_tasks = []
+            return
+
+        self._crew_claims = [
+            _CrewClaimTracker("x", "Crew X claimed"),
+            _CrewClaimTracker("y", "Crew Y claimed"),
+            _CrewClaimTracker("z", "Crew Z claimed (13th SCV)"),
+        ]
+        self._crew_tasks = [
+            _CrewTaskTracker(
+                member, index, task.label or task.structure_id.name.title()
+            )
+            for member, tasks in (
+                ("x", plan.x_tasks),
+                ("y", plan.y_tasks),
+                ("z", plan.z_tasks),
+            )
+            for index, task in enumerate(tasks)
+        ]
+
     # ── Lifecycle hooks ─────────────────────────────────────────────────
 
     async def on_start(self):
@@ -305,6 +382,7 @@ class UpgradeRushValidator:
         self._init_validator_state()
         if self.ctx is not None:
             self._init_milestones()
+            self._init_crew()
 
         # ── Stage 1 tracking ─────────────────────────────────────────
         worker_count = self.workers.amount
@@ -345,6 +423,10 @@ class UpgradeRushValidator:
         if current_pool > self._pool_count:
             self._pool_count = current_pool
 
+        # ── Stage 1B tracking ────────────────────────────────────────
+        if self._crew_claims:
+            self._track_crew()
+
         # ── Stage 2 / 3 tracking ─────────────────────────────────────
         if self._upgrades is not None:
             self._track_upgrades()
@@ -358,6 +440,41 @@ class UpgradeRushValidator:
         """Called at game end — print the validation report."""
         report = self.validate()
         self._print_report(report)
+
+    # ── Stage 1B tracking ───────────────────────────────────────────────
+
+    def _track_crew(self) -> None:
+        """Read `ctx.state.proxy_crew` for claims and task progress.
+
+        A task's completion signal mirrors `steps.terran.proxy_crew`'s own:
+        that slot's `task_index` moving past this task's position. Nothing
+        here re-derives it from structure counts, for the identical reason
+        that function's docstring gives - two crew workers can be building
+        the same structure type at once.
+        """
+        crew_state = self.ctx.state.proxy_crew
+
+        for claim in self._crew_claims:
+            if claim.started:
+                continue
+            if getattr(crew_state, claim.member).tag is not None:
+                claim.started = True
+                claim.started_time = self.time
+
+        for task in self._crew_tasks:
+            if task.completed:
+                continue
+            member_state = getattr(crew_state, task.member)
+            if not task.started and (
+                member_state.task_index == task.index
+                and member_state.queued
+                or member_state.task_index > task.index
+            ):
+                task.started = True
+                task.started_time = self.time
+            if member_state.task_index > task.index:
+                task.completed = True
+                task.completed_time = self.time
 
     # ── Stage 2 / 3 tracking helpers ─────────────────────────────────────
 
@@ -499,6 +616,7 @@ class UpgradeRushValidator:
         self._init_validator_state()
         return {
             "Stage 1: Opening Economy": self._validate_economy(),
+            "Stage 1B: Proxy Crew Choreography": self._validate_crew(),
             "Stage 2: Tech Structures": self._validate_structures(),
             "Stage 3: Upgrades": self._validate_upgrades(),
             "Stage 4: Attack Waves": self._validate_waves(),
@@ -564,6 +682,28 @@ class UpgradeRushValidator:
                 f"supply-blocked frames: {self._supply_blocked_frames}",
             )
         )
+        return results
+
+    def _validate_crew(self) -> List[StepResult]:
+        if not self._crew_claims and not self._crew_tasks:
+            return [StepResult("No proxy crew declared by this build", True)]
+
+        results = [
+            StepResult(
+                claim.label,
+                claim.started,
+                f"claimed at {claim.started_time:.1f}s" if claim.started else "never",
+            )
+            for claim in self._crew_claims
+        ]
+        for task in self._crew_tasks:
+            if task.completed:
+                detail = f"done at {task.completed_time:.1f}s"
+            elif task.started:
+                detail = f"in progress, started {task.started_time:.1f}s"
+            else:
+                detail = "not started"
+            results.append(StepResult(task.label, task.completed, detail))
         return results
 
     @staticmethod

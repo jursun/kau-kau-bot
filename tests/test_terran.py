@@ -1,6 +1,6 @@
 """Regression tests for the Terran proxy pieces.
 
-Three things here are easy to get wrong and impossible to eyeball:
+Five things here are easy to get wrong and impossible to eyeball:
 
 * `gates.structure_started` counts ready + `structure_pending`, NOT
   `structures().amount + already_pending()` — the pair that double-counts
@@ -13,6 +13,14 @@ Three things here are easy to get wrong and impossible to eyeball:
 * A build that sets `combat.rally` must actually get that point back out of
   `targeting.rally_point`, and must not also be handed mineral-line hold
   positions on the other side of the map.
+* `steps.terran.proxy_crew` must tell "still walking/building" from "just
+  finished" purely off `get_building_tracker_dict` membership, never off
+  structure counts — two crew workers building the same structure type
+  finish within moments of each other, so a count-based check would
+  misattribute one's completion to the other.
+* `steps.terran.claim_z_on_first_scv` must claim exactly once, and must
+  ignore anything that isn't an SCV (an Overlord scout, a lost Marine,
+  whatever else might fire `on_unit_created` before the 13th SCV does).
 
 Runs under pytest, or standalone with no test dependency:
 
@@ -31,6 +39,8 @@ from ares.consts import UnitRole
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
 
+from bot.builds.definition import ProxyCrewPlan, WorkerTask
+from bot.core import roles
 from bot.core.context import BotContext
 from bot.core.state import RunState
 from bot.routines import combat, gates, targeting
@@ -232,6 +242,231 @@ def test_hold_positions_still_covers_mineral_lines_without_an_override() -> None
     ctx.mediator.get_behind_mineral_positions.return_value = [Point2((18.0, 18.0))]
 
     assert len(targeting.hold_positions(ctx)) == 2
+
+
+# --- gates.training_started -----------------------------------------------
+
+
+def test_training_started_is_false_with_nothing_queued() -> None:
+    ctx = _ctx()
+    ctx.bot.already_pending.return_value = 0
+    assert not gates.training_started(UnitTypeId.MARINE)(ctx)
+
+
+def test_training_started_is_true_once_something_is_queued() -> None:
+    ctx = _ctx()
+    ctx.bot.already_pending.return_value = 1
+    assert gates.training_started(UnitTypeId.MARINE)(ctx)
+
+
+# --- targeting.enemy_fourth -------------------------------------------------
+
+
+def test_enemy_fourth_reads_the_mediator_value() -> None:
+    ctx = _ctx()
+    ctx.mediator.get_enemy_fourth = PROXY
+    assert targeting.enemy_fourth(ctx) == PROXY
+
+
+# --- steps.terran.claim_z_on_first_scv --------------------------------------
+
+
+def _crew_plan(role: UnitRole = UnitRole.GATE_KEEPER) -> ProxyCrewPlan:
+    return ProxyCrewPlan(
+        x_tasks=(WorkerTask(UnitTypeId.BARRACKS, _proxy),),
+        y_tasks=(WorkerTask(UnitTypeId.BARRACKS, _proxy),),
+        z_tasks=(WorkerTask(UnitTypeId.SUPPLYDEPOT, _proxy),),
+        role=role,
+    )
+
+
+def test_claim_z_ignores_a_non_scv_unit() -> None:
+    ctx = _ctx()
+    ctx.build.crew = _crew_plan()
+    unit = MagicMock()
+    unit.type_id = UnitTypeId.MARINE
+    unit.tag = 1
+
+    t.claim_z_on_first_scv()(ctx, unit)
+
+    assert ctx.state.proxy_crew.z.tag is None
+
+
+def test_claim_z_claims_the_first_scv_and_assigns_the_crew_role() -> None:
+    ctx = _ctx()
+    ctx.build.crew = _crew_plan(role=UnitRole.GATE_KEEPER)
+    unit = MagicMock()
+    unit.type_id = UnitTypeId.SCV
+    unit.tag = 99
+
+    t.claim_z_on_first_scv()(ctx, unit)
+
+    assert ctx.state.proxy_crew.z.tag == 99
+    assert ctx.mediator.assign_role.call_args.kwargs == {
+        "tag": 99,
+        "role": UnitRole.GATE_KEEPER,
+    }
+
+
+def test_claim_z_ignores_every_scv_after_the_first() -> None:
+    ctx = _ctx()
+    ctx.build.crew = _crew_plan()
+    hook = t.claim_z_on_first_scv()
+    first, second = MagicMock(), MagicMock()
+    first.type_id = second.type_id = UnitTypeId.SCV
+    first.tag, second.tag = 1, 2
+
+    hook(ctx, first)
+    hook(ctx, second)
+
+    assert ctx.state.proxy_crew.z.tag == 1
+
+
+# --- roles.assign_on_created wiring -----------------------------------------
+
+
+def test_assign_on_created_calls_the_builds_hook() -> None:
+    ctx = _ctx()
+    ctx.build.race = None  # matches nothing in SUPPORT_ROLES/SCOUT_TYPES
+    ctx.build.army.types = frozenset()
+    ctx.build.on_unit_created = MagicMock()
+    unit = MagicMock()
+    unit.type_id = UnitTypeId.SCV
+
+    roles.assign_on_created(ctx, unit)
+
+    ctx.build.on_unit_created.assert_called_once_with(ctx, unit)
+
+
+# --- steps.terran.proxy_crew -------------------------------------------------
+
+
+def test_proxy_crew_does_nothing_without_a_crew_plan() -> None:
+    ctx = _ctx()
+    ctx.build.crew = None
+
+    t.proxy_crew()(ctx)
+
+    assert ctx.state.proxy_crew.x.tag is None
+    ctx.mediator.assign_role.assert_not_called()
+
+
+def test_proxy_crew_claims_the_two_workers_closest_to_the_first_x_task() -> None:
+    ctx = _ctx()
+    ctx.build.crew = _crew_plan()
+    near_one = _worker(1, Point2((99.0, 99.0)))
+    near_two = _worker(2, Point2((98.0, 98.0)))
+    far = _worker(3, HOME)
+    ctx.bot.workers = [far, near_one, near_two]
+    ctx.bot.unit_tag_dict = {}
+    ctx.mediator.get_building_tracker_dict = {}
+
+    t.proxy_crew()(ctx)
+
+    assert {ctx.state.proxy_crew.x.tag, ctx.state.proxy_crew.y.tag} == {1, 2}
+    assigned = {
+        c.kwargs["tag"]: c.kwargs["role"]
+        for c in ctx.mediator.assign_role.call_args_list
+    }
+    assert assigned == {1: UnitRole.GATE_KEEPER, 2: UnitRole.GATE_KEEPER}
+
+
+def test_proxy_crew_does_not_reclaim_once_x_is_already_set() -> None:
+    ctx = _ctx()
+    ctx.build.crew = _crew_plan()
+    ctx.state.proxy_crew.x.tag = 1
+    ctx.state.proxy_crew.y.tag = 2
+    ctx.bot.workers = [_worker(3, PROXY)]
+    ctx.bot.unit_tag_dict = {}
+
+    t.proxy_crew()(ctx)
+
+    assert ctx.state.proxy_crew.x.tag == 1
+    assert ctx.state.proxy_crew.y.tag == 2
+
+
+def test_proxy_crew_issues_the_current_task_for_a_claimed_worker() -> None:
+    ctx = _ctx()
+    plan = _crew_plan()
+    ctx.build.crew = plan
+    ctx.state.proxy_crew.x.tag = 5
+    worker = _worker(5, HOME)
+    ctx.bot.unit_tag_dict = {5: worker}
+    ctx.mediator.request_building_placement.return_value = PROXY
+    ctx.mediator.build_with_specific_worker.return_value = True
+
+    t.proxy_crew()(ctx)
+
+    assert ctx.mediator.build_with_specific_worker.call_args.kwargs == {
+        "worker": worker,
+        "structure_type": UnitTypeId.BARRACKS,
+        "pos": PROXY,
+        "assign_role": False,
+    }
+    assert ctx.state.proxy_crew.x.queued is True
+
+
+def test_proxy_crew_does_not_reissue_while_still_in_the_tracker() -> None:
+    ctx = _ctx()
+    ctx.build.crew = _crew_plan()
+    ctx.state.proxy_crew.x.tag = 5
+    ctx.state.proxy_crew.x.queued = True
+    ctx.bot.unit_tag_dict = {5: _worker(5, PROXY)}
+    ctx.mediator.get_building_tracker_dict = {5: {}}
+
+    t.proxy_crew()(ctx)
+
+    ctx.mediator.build_with_specific_worker.assert_not_called()
+    assert ctx.state.proxy_crew.x.task_index == 0
+    assert ctx.state.proxy_crew.x.queued is True
+
+
+def test_proxy_crew_advances_once_the_worker_leaves_the_tracker() -> None:
+    ctx = _ctx()
+    plan = _crew_plan()
+    ctx.build.crew = plan
+    ctx.state.proxy_crew.x.tag = 5
+    ctx.state.proxy_crew.x.queued = True
+    ctx.bot.unit_tag_dict = {5: _worker(5, PROXY)}
+    ctx.mediator.get_building_tracker_dict = {}  # no longer tracked: done
+
+    t.proxy_crew()(ctx)
+
+    assert ctx.state.proxy_crew.x.task_index == 1
+    assert ctx.state.proxy_crew.x.queued is False
+
+
+def test_proxy_crew_holds_a_gated_task_until_its_gate_passes() -> None:
+    ctx = _ctx()
+    plan = ProxyCrewPlan(
+        x_tasks=(
+            WorkerTask(UnitTypeId.BARRACKS, _proxy),
+            WorkerTask(UnitTypeId.BARRACKS, _proxy, gate=lambda _c: False),
+        ),
+        y_tasks=(WorkerTask(UnitTypeId.BARRACKS, _proxy),),
+        z_tasks=(WorkerTask(UnitTypeId.SUPPLYDEPOT, _proxy),),
+    )
+    ctx.build.crew = plan
+    ctx.state.proxy_crew.x.tag = 5
+    ctx.state.proxy_crew.x.task_index = 1  # already past Barracks A
+    ctx.bot.unit_tag_dict = {5: _worker(5, PROXY)}
+
+    t.proxy_crew()(ctx)
+
+    ctx.mediator.build_with_specific_worker.assert_not_called()
+    assert ctx.state.proxy_crew.x.queued is False
+
+
+def test_proxy_crew_gives_up_on_a_dead_worker() -> None:
+    ctx = _ctx()
+    plan = _crew_plan()
+    ctx.build.crew = plan
+    ctx.state.proxy_crew.x.tag = 5
+    ctx.bot.unit_tag_dict = {}  # 5 is gone
+
+    t.proxy_crew()(ctx)
+
+    assert ctx.state.proxy_crew.x.task_index == len(plan.x_tasks)
 
 
 def main() -> int:

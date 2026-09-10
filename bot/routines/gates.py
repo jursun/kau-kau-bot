@@ -153,3 +153,15 @@ def supply_at_least(supply: int) -> Gate:
         return ctx.bot.supply_used >= supply
 
     return gate
+
+
+def training_started(unit_type: UnitTypeId) -> Gate:
+    """True once at least one is queued or in production - not merely
+    unlocked. `already_pending` counts anything in a production queue, so
+    this reads "has begun training", e.g. gating a build's last Barracks on
+    its first Marine actually having started, not just on tech existing."""
+
+    def gate(ctx: "BotContext") -> bool:
+        return ctx.bot.already_pending(unit_type) > 0
+
+    return gate

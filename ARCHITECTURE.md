@@ -15,28 +15,33 @@ bot/
   main.py              hooks only; never edited to add a build
   core/
     context.py         BotContext - the one object steps/routines receive
-    state.py           RunState - anything that persists between frames
-    types.py           MacroStep / CombatRoutine / Gate / PointLocator aliases
+    state.py           RunState - anything that persists between frames,
+                       incl. ProxyCrewState (per-worker crew progress)
+    types.py           MacroStep / CombatRoutine / Gate / PointLocator /
+                       UnitCreatedHook aliases
     macro_engine.py    runs build.always + build.macro_steps
     combat_engine.py   runs build.combat.routines
     registry.py        auto-discovers builds/<race>/*.py
-    roles.py           per-race unit -> UnitRole tables
+    roles.py           per-race unit -> UnitRole tables, then
+                       build.on_unit_created(ctx, unit) if set
   builds/
-    definition.py      BuildDefinition, Economy, Army, Combat
+    definition.py      BuildDefinition, Economy, Army, Combat,
+                       WorkerTask, ProxyCrewPlan
     zerg/              one module per build, each exporting BUILD
     terran/            four_rax_proxy (local only - see below)
     protoss/           empty
   steps/
     common.py          race-neutral macro steps
     zerg.py            queens, injects, hatcheries, evo chambers
-    terran.py          proxy_barracks
+    terran.py          proxy_barracks, proxy_crew, claim_z_on_first_scv
     protoss.py         empty
   routines/
     combat.py          release_waves, defend_home, attack_squads,
                        builder_workers_attack
     scouting.py        air_scout
-    targeting.py       attack_target, rally_point, hold_positions
-    gates.py           reusable conditions
+    targeting.py       attack_target, rally_point, hold_positions,
+                       enemy_third, enemy_fourth
+    gates.py           reusable conditions, incl. training_started
   behaviors/zerg/      custom ares Behaviors (ares has no inject/queen behavior)
 ```
 
@@ -415,3 +420,59 @@ regardless of what build is running.
   `ctx.build.race == Race.Zerg`. Same lesson as gotchas 12 and 17, one
   level up: those pushed *thresholds* onto the build, this pushes
   *applicability* onto it.
+- **`UnitRole.BUILDING` and `UnitRole.PERSISTENT_BUILDER` both carry ares-
+  side side effects that make them wrong for a worker with a multi-step task
+  list of its own.** `BuildingManager._handle_construction_orders` reverts a
+  `BUILDING`-role worker straight to `GATHERING` the instant its tracked
+  structure hits `build_progress >= 1.0` — fine for a one-shot builder, fatal
+  for `Four Rax Proxy`'s crew, which flings the worker back into the mineral
+  line one frame after finishing Barracks A, before its own choreography
+  (`steps.terran.proxy_crew`) gets a chance to hand it Barracks D.
+  `PERSISTENT_BUILDER` looks like the fix (ares itself never auto-reassigns
+  it) until `BuildOrderRunner.set_build_completed()` sweeps every
+  `PERSISTENT_BUILDER`-role unit back to `GATHERING` in one shot the moment
+  the opening's own `OpeningBuildOrder` list is exhausted — which, for a
+  build that deliberately keeps that list short (see the next bullet), can
+  happen while the crew's work is barely started. The fix: call
+  `mediator.build_with_specific_worker(..., assign_role=False)` so ares never
+  touches the worker's role at all, and manage it entirely with a role ares
+  itself never reads or writes anywhere in its own source —
+  `bot.consts.PROXY_CREW_ROLE` picks `UnitRole.GATE_KEEPER` for exactly that
+  reason, the same "borrow an unused enum value for our own bookkeeping"
+  trick `UnitRole.SCOUTING`/`QUEEN_INJECT` already use.
+- **`build_with_specific_worker`'s `assign_role=False` still gets the walk-
+  and-build automation for free.** Its per-frame companion,
+  `BuildingManager._handle_construction_orders`, drives every tag in
+  `building_tracker` — pathing it to the target, then issuing the actual
+  build order once in range and affordable — purely off tracker membership,
+  regardless of that worker's current `UnitRole`. So `assign_role=False`
+  doesn't mean "do the placement/pathing yourself" — it only opts out of
+  ares' own role bookkeeping; `steps.terran.proxy_crew` still gets a fully
+  automatic walk-then-build for X, Y and Z's every task from one call, the
+  same as a normal `BuildStructure`-driven worker would.
+- **`get_building_tracker_dict` membership is the completion signal for a
+  hand-placed structure — structure counts are not, once two workers can be
+  building the same structure type at the same time.** X and Y both start
+  Barracks the instant the game does (Barracks A and B respectively), so
+  they finish within moments of each other; a step that inferred "my task is
+  done" from `structures(BARRACKS).ready.amount` increasing would have no
+  way to tell whose Barracks that count bump belonged to. Both
+  `steps.terran.proxy_crew` and `tests.upgrade_rush_validator`'s new Stage
+  1B track completion the same way instead: a worker's own tag dropping back
+  out of `mediator.get_building_tracker_dict`, which ares removes it from
+  the instant *that* worker's structure completes and not a frame before.
+- **`request_building_placement`'s `reserve_placement=True` default makes
+  same-frame concurrent calls placement-safe.** X and Y each request a
+  Barracks placement at the same proxy base on literally the same frame (game
+  start); since Python runs one call fully before the next starts, the first
+  call reserves its spot before the second one asks, so the two placements
+  never collide — no extra locking needed on this codebase's side for two
+  crew workers targeting the same base at once.
+- **ares/python-sc2 never fires `on_unit_created` for the units a game
+  starts with — a fact worth generalizing past the scout case it was first
+  used for.** `core/roles.py`'s scout assignment already relied on this (the
+  second Overlord is the first one seen by the hook, since the starting one
+  never fires it); `steps.terran.claim_z_on_first_scv` leans on the exact
+  same guarantee to identify "the 13th SCV" as "the first SCV creation event
+  this game ever raises" — no counting, because the *absence* of an event
+  for the starting 12 already did the counting.

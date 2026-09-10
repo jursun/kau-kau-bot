@@ -47,6 +47,12 @@ def enemy_third(ctx: "BotContext") -> Point2:
     return ctx.mediator.get_enemy_third
 
 
+def enemy_fourth(ctx: "BotContext") -> Point2:
+    """The enemy's fourth base. Same idea as `enemy_third`, one base further
+    out - deep enough that early scouting rarely reaches it."""
+    return ctx.mediator.get_enemy_fourth
+
+
 def rally_point(ctx: "BotContext") -> Point2:
     """In front of our natural, facing the enemy - unless the build overrides
     it with `combat.rally` (see `BuildDefinition`), which a build whose army

@@ -10,12 +10,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from ares.consts import UnitRole
 from sc2.data import Race
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 
-from bot.consts import FOCUS_MAIN
-from bot.core.types import CombatRoutine, Gate, MacroStep, PointLocator
+from bot.consts import FOCUS_MAIN, PROXY_CREW_ROLE
+from bot.core.types import CombatRoutine, Gate, MacroStep, PointLocator, UnitCreatedHook
 
 
 def _always(ctx) -> bool:
@@ -85,6 +86,47 @@ class Combat:
 
 
 @dataclass(frozen=True)
+class WorkerTask:
+    """One build order for one `ProxyCrewPlan` worker: put `structure_id`
+    down at `where`, once `gate` passes. See `steps.terran.proxy_crew` for
+    how a task list is actually worked."""
+
+    structure_id: UnitTypeId
+    where: PointLocator
+    gate: Gate = _always
+    label: str = ""
+    """Free-text name for logs and the validation report, e.g. "Barracks D".
+    Purely descriptive - never read for control flow. Defaults to
+    `structure_id`'s own name when blank."""
+
+
+@dataclass(frozen=True)
+class ProxyCrewPlan:
+    """Three SCVs a build hand-walks through their own construction tasks,
+    entirely outside the mining pool and outside ares' generic
+    `BuildStructure`/`select_worker` (which only ever draws from
+    `UnitRole.GATHERING` - see `steps.terran.proxy_barracks`'s docstring).
+
+    `x_tasks` and `y_tasks` run on two of the starting 12 workers - the two
+    closest to `x_tasks[0].where(ctx)` - claimed once, on the first frame of
+    the game. `z_tasks` run on whichever worker `BuildDefinition.
+    on_unit_created` hands off (see `steps.terran.claim_z_on_first_scv`,
+    which a build using this plan should set as that hook).
+
+    Read by both `steps.terran.proxy_crew` (to run it) and
+    `tests.upgrade_rush_validator` (to report on it) - one declared plan,
+    not two things to keep in sync by hand.
+    """
+
+    x_tasks: tuple[WorkerTask, ...]
+    y_tasks: tuple[WorkerTask, ...]
+    z_tasks: tuple[WorkerTask, ...]
+    role: UnitRole = PROXY_CREW_ROLE
+    """What every crew worker is assigned to, from claim to hand-off. See
+    `bot.consts.PROXY_CREW_ROLE` for why the default is what it is."""
+
+
+@dataclass(frozen=True)
 class BuildDefinition:
     name: str
     """Must match an opening key under `Builds:` in `<race>_builds.yml`."""
@@ -97,6 +139,14 @@ class BuildDefinition:
     """Priority-ordered. A `MacroPlan` stops at the first step that acts."""
     always: tuple[MacroStep, ...] = field(default_factory=tuple)
     """Registered every frame, including during the opening (mining, injects)."""
+    crew: ProxyCrewPlan | None = None
+    """Declares a build's proxy-crew choreography, if it has one. Only data -
+    `steps.terran.proxy_crew` (which a build using this must list in
+    `always`) is what actually runs it."""
+    on_unit_created: UnitCreatedHook | None = None
+    """Called from `roles.assign_on_created` after its generic role table,
+    for a build that needs to react to a specific freshly created unit (e.g.
+    `steps.terran.claim_z_on_first_scv`, for `crew.z_tasks` above)."""
     pool_deadline: float = 50.0
     """Latest acceptable Spawning Pool start time (game seconds), read by
     `UpgradeRushValidator`'s "Pool Timing" check. Defaults to an immediate-pool

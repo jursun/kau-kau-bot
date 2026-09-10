@@ -55,6 +55,10 @@ class _FakeUnits(list):
         return _FakeUnits(u for u in self if u.tag in tags)
 
 
+def _fake_crew_member() -> SimpleNamespace:
+    return SimpleNamespace(tag=None, task_index=0, queued=False)
+
+
 class _FakeCtx:
     """Duck-typed `BotContext`: just what the validator reads."""
 
@@ -68,6 +72,7 @@ class _FakeCtx:
         evolution_chamber_gate=lambda ctx: True,
         pool_deadline: float = 50.0,
         race: Race = Race.Zerg,
+        crew=None,
     ):
         self.build = SimpleNamespace(
             race=race,
@@ -79,8 +84,14 @@ class _FakeCtx:
             economy=SimpleNamespace(worker_target=60, max_gas=max_gas),
             combat=SimpleNamespace(wave1_min=wave1_min, wave_growth=wave_growth),
             pool_deadline=pool_deadline,
+            crew=crew,
         )
-        self.state = SimpleNamespace(wave_number=0)
+        self.state = SimpleNamespace(
+            wave_number=0,
+            proxy_crew=SimpleNamespace(
+                x=_fake_crew_member(), y=_fake_crew_member(), z=_fake_crew_member()
+            ),
+        )
         self.attacking: list = []
 
     def units_in_role(self, role) -> _FakeUnits:
@@ -98,6 +109,7 @@ class FakeAI(UpgradeRushValidator):
         evolution_chamber_gate=lambda ctx: True,
         pool_deadline: float = 50.0,
         race: Race = Race.Zerg,
+        crew=None,
     ):
         self.time = 0.0
         self.supply_left = 10
@@ -114,6 +126,7 @@ class FakeAI(UpgradeRushValidator):
             evolution_chamber_gate=evolution_chamber_gate,
             pool_deadline=pool_deadline,
             race=race,
+            crew=crew,
         )
         self._structure_counts: dict = {}
         self._structure_ready_counts: dict = {}
@@ -288,6 +301,112 @@ def test_extractor_cap_respected_flags_when_exceeded() -> None:
     )
     assert not cap_check.passed
     assert "cap 2" in cap_check.detail
+
+
+# ── Stage 1B: proxy crew choreography ────────────────────────────────────────
+
+
+def _fake_task(structure_id=UnitTypeId.BARRACKS, label: str = "") -> SimpleNamespace:
+    return SimpleNamespace(structure_id=structure_id, label=label)
+
+
+def _fake_crew_plan() -> SimpleNamespace:
+    return SimpleNamespace(
+        x_tasks=(
+            _fake_task(UnitTypeId.BARRACKS, "Barracks A"),
+            _fake_task(UnitTypeId.BARRACKS, "Barracks D"),
+        ),
+        y_tasks=(
+            _fake_task(UnitTypeId.BARRACKS, "Barracks B"),
+            _fake_task(UnitTypeId.SUPPLYDEPOT, "Depot (proxy)"),
+        ),
+        z_tasks=(
+            _fake_task(UnitTypeId.SUPPLYDEPOT, "Depot (home)"),
+            _fake_task(UnitTypeId.BARRACKS, "Barracks C"),
+        ),
+    )
+
+
+def test_a_build_with_no_crew_plan_gets_a_single_not_declared_line() -> None:
+    ai = FakeAI(race=Race.Terran)  # crew defaults to None
+    _step(ai)
+
+    result = ai.validate()
+    assert result["Stage 1B: Proxy Crew Choreography"] == [
+        StepResult("No proxy crew declared by this build", True)
+    ]
+
+
+def test_crew_stage_lists_every_declared_claim_and_task() -> None:
+    ai = FakeAI(race=Race.Terran, crew=_fake_crew_plan())
+    _step(ai)
+
+    names = [r.name for r in ai.validate()["Stage 1B: Proxy Crew Choreography"]]
+    assert names == [
+        "Crew X claimed",
+        "Crew Y claimed",
+        "Crew Z claimed (13th SCV)",
+        "Barracks A",
+        "Barracks D",
+        "Barracks B",
+        "Depot (proxy)",
+        "Depot (home)",
+        "Barracks C",
+    ]
+
+
+def test_crew_claim_is_tracked_the_frame_a_tag_appears() -> None:
+    ai = FakeAI(race=Race.Terran, crew=_fake_crew_plan())
+    ai.time = 0.1
+    _step(ai)
+
+    x_claim = next(
+        r
+        for r in ai.validate()["Stage 1B: Proxy Crew Choreography"]
+        if r.name == "Crew X claimed"
+    )
+    assert not x_claim.passed
+
+    ai.ctx.state.proxy_crew.x.tag = 111
+    ai.time = 0.2
+    _step(ai)
+
+    x_claim = next(
+        r
+        for r in ai.validate()["Stage 1B: Proxy Crew Choreography"]
+        if r.name == "Crew X claimed"
+    )
+    assert x_claim.passed
+    assert "0.2" in x_claim.detail
+
+
+def test_crew_task_tracks_started_then_completed_without_double_counting() -> None:
+    """Barracks A and Barracks B are both plain `BARRACKS` tasks that start
+    and finish within moments of each other on X and Y respectively - the
+    tracker must key off (member, index), not structure type, or one would
+    read as the other's completion."""
+    ai = FakeAI(race=Race.Terran, crew=_fake_crew_plan())
+    ai.ctx.state.proxy_crew.x.tag = 1
+    ai.ctx.state.proxy_crew.y.tag = 2
+    ai.time = 5.0
+    ai.ctx.state.proxy_crew.x.queued = True  # Barracks A issued
+    _step(ai)
+
+    stage = {r.name: r for r in ai.validate()["Stage 1B: Proxy Crew Choreography"]}
+    assert not stage["Barracks A"].passed
+    assert "started" in stage["Barracks A"].detail
+    assert not stage["Barracks B"].passed  # Y hasn't even started yet
+
+    # Barracks A completes (task_index advances); Barracks B still hasn't.
+    ai.ctx.state.proxy_crew.x.queued = False
+    ai.ctx.state.proxy_crew.x.task_index = 1
+    ai.time = 40.0
+    _step(ai)
+
+    stage = {r.name: r for r in ai.validate()["Stage 1B: Proxy Crew Choreography"]}
+    assert stage["Barracks A"].passed
+    assert "40.0" in stage["Barracks A"].detail
+    assert not stage["Barracks B"].passed
 
 
 # ── Stage 2/3: resource-block detection ──────────────────────────────────────

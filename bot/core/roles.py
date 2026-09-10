@@ -8,11 +8,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ares.consts import UnitRole
 from sc2.data import Race
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.unit import Unit
-
-from ares.consts import UnitRole
 
 if TYPE_CHECKING:
     from bot.core.context import BotContext
@@ -51,6 +50,9 @@ def assign_on_created(ctx: "BotContext", unit: Unit) -> None:
         ctx.state.scout_tags.add(unit.tag)
         ctx.mediator.assign_role(tag=unit.tag, role=UnitRole.SCOUTING)
         ctx.log("SCOUT assigned")
+
+    if ctx.build.on_unit_created is not None:
+        ctx.build.on_unit_created(ctx, unit)
 
 
 def forget_destroyed(ctx: "BotContext", unit_tag: int) -> None:

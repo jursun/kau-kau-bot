@@ -48,21 +48,27 @@ BuildChoices:
             - Four Rax Proxy
 
 Builds:
-    # Four Rax Proxy: SCV, Depot, SCV, then two SCVs walk to the enemy third
-    # and start Barracks one and two there. Barracks three and four are not
-    # in this opening — their triggers ("Depot finished", "first Barracks
-    # finished") are conditions, not supply counts, so they live as gated
-    # macro steps in bot/builds/terran/four_rax_proxy.py instead.
+    # Four Rax Proxy: every structure this build places — both Depots, all
+    # four Barracks — is placed by one of three hand-walked SCVs (X, Y, Z)
+    # that never gather, NOT by this opening. See `PROXY_CREW` in
+    # bot/builds/terran/four_rax_proxy.py for the actual task lists and
+    # bot/steps/terran.py's `proxy_crew()` for the mechanism.
     #
-    # ConstantWorkerProductionTill keeps SCVs coming while those two builders
-    # are walking across the map; the explicit `scv` steps are the two the
-    # build order calls for by name, before the Depot and after it.
+    # That is deliberate, and this list must stay this way: adding a
+    # `supplydepot`/`barracks` line here would have ares' own generic
+    # `BuildStructure`/`select_worker` build a *second* one of that structure
+    # with a worker pulled fresh off the minerals, alongside whichever of
+    # X/Y/Z is already building the "real" one.
+    #
+    # So this opening only has to cover what's actually a supply-count
+    # trigger: `ConstantWorkerProductionTill` keeps SCVs flowing (including
+    # the 13th, which the `on_unit_created` hook claims as Z the instant it
+    # spawns — see `claim_z_on_first_scv`), and the single `scv` line below
+    # is enough to let ares consider this opening complete almost
+    # immediately, handing off to `macro_steps` (Marines, more SCVs) well
+    # before Barracks A is anywhere close to done.
     Four Rax Proxy:
         ConstantWorkerProductionTill: 16
         AutoSupplyAtSupply: 15
         OpeningBuildOrder:
             - 12 scv
-            - 13 supplydepot
-            - 13 scv
-            - 14 barracks @ enemy_third
-            - 14 barracks @ enemy_third

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ares.consts import UnitRole
 from sc2.data import race_townhalls
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
@@ -50,3 +51,23 @@ FULL_LING_UPGRADES: tuple[UpgradeId, ...] = (
 FOCUS_MAIN: str = "main"
 FOCUS_NATURAL: str = "natural"
 FOCUS_THIRD: str = "third"
+
+# A label WE own for a build's `ProxyCrewPlan` workers (`steps.terran.
+# proxy_crew`), picked specifically because nothing in ares itself ever
+# reads or writes it (checked against the whole ares-sc2 v3.13.1 source, not
+# just the obvious managers). That matters because the two roles that would
+# otherwise fit the name both carry side effects fatal to a worker mid
+# multi-step choreography:
+#   - `UnitRole.BUILDING` gets reverted to GATHERING by
+#     `BuildingManager._handle_construction_orders` the instant its tracked
+#     structure completes - flinging a builder back into the mineral line one
+#     frame after finishing Barracks A, long before its next task is issued.
+#   - `UnitRole.PERSISTENT_BUILDER` gets swept back to GATHERING in one shot
+#     by `BuildOrderRunner.set_build_completed()` the moment the opening's own
+#     `OpeningBuildOrder` list is exhausted - which, for a build using this
+#     mechanism, happens within the first few seconds, i.e. long before a
+#     proxy crew's work is anywhere near done.
+# `GATE_KEEPER` is simply an unused slot in `ares.consts.UnitRole`'s enum, the
+# same trick `UnitRole.SCOUTING`/`UnitRole.QUEEN_INJECT` already use elsewhere
+# in this codebase for "our own bookkeeping, not ares'".
+PROXY_CREW_ROLE: UnitRole = UnitRole.GATE_KEEPER
