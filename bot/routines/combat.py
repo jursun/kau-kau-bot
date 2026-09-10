@@ -7,9 +7,16 @@ from typing import TYPE_CHECKING
 
 from ares.behaviors.combat import CombatManeuver
 from ares.behaviors.combat.group import AMoveGroup, StutterGroupForward
-from ares.behaviors.combat.individual import AMove, AttackTarget, ShootTargetInRange
+from ares.behaviors.combat.individual import (
+    AMove,
+    AttackTarget,
+    KeepUnitSafe,
+    MoveToSafeTarget,
+    ShootTargetInRange,
+)
 from ares.consts import UnitRole, UnitTreeQueryType
 from cython_extensions import cy_closest_to, cy_distance_to_squared
+from sc2.ids.unit_typeid import UnitTypeId
 from sc2.units import Units
 
 from bot.core.types import CombatRoutine
@@ -26,9 +33,34 @@ MUSTER_RADIUS: float = 4.0
 before it is let off to attack, rather than trickling toward the enemy
 as units peel off from wherever they were defending."""
 
+MAX_SUPPLY: float = 200.0
+"""Standard SC2 supply cap. Once here - and once `_army_fully_trained` says
+nothing is still incubating, so the count reflects units actually on the
+field - there is no "next wave" worth waiting for and nothing left to gain
+by holding back, so the wave-release size/tech gate is bypassed: see
+`_maxed_and_ready`."""
+
+
+def _army_fully_trained(ctx: "BotContext") -> bool:
+    """True once nothing in the build's own composition is still incubating
+    (a Zerg egg, or any other race's production queue) - so `supply_used`
+    reflects units actually on the field, not still cooking in production."""
+    return all(
+        ctx.bot.already_pending(unit_type) == 0 for unit_type in ctx.build.army.types
+    )
+
+
+def _maxed_and_ready(ctx: "BotContext") -> bool:
+    """See `MAX_SUPPLY`."""
+    return ctx.bot.supply_used >= MAX_SUPPLY and _army_fully_trained(ctx)
+
 
 def release_waves() -> CombatRoutine:
-    """Promote defenders to attackers once the size and tech gates both pass."""
+    """Promote defenders to attackers once the size and tech gates both pass -
+    or unconditionally once `_maxed_and_ready` (200 supply, nothing left to
+    train): there is nothing to gain by continuing to wait once every
+    possible unit the build can field is already on the ground.
+    """
 
     def routine(ctx: "BotContext") -> None:
         plan = ctx.build.combat
@@ -37,15 +69,20 @@ def release_waves() -> CombatRoutine:
 
         defenders = ctx.units_in_role(UnitRole.DEFENDING)
         size = len(defenders)
-        if size < ctx.state.next_wave_size:
+        if size == 0:
             return
-        if not plan.wave_gate(ctx):
-            ctx.log_once(
-                f"wave_wait_{ctx.state.wave_number}",
-                f"GATHER wave {ctx.state.wave_number + 1} "
-                f"({size}/{ctx.state.next_wave_size}) - waiting on tech",
-            )
-            return
+
+        maxed = _maxed_and_ready(ctx)
+        if not maxed:
+            if size < ctx.state.next_wave_size:
+                return
+            if not plan.wave_gate(ctx):
+                ctx.log_once(
+                    f"wave_wait_{ctx.state.wave_number}",
+                    f"GATHER wave {ctx.state.wave_number + 1} "
+                    f"({size}/{ctx.state.next_wave_size}) - waiting on tech",
+                )
+                return
 
         tags = {u.tag for u in defenders}
         ctx.mediator.batch_assign_role(tags=tags, role=UnitRole.ATTACKING)
@@ -54,9 +91,10 @@ def release_waves() -> CombatRoutine:
         ctx.state.next_wave_size = max(
             plan.wave1_min + 1, math.ceil(size * plan.wave_growth)
         )
+        reason = " - 200 supply, nothing left to train" if maxed else ""
         ctx.log(
             f"WAVE {ctx.state.wave_number} attack "
-            f"(size={size}, next>={ctx.state.next_wave_size})"
+            f"(size={size}, next>={ctx.state.next_wave_size}){reason}"
         )
 
     return routine
@@ -119,6 +157,12 @@ def attack_squads(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
     waiting to form up; once a squad clusters within `MUSTER_RADIUS` of the
     rally point its tags are released and it attacks like any other squad
     from then on, even if it later drifts away from the rally point.
+
+    A squad that isn't still forming up fights whatever enemy is actually in
+    range (`SQUAD_ENGAGE_RANGE`) via `StutterGroupForward` unconditionally -
+    there is no supply-ratio check and no retreat. This build attacks with
+    everything a wave has; a squad that finds itself outnumbered stutter-
+    steps and trades rather than disengaging.
     """
 
     def routine(ctx: "BotContext") -> None:
@@ -140,8 +184,9 @@ def attack_squads(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
                 ctx.state.mustering_tags -= mustering
                 mustering = set()
 
-            target = rally if mustering else targeting.attack_target(ctx, position)
             close_enemy = _enemies_near(ctx, position, SQUAD_ENGAGE_RANGE)
+
+            target = rally if mustering else targeting.attack_target(ctx, position)
 
             maneuver = CombatManeuver()
             if close_enemy:
@@ -159,6 +204,64 @@ def attack_squads(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
                     group=squad.squad_units, group_tags=squad.tags, target=target
                 )
             )
+            ctx.bot.register_behavior(maneuver)
+
+    return routine
+
+
+def escort_overseers() -> CombatRoutine:
+    """Send every Overseer toward the largest ATTACKING squad's destination,
+    hanging back at the edge of enemy range instead of trailing into it.
+
+    Two things went wrong with the first version of this (which just AMoved
+    every Overseer at the squad's live `squad_position`):
+
+    1. `squad_position` recedes as the squad advances, and Zerglings —
+       especially with Metabolic Boost, which this build researches — are
+       faster than an Overseer. A slower unit chasing a point that keeps
+       moving away from it never closes the gap. Targeting the same
+       destination `attack_squads` sends the squad toward instead
+       (`targeting.attack_target`) fixes that: it's a fixed point, so the
+       Overseer actually makes progress and tends to arrive ahead of or
+       alongside the wave rather than perpetually trailing it.
+    2. A bare `AMove` has no notion of danger, so the Overseer walked
+       straight up to (and into) whatever it was escorting. `MoveToSafeTarget`
+       resolves the destination down to the nearest *safe* spot near it
+       (`radius` controls how near) before pathing there, and paths with its
+       own built-in danger-sensing along the way — so it settles at the edge
+       of enemy unit/structure range rather than in the middle of it.
+       `KeepUnitSafe` runs first and, if the Overseer is already standing
+       somewhere dangerous, retreats it before anything else does — the same
+       "urgent response first, fall through to normal movement" shape
+       `_defender_maneuver` uses above (`CombatManeuver.execute` is `any(...)`
+       over `micros`, so it stops at the first behavior that acts).
+
+    Overseers aren't part of `build.army.types` (only the composition units
+    are — zerglings, here), so they never pick up an ATTACKING/DEFENDING
+    role of their own via `release_waves`/`attack_squads`. This just points
+    them at wherever the army is headed instead; see `steps.zerg.overseers`
+    for what keeps them supplied.
+    """
+
+    def routine(ctx: "BotContext") -> None:
+        overseers = ctx.bot.units(UnitTypeId.OVERSEER)
+        if not overseers:
+            return
+
+        squads = ctx.mediator.get_squads(
+            role=UnitRole.ATTACKING, squad_radius=SQUAD_RADIUS
+        )
+        if not squads:
+            return
+
+        biggest = max(squads, key=lambda squad: len(squad.squad_units))
+        target = targeting.attack_target(ctx, biggest.squad_position)
+        grid = ctx.mediator.get_air_grid
+
+        for overseer in overseers:
+            maneuver = CombatManeuver()
+            maneuver.add(KeepUnitSafe(unit=overseer, grid=grid))
+            maneuver.add(MoveToSafeTarget(unit=overseer, grid=grid, target=target))
             ctx.bot.register_behavior(maneuver)
 
     return routine

@@ -17,7 +17,8 @@ from __future__ import annotations
 import sys
 from unittest.mock import MagicMock
 
-from ares.behaviors.combat.group import AMoveGroup
+from ares.behaviors.combat.group import AMoveGroup, StutterGroupForward
+from ares.behaviors.combat.individual import KeepUnitSafe, MoveToSafeTarget
 from ares.managers.squad_manager import UnitSquad
 from sc2.position import Point2
 
@@ -39,7 +40,14 @@ def _ctx(wave1_min: int = 6, wave_growth: float = 1.25) -> BotContext:
     build.combat.wave1_min = wave1_min
     build.combat.wave_growth = wave_growth
     build.combat.wave_gate = lambda _ctx: True
-    return BotContext(bot=MagicMock(), build=build, state=RunState())
+    ctx = BotContext(bot=MagicMock(), build=build, state=RunState())
+    # Comfortably under `MAX_SUPPLY` and nothing pending by default, so
+    # `_maxed_and_ready` is False unless a test deliberately raises these -
+    # `already_pending` returning 0 for any argument means "nothing training".
+    ctx.bot.supply_used = 100.0
+    ctx.bot.already_pending.return_value = 0
+    ctx.bot.calculate_supply_cost.return_value = 1.0
+    return ctx
 
 
 def test_release_waves_grows_by_25_percent() -> None:
@@ -159,6 +167,139 @@ def test_already_released_squad_ignores_rally_point() -> None:
         assert (target.x, target.y) == (attack.x, attack.y)
     finally:
         _restore_targeting(original)
+
+
+# ── Attack squads: no engagement ratio, no retreat ──────────────────────────
+
+
+def test_squad_attacks_regardless_of_how_outnumbered_it_is() -> None:
+    """There is no supply-ratio check and no retreat: a squad fights whatever
+    is in `SQUAD_ENGAGE_RANGE` with `StutterGroupForward` even when badly
+    outnumbered, and still heads for the real attack target, never rally."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original = _patch_targeting(rally, attack)
+    try:
+        ctx = _ctx()
+        units = [_unit(1, Point2((10.0, 10.0)))]  # 1 unit
+        enemies = [_unit(90), _unit(91), _unit(92), _unit(93)]  # badly outnumbered
+        ctx.mediator.get_units_in_range.return_value = [enemies]
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+
+        combat.attack_squads()(ctx)
+
+        registered = ctx.bot.register_behavior.call_args.args[0]
+        amoves = [b for b in registered.micros if isinstance(b, AMoveGroup)]
+        assert amoves[0].target == attack
+
+        stutters = [b for b in registered.micros if isinstance(b, StutterGroupForward)]
+        assert len(stutters) == 1, "should stutter-forward and trade, not retreat"
+        assert stutters[0].enemies == enemies
+    finally:
+        _restore_targeting(original)
+
+
+def test_maxed_and_fully_trained_bypasses_the_wave_gate_and_size() -> None:
+    """The 200-supply fallback should release defenders even if the wave
+    gate would otherwise refuse and even below the usual size threshold."""
+    ctx = _ctx(wave1_min=20)
+    ctx.build.combat.wave_gate = lambda _ctx: False  # would normally block
+    ctx.bot.supply_used = 200.0
+    ctx.build.army.types = frozenset({"ZERGLING"})
+    ctx.bot.already_pending.return_value = 0
+    defenders = [_unit(i) for i in range(3)]  # well under wave1_min=20
+    ctx.mediator.get_units_from_role.return_value = defenders
+
+    combat.release_waves()(ctx)
+
+    assert ctx.state.wave_number == 1
+    assert ctx.state.mustering_tags == {u.tag for u in defenders}
+
+
+def test_not_yet_maxed_still_respects_the_wave_gate() -> None:
+    """Sanity check: supply alone isn't enough - still training something
+    means the fallback must not fire yet."""
+    ctx = _ctx(wave1_min=20)
+    ctx.build.combat.wave_gate = lambda _ctx: False
+    ctx.bot.supply_used = 200.0
+    ctx.build.army.types = frozenset({"ZERGLING"})
+    ctx.bot.already_pending.return_value = 1  # still an egg incubating
+    defenders = [_unit(i) for i in range(3)]
+    ctx.mediator.get_units_from_role.return_value = defenders
+
+    combat.release_waves()(ctx)
+
+    assert ctx.state.wave_number == 0
+
+
+def test_escort_overseers_targets_the_biggest_squads_destination() -> None:
+    """Regression test: the first version AMoved straight at the squad's
+    live `squad_position`, which recedes as the squad advances - a slower
+    Overseer chasing that target never catches up. It should instead target
+    the same destination (`targeting.attack_target`) the squad itself is
+    walking toward, computed from the squad's position, and approach it via
+    ares' danger-aware `MoveToSafeTarget`/`KeepUnitSafe` rather than a bare
+    `AMove`."""
+    ctx = _ctx()
+    overseer = _unit(9, Point2((0.0, 0.0)))
+    ctx.bot.units.return_value = [overseer]
+    ctx.mediator.get_air_grid = "air-grid"
+
+    small = _squad([_unit(1, Point2((10.0, 10.0)))])
+    big = _squad([_unit(2, Point2((70.0, 70.0))), _unit(3, Point2((72.0, 70.0)))])
+    ctx.mediator.get_squads.return_value = [small, big]
+
+    destination = Point2((999.0, 999.0))
+    from_positions: list[Point2] = []
+
+    def _attack_target(_ctx: BotContext, from_pos: Point2) -> Point2:
+        from_positions.append(from_pos)
+        return destination
+
+    original = (targeting.rally_point, targeting.attack_target)
+    targeting.attack_target = _attack_target
+    try:
+        combat.escort_overseers()(ctx)
+    finally:
+        _restore_targeting(original)
+
+    assert from_positions == [big.squad_position]
+
+    registered = ctx.bot.register_behavior.call_args.args[0]
+    moves = [b for b in registered.micros if isinstance(b, MoveToSafeTarget)]
+    assert len(moves) == 1
+    assert moves[0].unit is overseer
+    assert moves[0].target == destination
+    assert moves[0].grid == "air-grid"
+
+    keep_safe = [b for b in registered.micros if isinstance(b, KeepUnitSafe)]
+    assert len(keep_safe) == 1
+    assert keep_safe[0].unit is overseer
+    assert keep_safe[0].grid == "air-grid"
+
+    # KeepUnitSafe must run first so an already-endangered Overseer retreats
+    # instead of being sent toward the target (CombatManeuver.execute is
+    # `any(...)` over micros - order decides which one wins).
+    assert isinstance(registered.micros[0], KeepUnitSafe)
+
+
+def test_escort_overseers_does_nothing_without_an_overseer() -> None:
+    ctx = _ctx()
+    ctx.bot.units.return_value = []
+
+    combat.escort_overseers()(ctx)
+
+    ctx.bot.register_behavior.assert_not_called()
+
+
+def test_escort_overseers_does_nothing_without_an_attacking_squad() -> None:
+    ctx = _ctx()
+    ctx.bot.units.return_value = [_unit(9)]
+    ctx.mediator.get_squads.return_value = []
+
+    combat.escort_overseers()(ctx)
+
+    ctx.bot.register_behavior.assert_not_called()
 
 
 def main() -> int:

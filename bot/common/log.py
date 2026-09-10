@@ -1,27 +1,24 @@
-"""ASCII-safe event logging for rush timings.
+"""Event logging for rush timings, routed through ares' loguru logger.
 
 Kept from the python-sc2 version so the `[mm:ss] EVENT` timeline in local
-`--validate` logs stays greppable. Ares itself logs through loguru; this is
-deliberately plain stdout so the two streams don't interleave awkwardly.
+`--validate` logs stays greppable, now going through the same loguru sink
+Ares itself logs through instead of a raw `print()`.
 """
 
 from __future__ import annotations
 
-import sys
 from typing import Any
+
+from loguru import logger
 
 
 def log_event(bot: Any, message: str) -> None:
-    """Print `[mm:ss] message` using the game clock when available."""
+    """Log `[mm:ss] message` at info level, using the game clock when available."""
     try:
         t = bot.time_formatted
     except Exception:
         t = "--:--"
-    print(f"[{t}] {message}", flush=True)
-    try:
-        sys.stdout.flush()
-    except Exception:
-        pass
+    logger.info(f"[{t}] {message}")
 
 
 class LogOnce:

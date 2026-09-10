@@ -47,6 +47,17 @@ class Army:
     """Unit types the combat engine assigns roles to and counts into waves."""
     upgrades: tuple[UpgradeId, ...] = ()
     """Researched in order; `UpgradeController` auto-techs toward each."""
+    evolution_chambers: int = 1
+    """`UpgradeController` only ever builds one on its own (see
+    `steps/zerg.py`'s `evolution_chambers`); a build wanting more than one
+    +1/+1 tier researching in parallel raises this. The single source of
+    truth for that count — `steps.zerg.evolution_chambers()` and
+    `UpgradeRushValidator` both read it from here rather than each build
+    passing its own literal around."""
+    evolution_chamber_gate: Gate = _always
+    """When to start wanting the *next* Evolution Chamber beyond the first
+    (e.g. once Metabolic Boost is under way) — read by both the same step
+    and the validator, for the same reason as `evolution_chambers` above."""
 
 
 @dataclass(frozen=True)
@@ -77,6 +88,13 @@ class BuildDefinition:
     """Priority-ordered. A `MacroPlan` stops at the first step that acts."""
     always: tuple[MacroStep, ...] = field(default_factory=tuple)
     """Registered every frame, including during the opening (mining, injects)."""
+    pool_deadline: float = 50.0
+    """Latest acceptable Spawning Pool start time (game seconds), read by
+    `UpgradeRushValidator`'s "Pool Timing" check. Defaults to an immediate-pool
+    opening's expectation; a build whose `OpeningBuildOrder` deliberately
+    expands (or does anything else) before pool should raise this to match
+    its own opening rather than let the validator enforce a deadline
+    calibrated for a different build's timing."""
 
     def __post_init__(self) -> None:
         total = sum(v["proportion"] for v in self.army.comp.values())

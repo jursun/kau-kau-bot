@@ -115,3 +115,242 @@ for "army units in role X", never for zerglings.
 
 If you find yourself adding an `if build.name == ...` anywhere, that is the
 signal to add a step or gate instead.
+
+## ares-sc2 quirks worth knowing
+
+Facts about how ares behaves that are not obvious from its source, surfaced
+while migrating off python-sc2 and validating both openings in real games.
+Kept here (rather than in a one-time migration log) because they stay true
+regardless of what build is running.
+
+- **One macro action happens per frame.** A `MacroPlan` short-circuits on
+  the first behavior that acts, so `macro_steps` order is spending priority
+  (see "Order is priority" above). This is also why two steps that should
+  compete for the same frame — e.g. drones vs. army once
+  `common.split_production` kicks in — have to be nested in their own
+  `MacroPlan` rather than statically ordered: nesting lets whichever side
+  should currently go first win the frame instead of one starving the other
+  outright.
+- **`split_production` used to compare `supply_army` against
+  `supply_workers` directly — don't.** A zergling costs 0.5 supply and a
+  drone costs 1.0, so that raw comparison read army as "behind" for nearly
+  the whole game regardless of actual zergling count, handing it first pick
+  far more often than the "keep both roughly even" docstring intended (and
+  a likely contributor to `UpgradeRushValidator`'s "Workers Massed" FAIL and
+  large resource-blocked-frame counts on later upgrades — production
+  competing hard for the same mineral bank). Fixed by comparing
+  `ctx.bot.supply_workers` against `ctx.worker_target` instead — economy
+  keeps priority until it hits its own target, then army takes over
+  outright. Comparing a side to its *own* target, not to the other side's
+  raw supply, is the pattern worth repeating if another "alternate
+  priority between two differently-costed things" step ever gets added.
+- **`BuildStructure` cannot place an in-base hatchery on Zerg.** For
+  `Race.Zerg` it defers unconditionally to ares' own
+  `_do_zerg_build_placement`, which searches ~30 tiles out from the base
+  location and tends to settle on the natural rather than a tight in-base
+  spot. `bot/behaviors/zerg/build_macro_hatch.py` does its own search
+  instead, constrained to the main's terrain height and kept clear of every
+  expansion.
+- **`BuildStructure.to_count_per_base` is a guaranteed `KeyError` for
+  Zerg.** It's checked via `mediator.get_placements_dict[base_location]`,
+  and that dict is only ever populated by
+  `PlacementManager._solve_terran_building_formation` /
+  `_solve_protoss_building_formation` — `_solve_zerg_building_formation` is
+  an unimplemented stub in ares v3.13.1, so the dict never gets a single
+  zerg key, for any base, ever. Count existing/pending structures yourself
+  instead — see `steps/zerg.py`'s `spore_crawlers()`, which also shows the
+  follow-on gotchas below.
+- **`ai.request_zerg_placement()` (and so `BuildStructure` for any Zerg
+  structure) is unusable for anything requested more than once per game.**
+  It appends to `ai._requested_zerg_placements`, and `_after_step` replays
+  that ENTIRE list every single frame — the list is only ever cleared once,
+  at game start, never after being processed. So one request doesn't fire
+  once: `find_placement` + `select_worker` keep succeeding on it again next
+  frame, and the one after that, for the rest of the game, each success
+  producing one more structure. Whichever base gets requested earliest eats
+  the worst of it (in this codebase, the main — `owned_expansions` walks it
+  first). `bot/behaviors/zerg/build_spore_crawler.py` does the
+  find-placement / select-worker / build-with-specific-worker sequence
+  itself, synchronously, instead — the same reasoning
+  `build_macro_hatch.py` already applies to hatcheries, for the same
+  underlying reason (see the bullet above).
+- **Count pending, not just placed, structures when gating a build request
+  per base.** A worker already dispatched to build something doesn't show
+  up in `structures()` until it arrives and starts — only a second or two,
+  but long enough that a naive per-frame per-base check re-requests a build
+  every frame during that walk, piling several onto one base. Gate on
+  `ai.structure_pending(structure_id)` (a ready-or-pending count, bot-wide)
+  first; it's the same count `BuildStructure.to_count` already uses
+  reliably elsewhere.
+- **The gas pull-off lever is `mediator.set_workers_per_gas`, not
+  `Mining(workers_per_gas=...)`.** The latter is only read by `Mining` when
+  deciding whether to vespene-boost; the `ResourceManager` owns actual
+  worker assignment. `bot/behaviors/set_gas_workers.py` calls
+  `mediator.set_workers_per_gas` directly, one worker per frame off any
+  over-staffed geyser.
+- **`UpgradeController.auto_tech_up_enabled` only ever builds one
+  Evolution Chamber.** A build that wants +1 melee and +1 carapace
+  researching in parallel needs its own `BuildStructure(to_count=2)` step
+  for the second one — see `z.evolution_chambers()`. That count and its
+  gate live on `BuildDefinition.army.evolution_chambers` /
+  `.evolution_chamber_gate` (defaulting to `1`/always-on, so a build that
+  doesn't care never mentions them), not as arguments to
+  `z.evolution_chambers()` itself — it takes none, and reads both off
+  `ctx.build.army` at call time. That's what lets
+  `tests/upgrade_rush_validator.py` check the exact same target and gate
+  the step is building toward instead of a second, separately-maintained
+  copy of `2` and "once Speed is under way."
+- **`already_pending_upgrade` returns a 0.0-1.0 float**, not a count — how
+  close a researching upgrade is to finishing, for gates like
+  `gates.upgrades_within` that need to leave *before* an upgrade lands
+  rather than waiting for it to actually finish.
+- **`ProductionController` is explicitly Terran/Protoss only** — it logs a
+  warning and no-ops for `Race.Zerg`. There's no generic ares controller for
+  "train unit type X up to a count" beyond `SpawnController` (larva-spawn,
+  driven by an army composition dict); anything else — queens
+  (`TrainQueens`), overseers (`MorphOverseers`) — is bot-owned, one-at-a-time
+  logic, same shape both times.
+- **`QueenSpreadCreep`'s docstring example doesn't match its own
+  constructor.** The example shows `QueenSpreadCreep(queen, queen.position,
+  target)`, but the dataclass only has one relevant field, `unit` — it works
+  out its own path and target internally via `mediator.get_next_tumor_on_path`
+  and `get_creep_coverage`. The call is just `QueenSpreadCreep(unit=queen)`.
+- **`TumorSpreadCreep` needs no cadence gating of your own.** Its own
+  `execute` already checks `AbilityId.BUILD_CREEPTUMOR_TUMOR in
+  self.unit.abilities` (the per-tumor cooldown) and
+  `mediator.should_calculate_tumor_spread` (ares' own internal throttle), so
+  it's safe to register one for every `UnitTypeId.CREEPTUMORBURROWED` in
+  `mediator.get_own_structures_dict` every frame — see
+  `routines/creep.py`'s `spread_tumors`. `QueenSpreadCreep` above and
+  `TumorSpreadCreep` are independent: nothing pauses the passive tumor->tumor
+  spread while the dedicated Queen is placing her own.
+- **A slower escort chasing a squad's live `squad_position` never catches
+  up if the squad is faster.** `squad_position` recedes as the squad
+  advances, so targeting it directly only works if the escort is at least
+  as fast as what it's escorting. `routines/combat.py`'s `escort_overseers`
+  targets the squad's actual destination instead
+  (`targeting.attack_target(ctx, squad.squad_position)`, the same call
+  `attack_squads` itself uses) — a fixed point the escort can actually make
+  progress toward, arriving ahead of or alongside the wave rather than
+  perpetually trailing it.
+- **`CombatManeuver.execute` is `any(...)` over its `micros`, in the order
+  added** — the first behavior that returns `True` wins and the rest never
+  run. That's what makes a "check something urgent first, fall through to
+  normal movement otherwise" maneuver just a matter of `add()` order:
+  `KeepUnitSafe` (returns `False` when already safe) added before
+  `MoveToSafeTarget` means an endangered unit retreats instead of being sent
+  toward its target — same shape `_defender_maneuver` already used for
+  shoot-in-range before attack-move. `MoveToSafeTarget` itself resolves a
+  destination down to the nearest *safe* spot within `radius` of it before
+  pathing there, so a unit sent at it settles at the edge of enemy range
+  instead of walking into the middle of it.
+- **The Zerg upgrade/tech tree doesn't need to be hand-encoded anywhere.**
+  `sc2.dicts.upgrade_researched_from.UPGRADE_RESEARCHED_FROM` plus
+  `sc2.dicts.unit_research_abilities.RESEARCH_INFO[researched_from][upgrade]`
+  (its own `"required_building"` key) give the same tech-tree facts
+  `UpgradeController` itself reads — which structure researches an upgrade,
+  and what extra structure it needs on top of that (e.g. Melee Attacks +2
+  needs Lair, +3 needs Hive). `ai.tech_requirement_progress(structure_type)`
+  answers "could I build/morph this right now" without separately walking
+  `ares.dicts.unit_tech_requirement.UNIT_TECH_REQUIREMENT`'s prerequisite
+  chains by hand (Hive's, for instance, is `[SPAWNINGPOOL, LAIR,
+  INFESTATIONPIT, LAIR]`). `tests/upgrade_rush_validator.py` builds its
+  entire Stage 2/3 milestone list this way, off `ctx.build.army.upgrades`,
+  so it can't silently drift out of sync with the build it's validating.
+- **`UpgradeRushValidator` is one class shared by every registered build,
+  not a per-build subclass — it stays correct per-build because every
+  number and gate it checks is read off `ctx.build` (or off python-sc2/
+  ares' own tech tables) rather than hardcoded for UpgradeRush by name.**
+  Stage 1's worker/gas targets come from `ctx.build.economy`; Stage 3's
+  upgrade list and Stage 4's wave-size math come from `ctx.build.army` /
+  `ctx.build.combat`; Stage 2's tech-structure checklist is derived off
+  `ctx.build.army.upgrades` via `UPGRADE_RESEARCHED_FROM` (so it's simply
+  empty for a build with no Lair/Hive-gated upgrades — Speedling All-In's
+  report shows "No tech structures required by this build" instead of
+  failing four checks it could never pass); and the Evolution Chamber
+  target/gate come from `ctx.build.army.evolution_chambers` /
+  `.evolution_chamber_gate` (see above), the last piece that used to be a
+  module constant plus a hardcoded `LING_SPEED` check. A build that wants
+  genuinely different validation behavior — not just different numbers —
+  is still a case for a new validator class; a build that just has
+  different targets, a different upgrade list, or no tech structures at
+  all is already handled by this one, for free.
+- **Danger-avoidance is a per-routine choice, not a blanket policy.**
+  `scouting.air_scout()` used to wrap its `PathUnitToTarget` in a
+  `KeepUnitSafe`-first `CombatManeuver` — the same shape `escort_overseers`
+  uses (see the `CombatManeuver.execute` bullet above) — but that's wrong
+  for what it's actually escorting: the opening scouting Overlord
+  (`core/roles.py`'s `SCOUT_TYPES`) exists specifically to sit and watch a
+  vision spot, so retreating the instant something worth watching showed up
+  defeated its own purpose. It now registers a bare `PathUnitToTarget` with
+  no danger check ahead of it. `KeepUnitSafe`/`MoveToSafeTarget` stay
+  correct for anything that's actually trying to survive while moving
+  (`escort_overseers`, `_defender_maneuver`) — the shape isn't universal,
+  it depends on whether the unit is supposed to avoid the threat or watch it.
+- **`sc2.BotAI.calculate_supply_cost(unit_type)` is the one true source for
+  a unit type's supply cost** — it corrects for morphs the same way ares'
+  `enemy_army_value` corrects for cost (e.g. a Ravager's true supply comes
+  from the Roach it morphed from, not a second charge on top), so it beats
+  hand-rolling a `{UnitTypeId: supply}` table. `UpgradeRushValidator`'s wave
+  tracking uses it both ways: `ctx.units_in_role(UnitRole.ATTACKING)
+  .tags_in(new_tags)` for our own released supply, and
+  `mediator.get_cached_enemy_army` (ares' persisted-out-of-vision enemy
+  unit cache — filter out `WORKER_TYPES` yourself, same as
+  `enemy_army_value` does, since the cache doesn't) for the enemy's known
+  army supply at that same instant. Every wave in the Stage 4 report now
+  carries both numbers side by side.
+- **`StutterGroupForward` takes a `target` argument and completely ignores
+  it once there are enemies.** Reading its source (ares v3.13.1) shows
+  `target` is only ever used to sort the group and pick a representative
+  unit for the duplicate-order check — every actual order it issues
+  (`ATTACK`/`MOVE`) is aimed at `enemy_center`, computed from `enemies`, not
+  `target`. This is what sank an earlier attempt at a disengage-and-retreat
+  feature: passing `target=rally` to `StutterGroupForward` while a squad
+  was meant to be falling back compiled, passed every unit test (which only
+  asserted on the `AMoveGroup` appended *after* it), and did nothing in a
+  real game — `StutterGroupForward.execute()` always returned `True` while
+  `close_enemy` was non-empty, and `CombatManeuver`'s `any()` short-circuit
+  (see the bullet above) meant the `AMoveGroup(target=rally)` behind it
+  never ran. Worth remembering if a future retreat/kite feature reaches for
+  this behavior again: it is only ever safe to hand it a target other than
+  the enemy when there truly are no enemies in `enemies` that frame.
+  `attack_squads` no longer attempts a retreat at all (removed per Jason's
+  call — this build always fights whatever a wave finds), but the framework
+  fact stands on its own.
+- **A validator threshold calibrated for one build silently breaks for
+  another.** `UpgradeRushValidator`'s "Pool Timing" check used to compare
+  against a single hardcoded `POOL_DEADLINE = 50.0`, which fit
+  `Speedling All-In`'s immediate pool but not `UpgradeRush`'s deliberate
+  hatch-before-pool opening (expand at 15, pool at 16 — pool routinely lands
+  around 60s by design, not by lateness). Fixed by adding
+  `BuildDefinition.pool_deadline` (default 50.0) so each build states its
+  own expectation; `UpgradeRush` sets `pool_deadline=75.0`. `POOL_DEADLINE`
+  on the validator class is now only a fallback for when `ctx` isn't set
+  yet. Same lesson as the module's own stated philosophy elsewhere: a
+  number the validator enforces belongs on the build, not baked into the
+  validator.
+- **`structure_pending` and `not_started_but_in_building_tracker` count the
+  same structure type very differently — don't mix them across two
+  behaviors expected to throttle each other.** `ExpansionController.max_pending`
+  checks `ai.structure_pending(base_townhall_type)`, which counts a
+  hatchery as pending for its *entire* build time (`build_progress < 1.0`,
+  ~71s) — but `BuildMacroHatch.max_on_route` checks
+  `ai.not_started_but_in_building_tracker(HATCHERY)`, which clears the
+  instant the drone starts building. `zerg.overflow_hatcheries()`
+  originally nested both behind the same computed `to_count`, trusting
+  each to throttle itself — but since a macro hatch is also just a
+  Hatchery, one under construction kept `ExpansionController` blocked for
+  its whole build time while `BuildMacroHatch`'s narrower gate cleared
+  almost immediately, letting it queue another macro hatch, and another,
+  long before the first even finished — exactly the "went overboard with
+  macro hatches" Jason reported, with real expansions barely getting a
+  turn. Fixed by gating the whole step on `ai.structure_pending(HATCHERY)`
+  itself (the same broad count `ExpansionController` already uses)
+  *before* trying either behavior, throttling both to one hatchery in
+  flight at a time regardless of kind — so `ExpansionController` (tried
+  first) gets a fair, unblocked shot at the nearest safe expansion every
+  time, and `BuildMacroHatch` only ever fires when no legal expansion
+  exists that frame. Same shape as `spore_crawlers()`'s own
+  `structure_pending` gate (see the postscript on gotcha 10) — worth
+  reaching for whenever two behaviors sharing a structure type are meant
+  to take turns rather than compete.

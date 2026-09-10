@@ -74,26 +74,26 @@ def build_bot_ai(validate: bool):
     if not validate:
         return KauKauBot()
 
-    from tests.zerg_rush_validator import ZergRushValidator
+    from tests.upgrade_rush_validator import UpgradeRushValidator
 
-    class ValidatedKauKauBot(ZergRushValidator, KauKauBot):
+    class ValidatedKauKauBot(UpgradeRushValidator, KauKauBot):
         """KauKauBot with the milestone validator layered on top.
 
-        ZergRushValidator deliberately does not call `super().on_step`, so each
-        hook is dispatched explicitly here — KauKauBot's own hooks are the ones
-        that call into ares.
+        UpgradeRushValidator deliberately does not call `super().on_step`, so
+        each hook is dispatched explicitly here — KauKauBot's own hooks are
+        the ones that call into ares.
         """
 
         async def on_start(self) -> None:
-            await ZergRushValidator.on_start(self)
+            await UpgradeRushValidator.on_start(self)
             await KauKauBot.on_start(self)
 
         async def on_step(self, iteration: int) -> None:
-            await ZergRushValidator.on_step(self, iteration)
+            await UpgradeRushValidator.on_step(self, iteration)
             await KauKauBot.on_step(self, iteration)
 
         async def on_end(self, game_result) -> None:
-            await ZergRushValidator.on_end(self, game_result)
+            await UpgradeRushValidator.on_end(self, game_result)
             await KauKauBot.on_end(self, game_result)
 
     logger.info("Rush validation ENABLED - report prints at game end.")
@@ -106,11 +106,7 @@ def resolve_map_list(local_cfg: dict) -> list[str]:
         return list(pool)
 
     maps_path: str = local_cfg.get("MapPath") or _default_maps_path()
-    found = [
-        p.stem
-        for p in Path(maps_path).rglob(f"*.{MAP_FILE_EXT}")
-        if p.is_file()
-    ]
+    found = [p.stem for p in Path(maps_path).rglob(f"*.{MAP_FILE_EXT}") if p.is_file()]
     if found:
         return found
 
@@ -127,7 +123,11 @@ def resolve_map(map_name: str, maps_path: str | None):
     """
     if maps_path and path.isdir(maps_path):
         match = next(
-            (p for p in Path(maps_path).rglob(f"{map_name}.{MAP_FILE_EXT}") if p.is_file()),
+            (
+                p
+                for p in Path(maps_path).rglob(f"{map_name}.{MAP_FILE_EXT}")
+                if p.is_file()
+            ),
             None,
         )
         if match is not None:
