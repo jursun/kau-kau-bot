@@ -1,17 +1,10 @@
 """`Speedling All-In`'s own Validation Report shape.
 
-Same four stages as `UpgradeRushValidator` — this build also has no crew
-plan — but its own file, own class, own report title. `_validate_structures`
-falls back to "No tech structures required by this build" for Stage 2,
-since Metabolic Boost (this build's only upgrade) needs no Evolution
-Chamber, Lair or Hive; Stage 3 lists Metabolic Boost normally.
-
-Today the two `validate()` bodies (this file and `upgrade_rush_validator.
-py`) read identically - that's a coincidence of what each build currently
-declares, not a reason to merge them back into one shared method. See
-`base_validator`'s module docstring for why sharing one `validate()` across
-builds is exactly the bug this split exists to prevent: the moment either
-build's report needs to diverge, only this file changes.
+Same four stages as `UpgradeRushValidator` (no crew plan), own file/class/
+title. Stage 2 falls back to "No tech structures required" since Metabolic
+Boost needs no structure; Stage 3 lists it normally. The two `validate()`
+bodies read identically today - that's coincidence, not a merge signal; see
+`base_validator`'s module docstring for why each build keeps its own file.
 """
 
 from __future__ import annotations

@@ -1,8 +1,6 @@
-"""Regression tests for `SpeedlingAllInValidator`'s own Validation Report
-shape - mirrors `test_upgrade_rush_validator.py` closely, since the two
-builds currently declare the same report shape, but exercises this build's
-own class and file so a future change to either one is provably isolated to
-its own test file too.
+"""Regression tests for `SpeedlingAllInValidator`'s own report shape - mirrors
+`test_upgrade_rush_validator.py` closely (same shape today) but exercises
+this build's own class, so either can diverge without touching the other.
 """
 
 from __future__ import annotations
@@ -36,9 +34,8 @@ def test_report_never_includes_stage_1b() -> None:
 
 
 def test_stage_2_falls_back_since_metabolic_boost_needs_no_structure() -> None:
-    """This build's only upgrade (Metabolic Boost) needs no Evolution
-    Chamber, Lair or Hive - Stage 2 should say so plainly rather than
-    showing zero checks or failing ones it could never pass."""
+    """Metabolic Boost needs no tech structure - Stage 2 should say so
+    plainly rather than failing checks it could never pass."""
     ai = FakeAI(upgrades=(UpgradeId.ZERGLINGMOVEMENTSPEED,))
     validator = SpeedlingAllInValidator(ai)
     validator.on_step(0)

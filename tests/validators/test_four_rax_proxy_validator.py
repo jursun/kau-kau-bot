@@ -1,11 +1,7 @@
-"""Regression tests for `FourRaxProxyValidator`'s own Validation Report
-shape: Stage 1B (Proxy Crew Choreography) present, Stage 2/3 absent, Stage 4
-titled from this build's own `wave_stage_label`.
-
-Generic tracking mechanics (pool timing, resource-block detection, wave
-tracking) are covered once in `test_base_validator.py` and not repeated
-here - these tests are specifically about what makes Four Rax Proxy's own
-report different from every other build's.
+"""Regression tests for `FourRaxProxyValidator`'s own report shape: Stage 1B
+present, Stage 2/3 absent, Stage 4 titled from this build's own
+`wave_stage_label`. Generic tracking mechanics are covered once in
+`test_base_validator.py`.
 """
 
 from __future__ import annotations
@@ -17,12 +13,9 @@ from tests.validators.four_rax_proxy_validator import FourRaxProxyValidator
 
 
 def test_a_build_with_no_crew_plan_still_gets_stage_1b_with_a_fallback_line() -> None:
-    """`FourRaxProxyValidator` always includes Stage 1B - it's the one
-    validator that declares it, structurally, in its own `validate()` -
-    regardless of whether this particular game's `ctx.build.crew` happens
-    to be set. (For the real `Four Rax Proxy` build it always is; this
-    covers the defensive fallback line in `BaseValidator._validate_crew`
-    for anything that isn't.)"""
+    """`FourRaxProxyValidator.validate()` always includes Stage 1B,
+    regardless of whether `ctx.build.crew` is set - this covers the
+    defensive fallback line in `BaseValidator._validate_crew`."""
     ai = FakeAI(race=Race.Terran)  # crew defaults to None
     validator = FourRaxProxyValidator(ai)
     validator.on_step(0)
@@ -37,9 +30,8 @@ def test_a_build_with_no_crew_plan_still_gets_stage_1b_with_a_fallback_line() ->
 
 
 def test_validate_never_includes_stage_2_or_3() -> None:
-    """This build declares no upgrades at all - `validate()` simply never
-    adds these keys, structurally, regardless of what `ctx.build.army.
-    upgrades` happens to contain in a given test."""
+    """`validate()` never adds these keys, structurally, regardless of what
+    `ctx.build.army.upgrades` contains."""
     ai = FakeAI(race=Race.Terran, crew=_fake_crew_plan())
     validator = FourRaxProxyValidator(ai)
     validator.on_step(0)
@@ -51,8 +43,7 @@ def test_validate_never_includes_stage_2_or_3() -> None:
 
 def test_stage_4_title_comes_from_the_builds_own_wave_stage_label() -> None:
     """`Four Rax Proxy` sets `combat.wave_stage_label="All-In Attack"` -
-    this build's own report reflects that, without needing any conditional
-    logic (it's the only validator that ever reads this build's label)."""
+    this report reflects that without any conditional logic."""
     ai = FakeAI(race=Race.Terran, wave_stage_label="All-In Attack")
     validator = FourRaxProxyValidator(ai)
     validator.on_step(0)
@@ -108,10 +99,9 @@ def test_crew_claim_is_tracked_the_frame_a_tag_appears() -> None:
 
 
 def test_crew_task_tracks_started_then_completed_without_double_counting() -> None:
-    """Barracks A and Barracks B are both plain `BARRACKS` tasks that start
-    and finish within moments of each other on X and Y respectively - the
-    tracker must key off (member, index), not structure type, or one would
-    read as the other's completion."""
+    """Barracks A (X) and Barracks B (Y) both start/finish moments apart -
+    the tracker must key off (member, index), not structure type, or one
+    would read as the other's completion."""
     ai = FakeAI(race=Race.Terran, crew=_fake_crew_plan())
     validator = FourRaxProxyValidator(ai)
     ai.ctx.state.proxy_crew.x.tag = 1
@@ -142,12 +132,10 @@ def test_crew_task_tracks_started_then_completed_without_double_counting() -> No
 
 
 def test_crew_tasks_are_reported_in_completion_order_not_declared_order() -> None:
-    """Regression test: `_fake_crew_plan()`'s X declares Barracks A then
-    Barracks D, in that order - but the real build gates Barracks D on
-    Marine training having started, so it can genuinely finish after Y's
-    ungated second task (Depot (proxy)) even though Barracks D sits earlier
-    in X's own declared list. The report must reflect what actually
-    happened this game, not each crew member's own task order."""
+    """`_fake_crew_plan()`'s X declares Barracks A then Barracks D, but the
+    real build gates Barracks D on Marine training, so it can finish after
+    Y's Depot (proxy) despite sitting earlier in X's list. The report must
+    reflect actual completion order, not each member's declared order."""
     ai = FakeAI(race=Race.Terran, crew=_fake_crew_plan())
     validator = FourRaxProxyValidator(ai)
     crew = ai.ctx.state.proxy_crew

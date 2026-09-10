@@ -1,14 +1,8 @@
 """`Four Rax Proxy`'s own Validation Report shape.
 
-Stage 1 (opening economy) plus this build's Proxy Crew Choreography
-(Stage 1B — every claim and every `WorkerTask` X/Y/Z complete, in the order
-they actually finished; see `base_validator.BaseValidator._validate_crew`
-for the tracking), and this build's own "All-In Attack" title for Stage 4
-(`bot.builds.terran.four_rax_proxy.BUILD.combat.wave_stage_label`).
-
-No Stage 2/3: this build declares no upgrades at all
-(`BUILD.army.upgrades == ()`), so there is nothing for either stage to
-check, and this file simply never adds those keys to the report.
+Stage 1 (opening economy) + Stage 1B (Proxy Crew Choreography, see
+`base_validator.BaseValidator._validate_crew`) + Stage 4 ("All-In Attack").
+No Stage 2/3: this build declares no upgrades (`BUILD.army.upgrades == ()`).
 """
 
 from __future__ import annotations

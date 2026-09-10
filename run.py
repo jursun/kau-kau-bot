@@ -80,17 +80,10 @@ def build_bot_ai(validate: bool):
     class ValidatedKauKauBot(KauKauBot):
         """KauKauBot with a build-specific milestone validator attached.
 
-        Which validator applies isn't known until ares has actually picked
-        an opening — `self.ctx.build.name` only exists once `KauKauBot.
-        on_start` sets it, so the validator can't be selected any earlier
-        than that (ares' own `BuildOrderRunner` can cycle between several
-        builds game to game; nothing here can guess ahead of it). `tests.
-        validators.registry.validator_for_build` maps that name to one of
-        the per-build validator classes under `tests/validators/`; the
-        chosen one is constructed fresh for this game (composition, not
-        inheritance — see `base_validator.BaseValidator`'s module
-        docstring) and driven explicitly from the hooks below, so a bug in
-        one build's validator file can never reach another build's report.
+        The validator can't be picked until `KauKauBot.on_start` sets
+        `self.ctx.build.name` (ares picks the opening at runtime), so it's
+        constructed fresh in `on_start` via `validator_for_build` and driven
+        explicitly from the hooks below - composition, not inheritance.
         """
 
         validator = None

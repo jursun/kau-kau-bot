@@ -1,10 +1,7 @@
 """`UpgradeRush`'s own Validation Report shape.
 
-The full four-stage report — opening economy, tech structures, upgrades,
-attack waves — computed entirely off this build's own declared data
-(`bot.builds.zerg.upgrade_rush.BUILD.army.upgrades`, `.pool_deadline`,
-`.combat`). No Stage 1B: this build has no `ProxyCrewPlan` (`BUILD.crew`
-stays `None`), so this file simply never adds that key.
+Full four-stage report (economy, tech structures, upgrades, waves) off this
+build's own declared data. No Stage 1B: this build has no `ProxyCrewPlan`.
 """
 
 from __future__ import annotations

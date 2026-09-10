@@ -1,17 +1,11 @@
 """Regression tests for `BaseValidator`'s shared tracking/reporting
-machinery — the mechanics every build's own validator inherits, as opposed
-to which stages a report shows (that's each concrete validator's own test
-file: `test_four_rax_proxy_validator.py`, `test_upgrade_rush_validator.py`,
-`test_speedling_all_in_validator.py`).
+machinery - the mechanics every build's own validator inherits. Per-build
+report shape is each concrete validator's own test file instead.
 
-Drives `on_step` across fake frames against a minimal duck-typed stand-in
-for the `BotAI`/`BotContext` surface (`tests/validators/_fakes.py`), then
-inspects the real tracking output. Most tests here construct `BaseValidator`
-directly, since these mechanics don't depend on which build's report is
-showing them; a few that need a stage key from `validate()` beyond Stage 1
-(Stage 2/3/4) use `UpgradeRushValidator` as a convenient concrete instance
-with all four base stages — any other four-stage build would behave
-identically for these purposes.
+Drives `on_step` against the duck-typed fakes in `_fakes.py`, then inspects
+the tracking output. Most tests construct `BaseValidator` directly; a few
+needing a Stage 2/3/4 key use `UpgradeRushValidator` as a convenient
+four-stage concrete class.
 """
 
 from __future__ import annotations
@@ -88,10 +82,8 @@ def test_pool_timing_deadline_comes_from_the_build_not_a_shared_constant() -> No
 
 
 def test_a_non_zerg_build_gets_no_pool_or_extractor_checks() -> None:
-    """A Terran build can never have a Spawning Pool or an Extractor, so
-    reporting four FAILs for them would bury the checks that do apply. Same
-    lesson as gotchas 12 and 17: a check the build cannot satisfy is noise.
-    """
+    """A Terran build can never have a Spawning Pool or Extractor, so
+    reporting FAILs for them would bury checks that do apply."""
     ai = FakeAI(race=Race.Terran)
     ai.time = 120.0
     validator = BaseValidator(ai)
@@ -236,29 +228,24 @@ def test_upgrade_requiring_lair_waits_on_the_earlier_upgrade_in_list() -> None:
 
 
 def test_a_build_with_no_tech_upgrades_gets_no_tech_structure_checks() -> None:
-    """`Speedling All-In` only ever researches Metabolic Boost - it has no
-    Evolution Chamber, Lair or Hive in its upgrade list at all. The report
-    should say so plainly instead of failing checks for milestones that
-    build was never going to reach. Exercised through `UpgradeRushValidator`
-    here purely as a concrete four-stage class to call `.validate()` on -
-    the fallback text this asserts on lives in `BaseValidator.
-    _validate_structures`, shared by every build's own validator."""
+    """A build whose upgrades touch no tech structure (e.g. Metabolic Boost
+    alone) should say so plainly instead of failing checks it could never
+    pass. `_validate_structures` is the shared mechanic every build's own
+    validator uses; per-build report shape belongs in each build's own test
+    file, not here."""
     ai = FakeAI(upgrades=(UpgradeId.ZERGLINGMOVEMENTSPEED,))
-    validator = UpgradeRushValidator(ai)
+    validator = BaseValidator(ai)
     validator.on_step(0)
 
     assert validator._structures == []
-    result = validator.validate()
-    assert [r.name for r in result["Stage 2: Tech Structures"]] == [
-        "No tech structures required by this build"
-    ]
+    result = validator._validate_structures()
+    assert [r.name for r in result] == ["No tech structures required by this build"]
 
 
 def test_evolution_chamber_target_and_gate_come_from_the_build_not_a_constant() -> None:
-    """A second Evolution Chamber must never count as resource-blocked while
-    this build's own gate hasn't opened - and must start counting the
-    instant it does - with nothing build-specific (no reference to
-    Metabolic Boost or any other hardcoded upgrade) making that decision."""
+    """A second Evolution Chamber must not count as resource-blocked until
+    this build's own gate opens, with nothing build-specific hardcoding
+    that decision."""
     gate_open = False
     ai = FakeAI(
         upgrades=(UpgradeId.ZERGMELEEWEAPONSLEVEL1,),
@@ -329,10 +316,8 @@ def test_wave_release_records_size_time_and_next_expected_minimum() -> None:
 
 
 def test_wave_records_our_supply_against_enemy_army_supply() -> None:
-    """Each wave should capture what it's actually walking into: our
-    released supply next to the enemy's known army supply at that instant -
-    not just our own size, and not the enemy's unit *count* either, since a
-    handful of Roaches outweighs the same number of Zerglings."""
+    """Each wave captures our released supply against the enemy's known army
+    supply - not unit count, since a few Roaches outweigh many Zerglings."""
     ai = FakeAI(upgrades=())
     ai.mediator.get_cached_enemy_army = [
         _FakeUnit(900 + i, type_id=UnitTypeId.ROACH) for i in range(4)
