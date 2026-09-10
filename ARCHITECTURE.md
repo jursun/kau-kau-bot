@@ -16,7 +16,7 @@ bot/
   core/
     context.py         BotContext - the one object steps/routines receive
     state.py           RunState - anything that persists between frames
-    types.py           MacroStep / CombatRoutine / Gate aliases
+    types.py           MacroStep / CombatRoutine / Gate / PointLocator aliases
     macro_engine.py    runs build.always + build.macro_steps
     combat_engine.py   runs build.combat.routines
     registry.py        auto-discovers builds/<race>/*.py
@@ -24,18 +24,30 @@ bot/
   builds/
     definition.py      BuildDefinition, Economy, Army, Combat
     zerg/              one module per build, each exporting BUILD
-    terran/ protoss/   empty; Zerg is the near-term focus
+    terran/            four_rax_proxy (local only - see below)
+    protoss/           empty
   steps/
     common.py          race-neutral macro steps
     zerg.py            queens, injects, hatcheries, evo chambers
-    terran.py protoss.py
+    terran.py          proxy_barracks
+    protoss.py         empty
   routines/
-    combat.py          release_waves, defend_home, attack_squads
+    combat.py          release_waves, defend_home, attack_squads,
+                       builder_workers_attack
     scouting.py        air_scout
     targeting.py       attack_target, rally_point, hold_positions
     gates.py           reusable conditions
   behaviors/zerg/      custom ares Behaviors (ares has no inject/queen behavior)
 ```
+
+## One bot, one race
+
+A bot is a single race: `MyBotRace` in `config.yml` decides which
+`<race>_builds.yml` ares reads and which builds can run at all. `Four Rax
+Proxy` is a local experiment, so `MyBotRace` currently says `Terran` and has
+to go back to `Zerg` before a Zerg ladder zip is built (`create_ladder_zip.py`
+reads the same key). `terran_builds.yml` names the single Terran build in
+every `BuildChoices` cycle, so nothing breaks if `Debug` is flipped off.
 
 ## Adding a build
 
@@ -354,3 +366,52 @@ regardless of what build is running.
   `structure_pending` gate (see the postscript on gotcha 10) — worth
   reaching for whenever two behaviors sharing a structure type are meant
   to take turns rather than compete.
+
+- **Terran and Protoss placements are precomputed at *every* expansion,
+  enemy ones included — which makes a proxy a one-liner for them and a
+  rewrite for Zerg.** `PlacementManager._solve_terran_building_formation`
+  loops over the whole of `ai.expansion_locations_list`, so
+  `mediator.request_building_placement(base_location=<the enemy's third>)`
+  returns a real, legal Terran placement over there exactly as happily as
+  at our own main. `steps.terran.proxy_barracks` is therefore just
+  `BuildStructure` pointed at somebody else's base — none of the
+  ring-sampling, `.5`-snapping, pathability-checking machinery
+  `behaviors/zerg/build_macro_hatch.py` needed. That machinery was never
+  about placement being hard in general; it was forced by
+  `_solve_zerg_building_formation` being an unimplemented stub (gotchas 1
+  and 10). Worth remembering before assuming a Zerg-side workaround has to
+  be repeated for another race: check whether that race's solver is
+  actually implemented first.
+- **An army that spawns away from home needs `combat.rally`, or every unit
+  it makes walks back across the map before it attacks.**
+  `targeting.rally_point` defaults to "in front of our own natural", which
+  is right for every build whose production is at home and exactly wrong
+  for a proxy: a Marine popping out of a Barracks at the enemy's third
+  would be mustered by `attack_squads` back at our natural first, arriving
+  at the fight roughly a minute after it was born. `BuildDefinition`'s
+  `Combat.rally` (a `PointLocator`) overrides that point, and setting it
+  also collapses `targeting.hold_positions` to just that one place —
+  otherwise `defend_home` would keep peeling defenders off to guard our own
+  mineral lines one at a time, which for a one-base all-in is a slow way of
+  feeding units to the enemy in ones.
+- **`select_worker` only ever considers `UnitRole.GATHERING`, so giving a
+  worker any other role removes it from every future `BuildStructure`.**
+  This is what makes `combat.builder_workers_attack`'s `claim_gate` a
+  correctness condition rather than a preference. The routine claims
+  workers stranded at the proxy into `UnitRole.PROXY_WORKER` so they join
+  the attack instead of walking home to mine — but claim one Barracks too
+  early and the builder standing *right next to* where the next Barracks
+  goes is no longer eligible to build it, and ares pulls a fresh SCV from
+  the mineral line for the whole walk instead. Hence the gate: claim only
+  once every Barracks the build wants is standing or under way. The same
+  role mechanic is what keeps claimed workers out of `Mining` (which also
+  only touches GATHERING), so no extra bookkeeping is needed to stop them
+  wandering back to a mineral patch.
+- **A validator check the build cannot possibly satisfy is noise, not a
+  finding.** `UpgradeRushValidator`'s Stage 1 checked Spawning Pool timing
+  and Extractor count unconditionally, which for a Terran build is four
+  guaranteed FAILs burying the checks that do apply (workers, supply, and
+  the whole of Stage 4). Those four are now gated on
+  `ctx.build.race == Race.Zerg`. Same lesson as gotchas 12 and 17, one
+  level up: those pushed *thresholds* onto the build, this pushes
+  *applicability* onto it.

@@ -26,6 +26,11 @@ MASS_LING_COMP: dict[UnitTypeId, dict[str, float | int]] = {
     UnitTypeId.ZERGLING: {"proportion": 1.0, "priority": 0},
 }
 
+# Mass-marine army composition, for bio all-ins that make nothing else.
+MASS_MARINE_COMP: dict[UnitTypeId, dict[str, float | int]] = {
+    UnitTypeId.MARINE: {"proportion": 1.0, "priority": 0},
+}
+
 # Ordered upgrade path. `UpgradeController` walks this list in order and
 # auto-techs (evo chamber -> lair -> hive) for whatever it can't research yet.
 LING_SPEED_ONLY: tuple[UpgradeId, ...] = (UpgradeId.ZERGLINGMOVEMENTSPEED,)

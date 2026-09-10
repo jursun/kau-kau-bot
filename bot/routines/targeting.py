@@ -41,19 +41,32 @@ def attack_target(ctx: "BotContext", from_pos: Point2) -> Point2:
     return ctx.bot.enemy_start_locations[0]
 
 
+def enemy_third(ctx: "BotContext") -> Point2:
+    """The enemy's third base. A `PointLocator`, for builds that want to put
+    something there - a proxy, a rally - rather than merely walk to it."""
+    return ctx.mediator.get_enemy_third
+
+
 def rally_point(ctx: "BotContext") -> Point2:
-    """In front of our natural, facing the enemy."""
+    """In front of our natural, facing the enemy - unless the build overrides
+    it with `combat.rally` (see `BuildDefinition`), which a build whose army
+    spawns away from home has to do."""
+    if (locator := ctx.build.combat.rally) is not None:
+        return locator(ctx)
     nat: Point2 = ctx.mediator.get_own_nat
-    return nat.towards(
-        ctx.bot.enemy_start_locations[0], ctx.build.combat.rally_offset
-    )
+    return nat.towards(ctx.bot.enemy_start_locations[0], ctx.build.combat.rally_offset)
 
 
 def hold_positions(ctx: "BotContext") -> list[Point2]:
-    """Rally, then behind each mineral line so worker harass is spotted early."""
+    """Rally, then behind each mineral line so worker harass is spotted early.
+
+    A build that pins its rally (`combat.rally`) holds there and nowhere
+    else: its army is deliberately not at home, and the mineral-line
+    positions would drag defenders back across the map one at a time.
+    """
     points: list[Point2] = [rally_point(ctx)]
+    if ctx.build.combat.rally is not None:
+        return points
     for th in ctx.ready_townhalls:
-        points.extend(
-            ctx.mediator.get_behind_mineral_positions(th_pos=th.position)[:1]
-        )
+        points.extend(ctx.mediator.get_behind_mineral_positions(th_pos=th.position)[:1])
     return points

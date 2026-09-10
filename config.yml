@@ -1,9 +1,13 @@
 # KauKauBot config.
 # Check `ares-sc2/src/ares/config.yml` for every valid option; anything set
-# here is merged over those defaults. Build orders live in `zerg_builds.yml`.
+# here is merged over those defaults. Build orders live in
+# `<race>_builds.yml`, chosen by `MyBotRace` below.
 
 MyBotName: KauKauBot
-MyBotRace: Zerg
+# LOCAL EXPERIMENT: Terran while `Four Rax Proxy` is being tested. This picks
+# which `<race>_builds.yml` ares reads, and `create_ladder_zip.py` reads it
+# too — set it back to `Zerg` before building a ladder zip.
+MyBotRace: Terran
 
 # Auto-upload to https://aiarena.net/ on push to `main`.
 # Requires UPLOAD_API_TOKEN / UPLOAD_BOT_ID repo secrets — see README.
@@ -18,7 +22,7 @@ BotDataEnabled: True
 # MUST be False for a ladder zip — create_ladder_zip.py asserts on it.
 Debug: True
 
-UseData: False  # overwritten by `UseData:` in zerg_builds.yml
+UseData: False  # overwritten by `UseData:` in <race>_builds.yml
 GameStep: 2
 DebugGameStep: 2
 

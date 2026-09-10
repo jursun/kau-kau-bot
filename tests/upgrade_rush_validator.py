@@ -88,6 +88,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from ares.consts import WORKER_TYPES, UnitRole
+from sc2.data import Race
 from sc2.dicts.unit_research_abilities import RESEARCH_INFO
 from sc2.dicts.upgrade_researched_from import UPGRADE_RESEARCHED_FROM
 from sc2.ids.unit_typeid import UnitTypeId
@@ -504,47 +505,66 @@ class UpgradeRushValidator:
         }
 
     def _validate_economy(self) -> List[StepResult]:
+        """Worker, gas and supply checks.
+
+        Split into the race-neutral checks and the Zerg-specific ones, for
+        the same reason gotchas 12 and 17 pushed the tech tree and the pool
+        deadline onto the build: a check the build can never satisfy is
+        noise, not a finding. A Terran or Protoss build has no Spawning Pool
+        and no Extractor, so reporting "no pool" as a FAIL four lines running
+        would bury the checks that do apply to it.
+        """
         target = self.ctx.build.economy.worker_target if self.ctx else 60
         max_gas = self.ctx.build.economy.max_gas if self.ctx else 2
         pool_deadline = self.ctx.build.pool_deadline if self.ctx else self.POOL_DEADLINE
-        return [
+        race = self.ctx.build.race if self.ctx else Race.Zerg
+
+        results: List[StepResult] = [
             StepResult(
                 "Workers Massed",
                 self._max_workers >= target,
                 f"max workers: {self._max_workers} (target {target})",
             ),
-            StepResult(
-                "Workers Before Pool",
-                self._workers_at_pool_start >= 12,
-                f"workers at pool start: {self._workers_at_pool_start}",
-            ),
-            StepResult(
-                "Pool Timing",
-                self._pool_start_time is not None
-                and self._pool_start_time <= pool_deadline,
-                (
-                    f"pool at {self._pool_start_time:.1f}s"
-                    if self._pool_start_time is not None
-                    else "no pool"
+        ]
+
+        if race == Race.Zerg:
+            results += [
+                StepResult(
+                    "Workers Before Pool",
+                    self._workers_at_pool_start >= 12,
+                    f"workers at pool start: {self._workers_at_pool_start}",
                 ),
-            ),
-            StepResult(
-                "Only One Pool",
-                self._pool_count <= 1,
-                f"pool count: {self._pool_count}",
-            ),
-            StepResult("Extractor Built", self._extractor_built),
-            StepResult(
-                "Extractor Cap Respected",
-                not self._gas_cap_exceeded,
-                f"max gas buildings: {self._max_gas_buildings} (cap {max_gas})",
-            ),
+                StepResult(
+                    "Pool Timing",
+                    self._pool_start_time is not None
+                    and self._pool_start_time <= pool_deadline,
+                    (
+                        f"pool at {self._pool_start_time:.1f}s"
+                        if self._pool_start_time is not None
+                        else "no pool"
+                    ),
+                ),
+                StepResult(
+                    "Only One Pool",
+                    self._pool_count <= 1,
+                    f"pool count: {self._pool_count}",
+                ),
+                StepResult("Extractor Built", self._extractor_built),
+                StepResult(
+                    "Extractor Cap Respected",
+                    not self._gas_cap_exceeded,
+                    f"max gas buildings: {self._max_gas_buildings} (cap {max_gas})",
+                ),
+            ]
+
+        results.append(
             StepResult(
                 "Supply Management",
                 self._supply_blocked_frames < 50,  # less than ~2s of block
                 f"supply-blocked frames: {self._supply_blocked_frames}",
-            ),
-        ]
+            )
+        )
+        return results
 
     @staticmethod
     def _milestone_detail(started: bool, started_time, blocked_frames: int) -> str:

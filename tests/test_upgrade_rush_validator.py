@@ -19,6 +19,7 @@ import asyncio
 import sys
 from types import SimpleNamespace
 
+from sc2.data import Race
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 
@@ -66,8 +67,10 @@ class _FakeCtx:
         evolution_chambers: int = 1,
         evolution_chamber_gate=lambda ctx: True,
         pool_deadline: float = 50.0,
+        race: Race = Race.Zerg,
     ):
         self.build = SimpleNamespace(
+            race=race,
             army=SimpleNamespace(
                 upgrades=upgrades,
                 evolution_chambers=evolution_chambers,
@@ -94,6 +97,7 @@ class FakeAI(UpgradeRushValidator):
         evolution_chambers: int = 1,
         evolution_chamber_gate=lambda ctx: True,
         pool_deadline: float = 50.0,
+        race: Race = Race.Zerg,
     ):
         self.time = 0.0
         self.supply_left = 10
@@ -109,6 +113,7 @@ class FakeAI(UpgradeRushValidator):
             evolution_chambers=evolution_chambers,
             evolution_chamber_gate=evolution_chamber_gate,
             pool_deadline=pool_deadline,
+            race=race,
         )
         self._structure_counts: dict = {}
         self._structure_ready_counts: dict = {}
@@ -207,6 +212,35 @@ def test_pool_timing_deadline_comes_from_the_build_not_a_shared_constant() -> No
         r for r in result["Stage 1: Opening Economy"] if r.name == "Pool Timing"
     )
     assert pool_check.passed, pool_check.detail
+
+
+def test_a_non_zerg_build_gets_no_pool_or_extractor_checks() -> None:
+    """A Terran build can never have a Spawning Pool or an Extractor, so
+    reporting four FAILs for them would bury the checks that do apply. Same
+    lesson as gotchas 12 and 17: a check the build cannot satisfy is noise.
+    """
+    ai = FakeAI(race=Race.Terran)
+    ai.time = 120.0
+    _step(ai)
+
+    names = [r.name for r in ai.validate()["Stage 1: Opening Economy"]]
+    assert "Pool Timing" not in names, names
+    assert "Workers Before Pool" not in names, names
+    assert "Only One Pool" not in names, names
+    assert "Extractor Built" not in names, names
+    # The race-neutral checks are still there.
+    assert "Workers Massed" in names, names
+    assert "Supply Management" in names, names
+
+
+def test_a_zerg_build_still_gets_the_pool_checks() -> None:
+    ai = FakeAI()  # defaults to Race.Zerg
+    ai.time = 120.0
+    _step(ai)
+
+    names = [r.name for r in ai.validate()["Stage 1: Opening Economy"]]
+    assert "Pool Timing" in names, names
+    assert "Extractor Built" in names, names
 
 
 def test_pool_timing_still_fails_past_the_builds_own_deadline() -> None:

@@ -15,7 +15,7 @@ from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 
 from bot.consts import FOCUS_MAIN
-from bot.core.types import CombatRoutine, Gate, MacroStep
+from bot.core.types import CombatRoutine, Gate, MacroStep, PointLocator
 
 
 def _always(ctx) -> bool:
@@ -70,7 +70,16 @@ class Combat:
     wave1_min: int = 6
     wave_growth: float = 1.10
     rally_offset: float = 8.0
-    """How far in front of our natural defenders gather."""
+    """How far in front of our natural defenders gather. Ignored when
+    `rally` is set."""
+    rally: PointLocator | None = None
+    """Overrides where a wave musters and where defenders hold, for a build
+    whose army does not spawn at home. A proxy build's Marines pop out on the
+    far side of the map, so the default "in front of our own natural" rally
+    would walk every new Marine all the way home before it attacked. Setting
+    this also collapses `targeting.hold_positions` to just this point: a
+    build that pins its rally somewhere specific means it, and should not
+    also be sending half its defenders back to guard mineral lines."""
     focus: tuple[str, ...] = (FOCUS_MAIN,)
     """Ordered places to walk to when no enemy structure is visible."""
 

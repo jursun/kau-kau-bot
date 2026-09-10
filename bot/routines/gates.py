@@ -130,6 +130,24 @@ def has_structure(structure_id: UnitTypeId, count: int = 1) -> Gate:
     return gate
 
 
+def structure_started(structure_id: UnitTypeId, count: int = 1) -> Gate:
+    """Ready *or* under construction, unlike `has_structure` which wants ready.
+
+    Counted the way ares counts it itself (`BuildStructure._enough_existing`):
+    ready structures plus `structure_pending`. Note this is deliberately not
+    `structures(...).amount + already_pending(...)` - `structures()` already
+    includes the ones still building, so that pair double-counts every
+    structure in progress (see ARCHITECTURE.md gotcha 8, which cost the
+    validator a false FAIL for a whole game).
+    """
+
+    def gate(ctx: "BotContext") -> bool:
+        ready: int = ctx.bot.structures(structure_id).ready.amount
+        return ready + ctx.bot.structure_pending(structure_id) >= count
+
+    return gate
+
+
 def supply_at_least(supply: int) -> Gate:
     def gate(ctx: "BotContext") -> bool:
         return ctx.bot.supply_used >= supply

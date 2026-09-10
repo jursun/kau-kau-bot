@@ -19,7 +19,8 @@ from cython_extensions import cy_closest_to, cy_distance_to_squared
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.units import Units
 
-from bot.core.types import CombatRoutine
+from bot.builds.definition import _always
+from bot.core.types import CombatRoutine, Gate, PointLocator
 from bot.routines import targeting
 
 if TYPE_CHECKING:
@@ -32,6 +33,12 @@ MUSTER_RADIUS: float = 4.0
 """How tightly a freshly-released wave must cluster at the rally point
 before it is let off to attack, rather than trickling toward the enemy
 as units peel off from wherever they were defending."""
+
+BUILDER_CLAIM_RADIUS: float = 30.0
+"""How close to the proxy a worker has to be for `builder_workers_attack`
+to consider it stranded there and claim it. Wide enough to cover a builder
+that has wandered a screen away after finishing, tight enough that a worker
+long-distance mining past the area is not swept up."""
 
 MAX_SUPPLY: float = 200.0
 """Standard SC2 supply cap. Once here - and once `_army_fully_trained` says
@@ -262,6 +269,94 @@ def escort_overseers() -> CombatRoutine:
             maneuver = CombatManeuver()
             maneuver.add(KeepUnitSafe(unit=overseer, grid=grid))
             maneuver.add(MoveToSafeTarget(unit=overseer, grid=grid, target=target))
+            ctx.bot.register_behavior(maneuver)
+
+    return routine
+
+
+def builder_workers_attack(
+    where: PointLocator,
+    claim_gate: Gate = _always,
+    claim_radius: float = BUILDER_CLAIM_RADIUS,
+) -> CombatRoutine:
+    """Turn workers stranded at a proxy into attackers once the first wave goes.
+
+    A proxy build finishes with two or three SCVs standing on the far side of
+    the map with nothing to do. Walking them home to mine is worth close to
+    nothing at that point; adding them to the push is worth a Marine each.
+
+    Claiming is by *situation*, not by tag: a worker is claimed if it is near
+    `where`, not in ares' building tracker, and not currently constructing.
+    Those two exclusions are what make it safe - a worker still walking to
+    the proxy to build, or mid-build, is in the tracker and is left alone.
+    Nothing has to remember which SCV built which Barracks.
+
+    `claim_gate` is the part that is easy to get wrong, so it is explicit.
+    Claiming assigns `UnitRole.PROXY_WORKER`, and `select_worker` only ever
+    considers `UnitRole.GATHERING` - so a claimed worker is invisible to
+    `steps.terran.proxy_barracks`. Claim too early and the builder standing
+    right next to the site where the *next* Barracks goes stops being
+    eligible to build it, and a fresh SCV gets pulled from home for the
+    walk instead. So the gate should say "every Barracks this build wants is
+    already standing or under way" - after that there is nothing left for a
+    builder to be saved for.
+
+    Before the first wave is released the claimed workers wait at the proxy
+    rather than running in alone; from wave 1 on they attack the same target
+    the squads do, shooting whatever comes into range on the way.
+
+    Attributes:
+        where: Resolves the proxy location, fresh each frame.
+        claim_gate: When claiming may begin. See above - this is a
+            correctness condition, not a preference.
+        claim_radius: How close to `where` a worker must be to be claimed.
+    """
+
+    def _claim(ctx: "BotContext", point) -> None:
+        tracker = ctx.mediator.get_building_tracker_dict
+        already = {
+            u.tag for u in ctx.mediator.get_units_from_role(role=UnitRole.PROXY_WORKER)
+        }
+        radius_sq = claim_radius**2
+        for worker in ctx.bot.workers:
+            if worker.tag in already or worker.tag in tracker:
+                continue
+            if worker.is_constructing_scv:
+                continue
+            if cy_distance_to_squared(worker.position, point) > radius_sq:
+                continue
+            ctx.mediator.assign_role(tag=worker.tag, role=UnitRole.PROXY_WORKER)
+            ctx.log("PROXY worker joins the attack")
+
+    def routine(ctx: "BotContext") -> None:
+        point = where(ctx)
+
+        if claim_gate(ctx):
+            _claim(ctx, point)
+
+        workers = ctx.mediator.get_units_from_role(role=UnitRole.PROXY_WORKER)
+        if not workers:
+            return
+
+        # Hold at the proxy until the Marines actually leave.
+        if ctx.state.wave_number < 1:
+            for worker in workers:
+                ctx.bot.register_behavior(AMove(unit=worker, target=point))
+            return
+
+        target = targeting.attack_target(ctx, point)
+        for worker in workers:
+            maneuver = CombatManeuver()
+            in_range = _enemies_near(ctx, worker, DEFENDER_ENGAGE_RANGE)
+            if in_range:
+                maneuver.add(ShootTargetInRange(unit=worker, targets=in_range))
+                maneuver.add(
+                    AttackTarget(
+                        unit=worker,
+                        target=cy_closest_to(position=worker.position, units=in_range),
+                    )
+                )
+            maneuver.add(AMove(unit=worker, target=target))
             ctx.bot.register_behavior(maneuver)
 
     return routine

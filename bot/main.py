@@ -1,4 +1,4 @@
-"""KauKauBot — Zerg bot for AI Arena, built on ares-sc2.
+"""KauKauBot — AI Arena bot built on ares-sc2.
 
 This file is hooks only. Ares picks the opening; the opening name selects a
 `BuildDefinition`, and the two engines run whatever steps and routines that
@@ -13,17 +13,15 @@ from __future__ import annotations
 
 from typing import Optional
 
+from ares import AresBot
 from loguru import logger
 from sc2.data import Result
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.unit import Unit
 
-from ares import AresBot
-
-from bot.core import BotContext, CombatEngine, MacroEngine, RunState
-from bot.core import roles
-from bot.core.registry import UnknownBuild, default_build, get_build
 from bot.common.log import log_event
+from bot.core import BotContext, CombatEngine, MacroEngine, RunState, roles
+from bot.core.registry import UnknownBuild, default_build, get_build
 
 # Structures worth a line in the timeline log.
 LOGGED_STRUCTURES: frozenset[UnitTypeId] = frozenset(
@@ -37,6 +35,9 @@ LOGGED_STRUCTURES: frozenset[UnitTypeId] = frozenset(
         UnitTypeId.INFESTATIONPIT,
         UnitTypeId.SPINECRAWLER,
         UnitTypeId.SPORECRAWLER,
+        UnitTypeId.COMMANDCENTER,
+        UnitTypeId.SUPPLYDEPOT,
+        UnitTypeId.BARRACKS,
     }
 )
 

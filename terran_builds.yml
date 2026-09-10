@@ -1,0 +1,68 @@
+# KauKauBot Terran openings, run by the ares BuildOrderRunner.
+#
+# Ares looks for `<race>_builds.yml` in the repo root, lowercase, and reads
+# whichever one matches `MyBotRace` in config.yml. Terran is currently a
+# local experiment: `MyBotRace` has to be `Terran` for anything in this file
+# to run at all, and it must go back to `Zerg` before a Zerg ladder zip.
+#
+# Forcing an opening locally: set `Debug: True` in config.yml (ares then uses
+# the `test_123` opponent id) and put the opening you want first in the
+# `test_123` cycle below. Reordering alone is not enough if that opponent id
+# already has a winning history — clear `data/test_123-<race>.json` too.
+# See ARCHITECTURE.md gotcha 4.
+
+# Save game opening + result to ./data so ares can switch openings after a loss.
+UseData: True
+# Cycle: keep the opening while it wins, advance to the next one after a defeat.
+BuildSelection: Cycle
+MinGamesWinrateBased: 5
+
+BuildChoices:
+    # Active when `Debug: True` in config.yml.
+    test_123:
+        BotName: LocalDebug
+        Cycle:
+            - Four Rax Proxy
+
+    # One Terran build exists, so every cycle names it. These are here so
+    # that flipping `Debug` to False does not leave ares with an opponent
+    # race it has no cycle for.
+    Terran:
+        BotName: TerranRace
+        Cycle:
+            - Four Rax Proxy
+
+    Protoss:
+        BotName: ProtossRace
+        Cycle:
+            - Four Rax Proxy
+
+    Zerg:
+        BotName: ZergRace
+        Cycle:
+            - Four Rax Proxy
+
+    Random:
+        BotName: RandomRace
+        Cycle:
+            - Four Rax Proxy
+
+Builds:
+    # Four Rax Proxy: SCV, Depot, SCV, then two SCVs walk to the enemy third
+    # and start Barracks one and two there. Barracks three and four are not
+    # in this opening — their triggers ("Depot finished", "first Barracks
+    # finished") are conditions, not supply counts, so they live as gated
+    # macro steps in bot/builds/terran/four_rax_proxy.py instead.
+    #
+    # ConstantWorkerProductionTill keeps SCVs coming while those two builders
+    # are walking across the map; the explicit `scv` steps are the two the
+    # build order calls for by name, before the Depot and after it.
+    Four Rax Proxy:
+        ConstantWorkerProductionTill: 16
+        AutoSupplyAtSupply: 15
+        OpeningBuildOrder:
+            - 12 scv
+            - 13 supplydepot
+            - 13 scv
+            - 14 barracks @ enemy_third
+            - 14 barracks @ enemy_third
