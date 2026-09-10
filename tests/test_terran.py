@@ -191,18 +191,6 @@ def _move_targets(ctx: BotContext) -> list[Point2]:
     return targets
 
 
-def _repair_pairs(ctx: BotContext) -> list[tuple[int, int]]:
-    """(worker tag, repair-target tag) for every `combat._Repair` registered."""
-    pairs: list[tuple[int, int]] = []
-    for call in ctx.bot.register_behavior.call_args_list:
-        behavior = call.args[0]
-        micros = behavior.micros if isinstance(behavior, CombatManeuver) else [behavior]
-        pairs.extend(
-            (m.unit.tag, m.target.tag) for m in micros if isinstance(m, combat._Repair)
-        )
-    return pairs
-
-
 def _by_role(proxy_workers: list, attacking: list):
     """`get_units_from_role` side_effect: PROXY_WORKER gets the claimed
     workers, ATTACKING (what `ctx.units_in_role` reads for the Marines)
@@ -230,9 +218,10 @@ def test_claimed_workers_wait_at_the_proxy_before_the_first_wave() -> None:
 
 
 def test_claimed_workers_never_attack() -> None:
-    """The whole point of this round's change: claimed workers repair or
-    shield, but `AttackTarget`/`ShootTargetInRange` must never appear for
-    them regardless of what's in range."""
+    """Claimed workers only ever shield - `AttackTarget`/`ShootTargetInRange`
+    (and, since Jason's correction, repair too) must never appear for them
+    regardless of what's in range. Every registered behavior must be a bare
+    `combat._Move`."""
     ctx = _ctx()
     ctx.state.wave_number = 1
     enemy = _worker(99, PROXY)
@@ -243,10 +232,7 @@ def test_claimed_workers_never_attack() -> None:
 
     for call in ctx.bot.register_behavior.call_args_list:
         behavior = call.args[0]
-        micros = behavior.micros if isinstance(behavior, CombatManeuver) else [behavior]
-        assert all(
-            isinstance(m, (combat._Move, combat._Repair)) for m in micros
-        ), micros
+        assert isinstance(behavior, combat._Move), behavior
 
 
 def test_claimed_workers_shield_the_attack_target_with_no_marines_alive() -> None:
@@ -292,44 +278,6 @@ def test_claimed_workers_shield_point_biases_toward_the_nearest_threat() -> None
     # combat.SHIELD_OFFSET (2.0) tiles from the Marine centroid, toward the
     # threat - not at the centroid, and not all the way to the threat.
     assert (round(targets[0].x, 1), round(targets[0].y, 1)) == (102.0, 100.0)
-
-
-def test_claimed_workers_repair_a_wounded_ally_instead_of_shielding() -> None:
-    ctx = _ctx()
-    ctx.state.wave_number = 1
-    healthy = _worker(1, PROXY)
-    healthy.health, healthy.health_max = 45, 45
-    hurt = _worker(2, Point2((101.0, 100.0)))
-    hurt.health, hurt.health_max = 10, 45
-    marine = _worker(50, hurt.position)
-    ctx.mediator.get_units_from_role.side_effect = _by_role([healthy, hurt], [marine])
-    ctx.mediator.get_units_in_range.return_value = [[]]
-
-    combat.builder_workers_attack(_proxy, claim_gate=lambda _c: False)(ctx)
-
-    assert _repair_pairs(ctx) == [(1, 2)], "the healthy worker should repair hurt"
-    assert _move_targets(ctx) == [hurt.position], "hurt has no ally to repair, shields"
-
-
-def test_claimed_workers_repair_the_most_wounded_ally_when_several_are_hurt() -> None:
-    ctx = _ctx()
-    ctx.state.wave_number = 1
-    healthy = _worker(1, PROXY)
-    healthy.health, healthy.health_max = 45, 45
-    mildly_hurt = _worker(2, Point2((101.0, 100.0)))
-    mildly_hurt.health, mildly_hurt.health_max = 30, 45
-    badly_hurt = _worker(3, Point2((99.0, 100.0)))
-    badly_hurt.health, badly_hurt.health_max = 5, 45
-    marine = _worker(50, PROXY)
-    ctx.mediator.get_units_from_role.side_effect = _by_role(
-        [healthy, mildly_hurt, badly_hurt], [marine]
-    )
-    ctx.mediator.get_units_in_range.return_value = [[]]
-
-    combat.builder_workers_attack(_proxy, claim_gate=lambda _c: False)(ctx)
-
-    healthy_repairs = [target for source, target in _repair_pairs(ctx) if source == 1]
-    assert healthy_repairs == [3], "should pick the lowest-health ally, not the first"
 
 
 # --- targeting rally override --------------------------------------------

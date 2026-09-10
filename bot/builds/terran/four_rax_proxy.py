@@ -34,8 +34,9 @@ trained — one wait, then none.
 
 Combat micro, once a wave is out: Marines kite (`MARINE_MIN_ENGAGE_RANGE`)
 rather than trade in melee range; crew SCVs that finish their tasks and
-join the push never fight - they repair each other and shield the Marines
-instead (see `combat.builder_workers_attack`'s docstring).
+join the push never fight or repair - they only ever Move, holding a
+shield position in front of the Marines (see `combat.builder_workers_
+attack`'s docstring).
 
 Not yet validated in-game.
 """

@@ -54,10 +54,6 @@ SHIELD_OFFSET: float = 2.0
 """How far in front of the Marine group's centroid, toward the nearest
 threat, a claimed worker tries to stand - see `builder_workers_attack`."""
 
-REPAIR_SEARCH_RADIUS: float = 15.0
-"""How far a claimed worker looks for a damaged ally to repair before
-falling back to holding the shield position - see `builder_workers_attack`."""
-
 MAX_SUPPLY: float = 200.0
 """Standard SC2 supply cap. Once here - and once `_army_fully_trained` says
 nothing is still incubating, so the count reflects units actually on the
@@ -198,19 +194,6 @@ class _Move:
 
     def execute(self, ai, config, mediator, **kwargs) -> bool:
         self.unit.move(self.target)
-        return True
-
-
-@dataclass
-class _Repair:
-    """Repair a damaged ally. `EFFECT_REPAIR` auto-approaches the target if
-    it's out of range, so no separate pathing step is needed."""
-
-    unit: Unit
-    target: Unit
-
-    def execute(self, ai, config, mediator, **kwargs) -> bool:
-        self.unit.repair(self.target)
         return True
 
 
@@ -420,22 +403,6 @@ def escort_overseers() -> CombatRoutine:
     return routine
 
 
-def _most_wounded_nearby(worker, allies, radius: float) -> Unit | None:
-    """The lowest-health other claimed worker within `radius`, if any is
-    actually damaged - else `None`. See `builder_workers_attack`."""
-    radius_sq = radius**2
-    wounded = [
-        u
-        for u in allies
-        if u.tag != worker.tag
-        and u.health < u.health_max
-        and cy_distance_to_squared(worker.position, u.position) <= radius_sq
-    ]
-    if not wounded:
-        return None
-    return min(wounded, key=lambda u: u.health)
-
-
 def _shield_point(ctx: "BotContext", marines: Units) -> Point2:
     """A point `SHIELD_OFFSET` tiles in front of the Marines' centroid,
     toward the nearest threat - or the centroid itself if nothing threatens
@@ -460,7 +427,8 @@ def builder_workers_attack(
     the map with nothing to do. Walking them home to mine is worth close to
     nothing at that point; standing between the Marines and the enemy,
     soaking hits a Marine would otherwise take, is worth more than an SCV's
-    own trivial attack ever would be - so these workers never fight.
+    own trivial attack ever would be - so these workers never fight or
+    repair, and issue nothing but Move commands.
 
     Claiming is by *situation*, not by tag: a worker is claimed if it is near
     `where`, not in ares' building tracker, and not currently constructing.
@@ -479,10 +447,9 @@ def builder_workers_attack(
     builder to be saved for.
 
     Before the first wave is released the claimed workers hold at the proxy.
-    From wave 1 on, each one repairs the most wounded other claimed worker
-    within `REPAIR_SEARCH_RADIUS` if one exists (`_most_wounded_nearby`), or
-    otherwise moves to `_shield_point` - standing between the Marine group
-    and the nearest threat rather than adding damage of its own.
+    From wave 1 on, each one moves to `_shield_point` and nothing else -
+    standing between the Marine group and the nearest threat. No repair, no
+    attack, only ever a Move.
 
     Attributes:
         where: Resolves the proxy location, fresh each frame.
@@ -530,12 +497,6 @@ def builder_workers_attack(
             else targeting.attack_target(ctx, point)
         )
         for worker in workers:
-            maneuver = CombatManeuver()
-            ally = _most_wounded_nearby(worker, workers, REPAIR_SEARCH_RADIUS)
-            if ally is not None:
-                maneuver.add(_Repair(unit=worker, target=ally))
-            else:
-                maneuver.add(_Move(unit=worker, target=shield_point))
-            ctx.bot.register_behavior(maneuver)
+            ctx.bot.register_behavior(_Move(unit=worker, target=shield_point))
 
     return routine
