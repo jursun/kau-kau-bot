@@ -77,8 +77,12 @@ def near_point(
     """The legal `structure_type` placement closest to `reference`, or `None`
     if nothing in range checks out.
 
-    Candidates are sorted by distance to `reference` before validation, so
-    the first hit is the closest one, not merely the first one sampled.
+    The snapped `reference` itself is tried first - so a caller that wants
+    the expansion's townhall tile (Barracks C on the enemy fourth) gets that
+    exact centre when it is legal, rather than being pushed onto a ring
+    sample two tiles out. Ring candidates are still sorted by distance and
+    used when the reference is blocked or otherwise illegal.
+
     `resource_clearance` exists for the reason `build_macro_hatch` keeps the
     same kind of check: a spot can satisfy `can_place_structure` and still
     sit right against a mineral patch, which is exactly the kind of place
@@ -88,8 +92,13 @@ def near_point(
     resources = [*ai.mineral_field, *ai.vespene_geyser]
     resource_sq = resource_clearance**2
 
-    candidates = list(_ring_samples(reference, min_radius, max_radius, ring_step, rays))
-    candidates.sort(key=lambda p: cy_distance_to_squared(p, reference))
+    # Prefer the reference itself when it is a legal centre (e.g. Barracks C
+    # on the enemy fourth's townhall tile). Ring samples still cover "near
+    # but not on" callers whose reference is already occupied.
+    at_reference = _snap_to_building_centre(reference.x, reference.y)
+    ring = _ring_samples(reference, min_radius, max_radius, ring_step, rays)
+    ring.discard(at_reference)
+    candidates = [at_reference, *sorted(ring, key=lambda p: cy_distance_to_squared(p, reference))]
 
     for point in candidates:
         if not ai.in_pathing_grid(point):

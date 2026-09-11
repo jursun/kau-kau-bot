@@ -43,14 +43,25 @@ def _resource(position: Point2) -> MagicMock:
 
 
 def test_near_point_returns_the_closest_legal_candidate() -> None:
+    """With everything legal, the snapped reference itself wins - that is
+    what lets Barracks C sit on the enemy fourth's townhall tile."""
     ctx = _ctx()
 
     result = near_point(ctx, REFERENCE, UnitTypeId.SUPPLYDEPOT)
 
+    assert result == Point2((100.5, 100.5))
+
+
+def test_near_point_falls_back_to_the_ring_when_reference_is_blocked() -> None:
+    ctx = _ctx()
+    ctx.mediator.can_place_structure.side_effect = (
+        lambda **kw: kw["position"] != Point2((100.5, 100.5))
+    )
+
+    result = near_point(ctx, REFERENCE, UnitTypeId.SUPPLYDEPOT)
+
     assert result is not None
-    # Every candidate is legal here, so the closest ring (min_radius=2.0)
-    # must win - snapping to a `.5` centre can pull it in slightly, but not
-    # out past the second ring.
+    assert result != Point2((100.5, 100.5))
     assert cy_distance_to_squared(result, REFERENCE) <= 3.0**2
 
 

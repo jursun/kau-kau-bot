@@ -3,17 +3,19 @@
 Opening: three SCVs never gather a single mineral. Two of the starting 12
 (`X`, `Y`) peel off for the enemy's fourth base the instant the game starts;
 the 13th SCV trained (`Z`) builds a Supply Depot at home, then follows them
-partway - its own second task breaks off for the middle of the map instead
-of the proxy (see `barracks_c_location`). Between them these three place
-every structure this build makes - two Depots, four Barracks - entirely
-outside ares' generic worker selection. See `bot.steps.terran.proxy_crew`
-for the mechanism and `PROXY_CREW` below for the exact task lists.
+to the proxy. Barracks A/B/D and the proxy Depot use ares' formation (or
+`near_point` next to standing Barracks); Barracks C sits on the enemy
+fourth's townhall tile itself via `WorkerTask.near`, outside that formation
+so it does not compete with A/B for the same precomputed slots. See
+`bot.steps.terran.proxy_crew` for the mechanism and `PROXY_CREW` below for
+the exact task lists.
 
     1. SCV
     2. 13 Depot                     (Z, at home)
     3. 13 Barracks A                (X, at the proxy)
     4. 13 Barracks B                (Y, at the proxy)
-    5. 13 Barracks C                (Z, at the map's centre, after its Depot)
+    5. 13 Barracks C                (Z, on the enemy fourth's townhall tile,
+                                      after its Depot)
     6. SCV
     7. Marine
     8. 15 Barracks D                (X, at the proxy, after Barracks A -
@@ -131,9 +133,6 @@ def ramp_location(ctx) -> Point2:
     """
     return ctx.bot.main_base_ramp.top_center
 
-def enemy_natural_location(ctx) -> Point2:
-    return ctx.bot.main_base_ramp.top_center
-
 
 def proxy_barracks_position(ctx) -> Point2:
     """Reference point for the proxy Depot's placement search
@@ -218,7 +217,15 @@ PROXY_CREW = ProxyCrewPlan(
             closest_to=ramp_location,
             label="Depot (home)",
         ),
-        WorkerTask(UnitTypeId.BARRACKS, proxy_location, label="Barracks C"),
+        # On the enemy fourth's townhall tile, not ares' Barracks formation
+        # around that base - `near=proxy_location` routes through
+        # `placement.near_point`, which tries the expansion centre first.
+        WorkerTask(
+            UnitTypeId.BARRACKS,
+            proxy_location,
+            near=proxy_location,
+            label="Barracks C",
+        ),
     ),
 )
 
