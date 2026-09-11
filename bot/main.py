@@ -42,6 +42,19 @@ LOGGED_STRUCTURES: frozenset[UnitTypeId] = frozenset(
 )
 
 
+def _completion_message(logged: set[int], unit: Unit, count: int) -> str | None:
+    """The `COMPLETE` log line for `unit`'s first-seen completion, or `None`
+    for a type nobody logs or a tag already logged once. Split out from
+    `on_building_construction_complete` as a plain function so the dedup
+    logic - the actual point of interest, see that hook's docstring - is
+    testable without an `AresBot` instance. Mutates `logged` on a hit, same
+    as the `set` it wraps normally would."""
+    if unit.type_id not in LOGGED_STRUCTURES or unit.tag in logged:
+        return None
+    logged.add(unit.tag)
+    return f"COMPLETE {unit.type_id.name.lower()} ({count})"
+
+
 class KauKauBot(AresBot):
     ctx: BotContext
 
@@ -52,6 +65,10 @@ class KauKauBot(AresBot):
         self.ctx = None  # type: ignore[assignment]
         self.macro = MacroEngine()
         self.combat = CombatEngine()
+        self._logged_completions: set[int] = set()
+        """Structure tags already logged by `on_building_construction_complete`
+        - see that hook's docstring for why a tag can otherwise log twice
+        (or more) in realtime mode."""
 
     # --- lifecycle -------------------------------------------------------
 
@@ -100,11 +117,35 @@ class KauKauBot(AresBot):
     # --- logging ---------------------------------------------------------
 
     async def on_building_construction_complete(self, unit: Unit) -> None:
+        """Log once per structure - python-sc2 can call this hook more than
+        once for the same structure in realtime mode.
+
+        Its trigger (`BotAI._issue_building_events`) fires on the transition
+        `build_progress == 1 and previous_frame_structure.build_progress < 1`,
+        comparing against `_structures_previous_map` - a snapshot only ever
+        refreshed inside python-sc2's own `_prepare_step`. Ares overrides
+        `_prepare_step` to skip that refresh in realtime unless at least 4
+        game loops have passed (`self.realtime and self.last_game_loop + 4 >
+        loop`), to keep every iteration within its own time budget - but
+        `main.py`'s outer loop still calls `issue_events()` (and so this
+        hook's trigger) every iteration regardless, several of which can
+        land inside one 4-loop window. Until the skipped refresh finally
+        runs, the same structure keeps reading as "still below 1 progress
+        last frame" and re-fires - which is exactly the 3-4x duplicate
+        `COMPLETE` bursts seen in a real game's logs, one per iteration that
+        landed in the stale window. `on_unit_created` shares the same root
+        cause (`_units_previous_map`, refreshed by the same skipped call) but
+        happens not to need this guard - every handler on that path
+        (`roles.assign_on_created`, `claim_z_on_first_scv`) already treats a
+        repeat tag as a no-op.
+        """
         await super(KauKauBot, self).on_building_construction_complete(unit)
 
-        if unit.type_id in LOGGED_STRUCTURES:
-            count = self.structures(unit.type_id).amount
-            log_event(self, f"COMPLETE {unit.type_id.name.lower()} ({count})")
+        message = _completion_message(
+            self._logged_completions, unit, self.structures(unit.type_id).amount
+        )
+        if message is not None:
+            log_event(self, message)
 
     async def on_upgrade_complete(self, upgrade) -> None:
         # AresBot does not override this python-sc2 hook, so there is no
