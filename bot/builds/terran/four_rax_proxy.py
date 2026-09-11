@@ -3,12 +3,11 @@
 Opening: three SCVs never gather a single mineral. Two of the starting 12
 (`X`, `Y`) peel off for the enemy's fourth base the instant the game starts;
 the 13th SCV trained (`Z`) builds a Supply Depot at home, then follows them
-to the proxy. Barracks A/B/D and the proxy Depot use ares' formation (or
-`near_point` next to standing Barracks); Barracks C sits on the enemy
-fourth's townhall tile itself via `WorkerTask.near`, outside that formation
-so it does not compete with A/B for the same precomputed slots. See
-`bot.steps.terran.proxy_crew` for the mechanism and `PROXY_CREW` below for
-the exact task lists.
+to the proxy. Barracks A/B/D and the proxy Depot use ares' formation at the
+enemy fourth; Barracks C sits on that base's townhall tile via
+`WorkerTask.near`, outside the formation so it does not compete with A/B
+for the same precomputed slots. See `bot.steps.terran.proxy_crew` for the
+mechanism and `PROXY_CREW` below for the exact task lists.
 
     1. SCV
     2. 13 Depot                     (Z, at home)
@@ -50,7 +49,6 @@ Not yet validated in-game.
 
 from __future__ import annotations
 
-from cython_extensions import cy_closest_to
 from sc2.data import Race
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
@@ -134,31 +132,6 @@ def ramp_location(ctx) -> Point2:
     return ctx.bot.main_base_ramp.top_center
 
 
-def proxy_barracks_position(ctx) -> Point2:
-    """Reference point for the proxy Depot's placement search
-    (`WorkerTask.near`, on Y's second task below): the nearest standing
-    Barracks, not `proxy_location` itself.
-
-    In a real game, `request_building_placement`'s own formation for the
-    enemy's fourth put that Depot's precomputed slot well behind the base's
-    mineral line - a spot far enough from the Barracks cluster this build
-    had already placed there that the task kept failing. `routines.
-    placement.near_point` starts its own search here instead, so the Depot
-    lands next to whichever Barracks this build has already put down,
-    wherever there's actual room, rather than wherever ares' formation
-    solver happened to put a Depot slot for this base.
-
-    Falls back to `proxy_location` itself if called before any Barracks
-    exists yet - shouldn't happen given this task only runs after Barracks B,
-    but an empty search is a safer failure than crashing on it.
-    """
-    barracks = ctx.bot.structures(UnitTypeId.BARRACKS)
-    reference = proxy_location(ctx)
-    if not barracks:
-        return reference
-    return cy_closest_to(position=reference, units=barracks).position
-
-
 def _marine_training_started(ctx) -> bool:
     """Gate for Barracks D (X's second task): build order step 8 wants this
     *after* step 7 ("Marine"), not merely after Barracks A. Barracks A alone
@@ -198,15 +171,9 @@ PROXY_CREW = ProxyCrewPlan(
             UnitTypeId.SUPPLYDEPOT,
             proxy_location,
             label="Depot (proxy)",
-            # `where`'s own formation lookup was landing this Depot deep
-            # behind the enemy fourth's mineral line (see `proxy_barracks_
-            # position`'s docstring) - place it next to the Barracks already
-            # standing here instead.
-            near=proxy_barracks_position,
-            # Retained as a general safety net, not the fix for the above -
-            # that's `near`. This is the 2nd Depot overall (Z's home one is
-            # the 1st), so once both are ready or pending the task is
-            # genuinely done. See `WorkerTask.verify`.
+            # Safety net: 2nd Depot overall (Z's home one is the 1st), so
+            # once both are ready or pending the task is done. See
+            # `WorkerTask.verify`.
             verify=gates.structure_started(UnitTypeId.SUPPLYDEPOT, 2),
         ),
     ),

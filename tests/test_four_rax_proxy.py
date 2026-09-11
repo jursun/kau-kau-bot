@@ -1,14 +1,11 @@
 """Regression tests for `bot.builds.terran.four_rax_proxy` placement
-helpers:
+choices on the proxy crew:
 
-* `proxy_barracks_position` - the reference point `WorkerTask.near` searches
-  outward from for the proxy Depot, in place of `request_building_
-  placement`'s own formation lookup for the enemy's fourth (which was
-  landing that Depot behind the base's mineral line - see that function's
-  docstring for the full story).
 * Barracks C's crew task - must place via `WorkerTask.near=proxy_location`
   (the enemy fourth's townhall tile) rather than ares' Barracks formation
   around that base.
+* The proxy Depot - must use ares' formation at `proxy_location` (`near` is
+  unset), not a ring search next to standing Barracks.
 
 Runs under pytest, or standalone with no test dependency:
 
@@ -18,45 +15,8 @@ Runs under pytest, or standalone with no test dependency:
 from __future__ import annotations
 
 import sys
-from unittest.mock import MagicMock
 
-from sc2.position import Point2
-
-from bot.builds.terran.four_rax_proxy import (
-    PROXY_CREW,
-    proxy_barracks_position,
-    proxy_location,
-)
-
-PROXY = Point2((100.0, 100.0))
-
-
-def _ctx() -> MagicMock:
-    ctx = MagicMock()
-    ctx.mediator.get_enemy_fourth = PROXY
-    return ctx
-
-
-def _barracks(position: Point2) -> MagicMock:
-    barracks = MagicMock()
-    barracks.position = position
-    return barracks
-
-
-def test_returns_the_nearest_barracks_to_the_proxy() -> None:
-    ctx = _ctx()
-    near = _barracks(Point2((99.0, 99.0)))
-    far = _barracks(Point2((50.0, 50.0)))
-    ctx.bot.structures.return_value = [far, near]
-
-    assert proxy_barracks_position(ctx) == near.position
-
-
-def test_falls_back_to_the_proxy_location_with_no_barracks_yet() -> None:
-    ctx = _ctx()
-    ctx.bot.structures.return_value = []
-
-    assert proxy_barracks_position(ctx) == PROXY
+from bot.builds.terran.four_rax_proxy import PROXY_CREW, proxy_location
 
 
 def test_barracks_c_task_places_on_the_enemy_fourth_townhall_tile() -> None:
@@ -68,6 +28,14 @@ def test_barracks_c_task_places_on_the_enemy_fourth_townhall_tile() -> None:
     assert barracks_c.label == "Barracks C"
     assert barracks_c.where is proxy_location
     assert barracks_c.near is proxy_location
+
+
+def test_proxy_depot_uses_ares_formation_at_the_enemy_fourth() -> None:
+    depot = PROXY_CREW.y_tasks[1]
+
+    assert depot.label == "Depot (proxy)"
+    assert depot.where is proxy_location
+    assert depot.near is None
 
 
 def main() -> int:

@@ -1,10 +1,9 @@
 """Regression tests for `bot.routines.placement.near_point`.
 
 `near_point` exists because `request_building_placement`'s `base_location`
-snaps to a precomputed per-expansion formation that can put a structure's
-slot somewhere unusable (see that function's module docstring, and
-`builds.terran.four_rax_proxy.proxy_barracks_position` for the real bug this
-was written to fix: a proxy Depot landing deep behind a mineral line). These
+snaps to a precomputed per-expansion formation that cannot place on an
+arbitrary point (see that function's module docstring, and Barracks C on
+the enemy fourth's townhall tile in `builds.terran.four_rax_proxy`). These
 tests exercise the ring-search/filter/validate pipeline directly, with a
 `MagicMock` bot and mediator rather than a real game.
 
