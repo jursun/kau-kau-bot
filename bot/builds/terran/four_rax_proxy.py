@@ -89,7 +89,7 @@ FIRST_WAVE = 5
 # melee range. Passed to `combat.attack_squads`, which drives this per unit
 # (`combat._kite_maneuver`) instead of `StutterGroupForward`'s unconditional
 # group trade - see that routine's own docstring for the mechanism.
-MARINE_MIN_ENGAGE_RANGE = 3.0
+MARINE_MIN_ENGAGE_RANGE = 2
 
 
 def proxy_location(ctx) -> Point2:
@@ -131,25 +131,8 @@ def ramp_location(ctx) -> Point2:
     """
     return ctx.bot.main_base_ramp.top_center
 
-
-def barracks_c_location(ctx) -> Point2:
-    """Where Z's second task (Barracks C) goes - the middle of the map,
-    not `proxy_location`.
-
-    Four Barracks and two Depots landing in the same small area at once was
-    the root cause of more than one placement bug at the proxy site (see
-    `claude/four-rax-proxy.md` for the history). Moving Barracks C off the
-    proxy entirely, rather than trying to squeeze it in more cleverly,
-    trades one Barracks' worth of proxy-side production for fewer
-    structures fighting over the same patch of ground.
-
-    `targeting.map_center` isn't a real expansion, so `request_building_
-    placement`'s formation lookup would just snap this to whichever actual
-    base happens to be nearest - the task below pairs this with `WorkerTask.
-    near` (`routines.placement.near_point`) instead, which searches outward
-    from this exact point rather than from any base's formation.
-    """
-    return targeting.map_center(ctx)
+def enemy_natural_location(ctx) -> Point2:
+    return ctx.bot.main_base_ramp.top_center
 
 
 def proxy_barracks_position(ctx) -> Point2:
@@ -235,12 +218,7 @@ PROXY_CREW = ProxyCrewPlan(
             closest_to=ramp_location,
             label="Depot (home)",
         ),
-        WorkerTask(
-            UnitTypeId.BARRACKS,
-            barracks_c_location,
-            near=barracks_c_location,
-            label="Barracks C",
-        ),
+        WorkerTask(UnitTypeId.BARRACKS, proxy_location, label="Barracks C"),
     ),
 )
 
@@ -270,7 +248,6 @@ BUILD = BuildDefinition(
             # omitting `RunState.mustering_tags` after wave 1 is what makes
             # that happen: `attack_squads()` below reads it directly.
             combat.release_first_wave_then_stream(),
-            combat.defend_home(),
             combat.attack_squads(min_engage_range=MARINE_MIN_ENGAGE_RANGE),
             # Every crew worker that has worked through its own task list
             # joins the push once all four Barracks are accounted for. This
