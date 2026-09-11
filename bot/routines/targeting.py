@@ -24,6 +24,10 @@ defending it - e.g. drones stationed on the mineral line behind a Hatchery.
 Wide enough to reach a base's own worker line from its townhall, not so wide
 it reaches into an unrelated fight elsewhere on the same base."""
 
+NATURAL_CLEAR_RADIUS: float = 15.0
+"""How close to `get_enemy_nat` an enemy townhall must be to still count
+the natural as standing - see `enemy_natural_cleared`."""
+
 
 def focus_points(ctx: "BotContext") -> list[Point2]:
     """Resolve the build's focus keywords to map positions."""
@@ -92,6 +96,41 @@ def enemy_fourth(ctx: "BotContext") -> Point2:
     """The enemy's fourth base. Same idea as `enemy_third`, one base further
     out - deep enough that early scouting rarely reaches it."""
     return ctx.mediator.get_enemy_fourth
+
+
+def enemy_ramp_bottom(ctx: "BotContext") -> Point2:
+    """Bottom of the enemy main ramp - the choke before walking into the
+    main. A `PointLocator` for a push that wants to stutter-step to the
+    ramp before committing up it."""
+    return ctx.mediator.get_enemy_ramp.bottom_center
+
+
+def enemy_natural_cleared(
+    ctx: "BotContext", radius: float = NATURAL_CLEAR_RADIUS
+) -> bool:
+    """True once no enemy townhall stands near the enemy natural.
+
+    Used to flip a push from "hold/stutter at the ramp bottom" to "up the
+    ramp into the main" - the natural is the fight in front of that choke,
+    and once its townhall is gone the ramp is the next step.
+    """
+    nat = ctx.mediator.get_enemy_nat
+    radius_sq = radius**2
+    return not any(
+        cy_distance_to_squared(th.position, nat) <= radius_sq
+        for th in ctx.bot.enemy_structures.of_type(ALL_TOWNHALL_TYPES)
+    )
+
+
+def squad_destination(ctx: "BotContext", from_pos: Point2) -> Point2:
+    """Where an ATTACKING squad (or anything following it) should advance.
+
+    Honors `Combat.attack_objective` when a build sets one; otherwise the
+    default `attack_target` nearest-enemy / focus walk.
+    """
+    if (locator := ctx.build.combat.attack_objective) is not None:
+        return locator(ctx)
+    return attack_target(ctx, from_pos)
 
 
 def map_center(ctx: "BotContext") -> Point2:

@@ -82,6 +82,12 @@ class Combat:
     this also collapses `targeting.hold_positions` to just this point: a
     build that pins its rally somewhere specific means it, and should not
     also be sending half its defenders back to guard mineral lines."""
+    attack_objective: PointLocator | None = None
+    """Overrides where ATTACKING squads (and proxy workers / escorts that
+    follow them) advance when not mustering. `None` keeps the default
+    `targeting.attack_target` (nearest enemy structure / focus). A push that
+    wants a fixed choke — e.g. Four Rax stutter-stepping to the enemy ramp
+    bottom, then into the main once the natural is gone — sets this."""
     focus: tuple[str, ...] = (FOCUS_MAIN,)
     """Ordered places to walk to when no enemy structure is visible."""
     wave_stage_label: str = "Attack Waves"

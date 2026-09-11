@@ -34,15 +34,14 @@ leave together with whichever crew SCVs have finished their tasks by then;
 every Marine after that streams to the front individually the moment it's
 trained — one wait, then none.
 
-Combat micro, once a wave is out: Marines kite (`MARINE_MIN_ENGAGE_RANGE`)
-rather than trade in melee range; crew SCVs that finish their tasks join
-the push and attack alongside the Marines (see `combat.builder_workers_
-attack`'s docstring). Every attacking unit favors enemy units over enemy
-structures when picking a target (`combat._prioritize_enemies`), and a
-squad's move target is redirected at a structure's own defenders when any
-are standing nearby, rather than parking on the structure itself
-(`targeting._nearest_defender`) - e.g. drones on the mineral line behind
-the natural's Hatchery.
+Combat micro, once a wave is out: Marines stutter-step as a group toward
+the enemy ramp bottom (`attack_objective`), fighting whatever is in range
+on the way; once the natural's townhall is gone they push up the ramp into
+the main. Crew SCVs that finish their tasks join the push (see `combat.
+builder_workers_attack`'s docstring). Every attacking unit favors enemy
+units over enemy structures when picking a local fight target (`combat.
+_prioritize_enemies`), and a squad's move target is the build's attack
+objective rather than parking on a structure (`targeting.squad_destination`).
 
 Not yet validated in-game.
 """
@@ -84,13 +83,6 @@ WORKER_TARGET = 14
 # individually, with no further waiting and no wave-growth math.
 FIRST_WAVE = 5
 
-# A Marine's attack range is 5 - kiting at this distance keeps a 2-tile
-# buffer, backing off anything that closes inside it rather than trading in
-# melee range. Passed to `combat.attack_squads`, which drives this per unit
-# (`combat._kite_maneuver`) instead of `StutterGroupForward`'s unconditional
-# group trade - see that routine's own docstring for the mechanism.
-MARINE_MIN_ENGAGE_RANGE = 2
-
 
 def proxy_location(ctx) -> Point2:
     """Where every crew structure goes, and where Marines muster.
@@ -130,6 +122,21 @@ def ramp_location(ctx) -> Point2:
     spots already available.
     """
     return ctx.bot.main_base_ramp.top_center
+
+
+def attack_objective(ctx) -> Point2:
+    """Where the Marine push advances: enemy ramp bottom until the natural
+    is gone, then up into the main.
+
+    `StutterGroupForward` (via `attack_squads` with no `min_engage_range`)
+    walks the squad toward this point between shots. The natural is the
+    fight in front of the choke; once its townhall is down
+    (`targeting.enemy_natural_cleared`) the next step is the enemy start
+    location, which takes them up the ramp into the main.
+    """
+    if targeting.enemy_natural_cleared(ctx):
+        return ctx.bot.enemy_start_locations[0]
+    return targeting.enemy_ramp_bottom(ctx)
 
 
 def _marine_training_started(ctx) -> bool:
@@ -222,7 +229,9 @@ BUILD = BuildDefinition(
             # omitting `RunState.mustering_tags` after wave 1 is what makes
             # that happen: `attack_squads()` below reads it directly.
             combat.release_first_wave_then_stream(),
-            combat.attack_squads(min_engage_range=MARINE_MIN_ENGAGE_RANGE),
+            # Stutter-step as a group toward `attack_objective` (ramp bottom,
+            # then main once the natural is cleared) - no per-Marine kite.
+            combat.attack_squads(),
             # Every crew worker that has worked through its own task list
             # joins the push once all four Barracks are accounted for. This
             # doesn't know or care which of X/Y/Z it's claiming — see its
@@ -238,6 +247,7 @@ BUILD = BuildDefinition(
         # Marines spawn at the proxy, not at home. Without this they would
         # walk back to our own natural to muster before every attack.
         rally=proxy_location,
+        attack_objective=attack_objective,
         focus=(FOCUS_MAIN, FOCUS_NATURAL),
         # This build's own Validation Report title for Stage 4 - it really
         # is an all-in (no expansion, no gas, one fixed structure count),

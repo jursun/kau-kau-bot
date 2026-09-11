@@ -289,6 +289,10 @@ def attack_squads(
     rally point its tags are released and it attacks like any other squad
     from then on, even if it later drifts away from the rally point.
 
+    Destination when not mustering is `targeting.squad_destination` - the
+    build's `Combat.attack_objective` if set, otherwise
+    `targeting.attack_target`.
+
     A squad that isn't still forming up and finds a nearby enemy
     (`SQUAD_ENGAGE_RANGE`) fights with no supply-ratio check and no retreat -
     this build attacks with everything a wave has. `close_enemy` (from
@@ -298,15 +302,13 @@ def attack_squads(
     two production units and not real targets. How the squad fights depends
     on `min_engage_range`:
 
-    - Left `None` (every build but Four Rax Proxy today): `StutterGroupForward`
-      trades unconditionally as one group - a squad that finds itself
-      outnumbered stutter-steps and fights rather than disengaging.
+    - Left `None` (default): `StutterGroupForward` trades as one group -
+      stutter-steps toward the destination and fights rather than
+      disengaging.
     - Set to a distance: each unit is driven individually via
       `_kite_maneuver` instead - backing away from anything closer than
       `min_engage_range`, otherwise shooting the lowest-health enemy already
-      in its own weapon range. For a ranged unit meant to poke rather than
-      trade (Four Rax Proxy's Marines), never `StutterGroupForward`'s "close
-      the gap when weapons are down" behavior.
+      in its own weapon range.
     """
 
     def routine(ctx: "BotContext") -> None:
@@ -330,7 +332,7 @@ def attack_squads(
 
             close_enemy = _enemies_near(ctx, position, SQUAD_ENGAGE_RANGE)
 
-            target = rally if mustering else targeting.attack_target(ctx, position)
+            target = rally if mustering else targeting.squad_destination(ctx, position)
 
             if close_enemy and min_engage_range is not None:
                 for unit in squad.squad_units:
@@ -372,7 +374,7 @@ def escort_overseers() -> CombatRoutine:
        faster than an Overseer. A slower unit chasing a point that keeps
        moving away from it never closes the gap. Targeting the same
        destination `attack_squads` sends the squad toward instead
-       (`targeting.attack_target`) fixes that: it's a fixed point, so the
+       (`targeting.squad_destination`) fixes that: it's a fixed point, so the
        Overseer actually makes progress and tends to arrive ahead of or
        alongside the wave rather than perpetually trailing it.
     2. A bare `AMove` has no notion of danger, so the Overseer walked
@@ -406,7 +408,7 @@ def escort_overseers() -> CombatRoutine:
             return
 
         biggest = max(squads, key=lambda squad: len(squad.squad_units))
-        target = targeting.attack_target(ctx, biggest.squad_position)
+        target = targeting.squad_destination(ctx, biggest.squad_position)
         grid = ctx.mediator.get_air_grid
 
         for overseer in overseers:
@@ -490,7 +492,7 @@ def builder_workers_attack(
                 ctx.bot.register_behavior(AMove(unit=worker, target=point))
             return
 
-        target = targeting.attack_target(ctx, point)
+        target = targeting.squad_destination(ctx, point)
         for worker in workers:
             maneuver = CombatManeuver()
             in_range = _enemies_near(ctx, worker, DEFENDER_ENGAGE_RANGE)

@@ -49,6 +49,7 @@ def _ctx(wave1_min: int = 6, wave_growth: float = 1.25) -> BotContext:
     build.combat.wave1_min = wave1_min
     build.combat.wave_growth = wave_growth
     build.combat.wave_gate = lambda _ctx: True
+    build.combat.attack_objective = None
     ctx = BotContext(bot=MagicMock(), build=build, state=RunState())
     # Comfortably under `MAX_SUPPLY` and nothing pending by default, so
     # `_maxed_and_ready` is False unless a test deliberately raises these -
@@ -115,7 +116,8 @@ def _squad(units: list[MagicMock]) -> UnitSquad:
 
 
 def _patch_targeting(rally: Point2, attack: Point2):
-    """attack_squads calls module-level targeting.rally_point/attack_target."""
+    """attack_squads calls targeting.rally_point / squad_destination
+    (which falls through to attack_target when attack_objective is None)."""
     original = (targeting.rally_point, targeting.attack_target)
     targeting.rally_point = lambda _ctx: rally
     targeting.attack_target = lambda _ctx, _pos: attack
@@ -400,7 +402,7 @@ def test_escort_overseers_targets_the_biggest_squads_destination() -> None:
     """Regression test: the first version AMoved straight at the squad's
     live `squad_position`, which recedes as the squad advances - a slower
     Overseer chasing that target never catches up. It should instead target
-    the same destination (`targeting.attack_target`) the squad itself is
+    the same destination (`targeting.squad_destination`) the squad itself is
     walking toward, computed from the squad's position, and approach it via
     ares' danger-aware `MoveToSafeTarget`/`KeepUnitSafe` rather than a bare
     `AMove`."""
@@ -572,9 +574,23 @@ def test_streamed_unit_is_not_held_at_rally_by_attack_squads() -> None:
 
     squad = _squad([_unit(999)])
     target = _amove_target(ctx, squad)
-    assert target == targeting.attack_target(
+    assert target == targeting.squad_destination(
         ctx, squad.squad_position
     ), "a streamed unit must head to the attack target, not the rally point"
+
+
+def test_attack_squads_honors_build_attack_objective() -> None:
+    """A build that pins `Combat.attack_objective` must send squads there
+    instead of through the default nearest-enemy `attack_target`."""
+    objective = Point2((123.0, 456.0))
+    ctx = _ctx()
+    ctx.build.combat.attack_objective = lambda _ctx: objective
+    units = [_unit(1, Point2((0.0, 0.0))), _unit(2, Point2((1.0, 0.0)))]
+    ctx.mediator.get_units_from_role.return_value = units
+
+    target = _amove_target(ctx, _squad(units))
+
+    assert target == objective
 
 
 def main() -> int:

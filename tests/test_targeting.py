@@ -147,6 +147,48 @@ def test_map_center_reads_the_game_info_value() -> None:
     assert targeting.map_center(ctx) == HATCHERY
 
 
+def test_enemy_ramp_bottom_reads_the_ramp() -> None:
+    ctx = MagicMock()
+    bottom = Point2((10.0, 20.0))
+    ctx.mediator.get_enemy_ramp.bottom_center = bottom
+    assert targeting.enemy_ramp_bottom(ctx) == bottom
+
+
+def test_enemy_natural_cleared_when_no_townhall_near_nat() -> None:
+    ctx = MagicMock()
+    nat = Point2((50.0, 50.0))
+    ctx.mediator.get_enemy_nat = nat
+    far_hatch = _structure(Point2((200.0, 200.0)), UnitTypeId.HATCHERY)
+    ctx.bot.enemy_structures.of_type.return_value = [far_hatch]
+
+    assert targeting.enemy_natural_cleared(ctx)
+
+
+def test_enemy_natural_not_cleared_with_townhall_at_nat() -> None:
+    ctx = MagicMock()
+    nat = Point2((50.0, 50.0))
+    ctx.mediator.get_enemy_nat = nat
+    hatch = _structure(nat, UnitTypeId.HATCHERY)
+    ctx.bot.enemy_structures.of_type.return_value = [hatch]
+
+    assert not targeting.enemy_natural_cleared(ctx)
+
+
+def test_squad_destination_uses_attack_objective_when_set() -> None:
+    ctx = MagicMock()
+    objective = Point2((7.0, 8.0))
+    ctx.build.combat.attack_objective = lambda _c: objective
+
+    assert targeting.squad_destination(ctx, FROM_POS) == objective
+
+
+def test_squad_destination_falls_back_to_attack_target() -> None:
+    ctx = _ctx(structures=[_structure(HATCHERY)])
+    ctx.build.combat.attack_objective = None
+
+    assert targeting.squad_destination(ctx, FROM_POS) == HATCHERY
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failures = 0
