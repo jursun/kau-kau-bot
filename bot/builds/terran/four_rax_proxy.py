@@ -2,17 +2,18 @@
 
 Opening: three SCVs never gather a single mineral. Two of the starting 12
 (`X`, `Y`) peel off for the enemy's fourth base the instant the game starts;
-the 13th SCV trained (`Z`) builds a Supply Depot at home, then follows them.
-Between them these three place every structure this build makes - two
-Depots, four Barracks - entirely outside ares' generic worker selection. See
-`bot.steps.terran.proxy_crew` for the mechanism and `PROXY_CREW` below for
-the exact task lists.
+the 13th SCV trained (`Z`) builds a Supply Depot at home, then follows them
+partway - its own second task breaks off for the middle of the map instead
+of the proxy (see `barracks_c_location`). Between them these three place
+every structure this build makes - two Depots, four Barracks - entirely
+outside ares' generic worker selection. See `bot.steps.terran.proxy_crew`
+for the mechanism and `PROXY_CREW` below for the exact task lists.
 
     1. SCV
     2. 13 Depot                     (Z, at home)
     3. 13 Barracks A                (X, at the proxy)
     4. 13 Barracks B                (Y, at the proxy)
-    5. 13 Barracks C                (Z, at the proxy, after its Depot)
+    5. 13 Barracks C                (Z, at the map's centre, after its Depot)
     6. SCV
     7. Marine
     8. 15 Barracks D                (X, at the proxy, after Barracks A -
@@ -36,7 +37,11 @@ Combat micro, once a wave is out: Marines kite (`MARINE_MIN_ENGAGE_RANGE`)
 rather than trade in melee range; crew SCVs that finish their tasks join
 the push and attack alongside the Marines (see `combat.builder_workers_
 attack`'s docstring). Every attacking unit favors enemy units over enemy
-structures when picking a target (`combat._prioritize_enemies`).
+structures when picking a target (`combat._prioritize_enemies`), and a
+squad's move target is redirected at a structure's own defenders when any
+are standing nearby, rather than parking on the structure itself
+(`targeting._nearest_defender`) - e.g. drones on the mineral line behind
+the natural's Hatchery.
 
 Not yet validated in-game.
 """
@@ -127,6 +132,26 @@ def ramp_location(ctx) -> Point2:
     return ctx.bot.main_base_ramp.top_center
 
 
+def barracks_c_location(ctx) -> Point2:
+    """Where Z's second task (Barracks C) goes - the middle of the map,
+    not `proxy_location`.
+
+    Four Barracks and two Depots landing in the same small area at once was
+    the root cause of more than one placement bug at the proxy site (see
+    `claude/four-rax-proxy.md` for the history). Moving Barracks C off the
+    proxy entirely, rather than trying to squeeze it in more cleverly,
+    trades one Barracks' worth of proxy-side production for fewer
+    structures fighting over the same patch of ground.
+
+    `targeting.map_center` isn't a real expansion, so `request_building_
+    placement`'s formation lookup would just snap this to whichever actual
+    base happens to be nearest - the task below pairs this with `WorkerTask.
+    near` (`routines.placement.near_point`) instead, which searches outward
+    from this exact point rather than from any base's formation.
+    """
+    return targeting.map_center(ctx)
+
+
 def proxy_barracks_position(ctx) -> Point2:
     """Reference point for the proxy Depot's placement search
     (`WorkerTask.near`, on Y's second task below): the nearest standing
@@ -210,7 +235,12 @@ PROXY_CREW = ProxyCrewPlan(
             closest_to=ramp_location,
             label="Depot (home)",
         ),
-        WorkerTask(UnitTypeId.BARRACKS, proxy_location, label="Barracks C"),
+        WorkerTask(
+            UnitTypeId.BARRACKS,
+            barracks_c_location,
+            near=barracks_c_location,
+            label="Barracks C",
+        ),
     ),
 )
 

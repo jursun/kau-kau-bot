@@ -52,6 +52,17 @@ FOCUS_MAIN: str = "main"
 FOCUS_NATURAL: str = "natural"
 FOCUS_THIRD: str = "third"
 
+# Zerg production units, not real targets - shared by `routines.combat`
+# (which combat units treat as never-worth-shooting) and `routines.targeting`
+# (which likewise never treats one as "a defender worth attacking instead of
+# the structure"). Only Zerg ever fields these, so there is nothing to gate
+# on "when attacking Zerg" - filtering them out unconditionally already has
+# that exact effect against every other race, where the filter simply never
+# matches anything.
+IGNORED_ENEMY_TYPES: frozenset[UnitTypeId] = frozenset(
+    {UnitTypeId.EGG, UnitTypeId.LARVA}
+)
+
 # A label WE own for a build's `ProxyCrewPlan` workers (`steps.terran.
 # proxy_crew`), picked specifically because nothing in ares itself ever
 # reads or writes it (checked against the whole ares-sc2 v3.13.1 source, not

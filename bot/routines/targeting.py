@@ -4,13 +4,25 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from cython_extensions import cy_closest_to
+from cython_extensions import cy_closest_to, cy_distance_to_squared
 from sc2.position import Point2
 
-from bot.consts import ALL_TOWNHALL_TYPES, FOCUS_MAIN, FOCUS_NATURAL, FOCUS_THIRD
+from bot.consts import (
+    ALL_TOWNHALL_TYPES,
+    FOCUS_MAIN,
+    FOCUS_NATURAL,
+    FOCUS_THIRD,
+    IGNORED_ENEMY_TYPES,
+)
 
 if TYPE_CHECKING:
     from bot.core.context import BotContext
+
+DEFENDER_SEARCH_RADIUS: float = 15.0
+"""How far from a targeted structure to look for the units actually
+defending it - e.g. drones stationed on the mineral line behind a Hatchery.
+Wide enough to reach a base's own worker line from its townhall, not so wide
+it reaches into an unrelated fight elsewhere on the same base."""
 
 
 def focus_points(ctx: "BotContext") -> list[Point2]:
@@ -23,12 +35,41 @@ def focus_points(ctx: "BotContext") -> list[Point2]:
     return [lookup[key]() for key in ctx.build.combat.focus if key in lookup]
 
 
+def _nearest_defender(ctx: "BotContext", point: Point2) -> Point2 | None:
+    """The closest real enemy unit within `DEFENDER_SEARCH_RADIUS` of
+    `point`, or `None` if nothing but a structure is out there.
+
+    `ctx.bot.enemy_units` is python-sc2's units-only tree - no structures at
+    all - so nothing here can echo `_prioritize_enemies`' structure-fallback:
+    an empty result genuinely means no defender was found nearby.
+    """
+    radius_sq = DEFENDER_SEARCH_RADIUS**2
+    defenders = [
+        u
+        for u in ctx.bot.enemy_units
+        if u.type_id not in IGNORED_ENEMY_TYPES
+        and cy_distance_to_squared(u.position, point) <= radius_sq
+    ]
+    if not defenders:
+        return None
+    return cy_closest_to(position=point, units=defenders).position
+
+
 def attack_target(ctx: "BotContext", from_pos: Point2) -> Point2:
-    """Nearest visible enemy townhall, else structure, else somewhere unscouted."""
+    """Nearest visible enemy townhall, else structure, else somewhere
+    unscouted - but a structure that has real defenders stationed near it
+    (drones on the mineral line behind a Hatchery, say) sends the squad at
+    the defenders instead of the building itself. A structure can't shoot
+    back and is worth far less than the units guarding it, so there's
+    nothing to gain by camping in range of it while its actual defenders
+    sit just out of reach; once no defender is left nearby this falls back
+    to the structure, so a cleared base still gets finished off.
+    """
     structures = ctx.bot.enemy_structures
     if structures:
         townhalls = structures.of_type(ALL_TOWNHALL_TYPES)
-        return cy_closest_to(position=from_pos, units=townhalls or structures).position
+        target = cy_closest_to(position=from_pos, units=townhalls or structures)
+        return _nearest_defender(ctx, target.position) or target.position
 
     for point in focus_points(ctx):
         if not ctx.bot.is_visible(point):
@@ -51,6 +92,19 @@ def enemy_fourth(ctx: "BotContext") -> Point2:
     """The enemy's fourth base. Same idea as `enemy_third`, one base further
     out - deep enough that early scouting rarely reaches it."""
     return ctx.mediator.get_enemy_fourth
+
+
+def map_center(ctx: "BotContext") -> Point2:
+    """The playable map's centre point - a `PointLocator` for something that
+    wants open room around it rather than any base's own formation.
+
+    `game_info.map_center` is python-sc2's own centroid of the playable
+    area, not tied to any expansion - so a caller placing there should pair
+    this with `routines.placement.near_point` (see `WorkerTask.near`) rather
+    than `where`'s formation lookup, which would just snap back to whichever
+    base happens to be nearest.
+    """
+    return ctx.bot.game_info.map_center
 
 
 def rally_point(ctx: "BotContext") -> Point2:

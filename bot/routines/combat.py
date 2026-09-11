@@ -30,6 +30,7 @@ from sc2.unit import Unit
 from sc2.units import Units
 
 from bot.builds.definition import _always
+from bot.consts import IGNORED_ENEMY_TYPES
 from bot.core.types import CombatRoutine, Gate, PointLocator
 from bot.routines import targeting
 
@@ -170,15 +171,6 @@ def release_first_wave_then_stream() -> CombatRoutine:
         ctx.log(f"WAVE 1 attack (size={size}) - streaming from here on")
 
     return routine
-
-
-IGNORED_ENEMY_TYPES: frozenset[UnitTypeId] = frozenset(
-    {UnitTypeId.EGG, UnitTypeId.LARVA}
-)
-"""Zerg production units, not real targets - see `_enemies_near`. Only Zerg
-ever fields these, so there is nothing to gate on "when attacking Zerg" -
-filtering them out unconditionally already has that exact effect against
-every other race, where the filter simply never matches anything."""
 
 
 def _prioritize_enemies(enemies: Units) -> Units:
