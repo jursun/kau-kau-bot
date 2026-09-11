@@ -122,6 +122,18 @@ class WorkerTask:
     worker never actually enters the tracker and "departure" reads true on
     the very next frame with nothing built. A failed `verify` re-issues the
     same task instead of advancing past a structure that was never built."""
+    near: PointLocator | None = None
+    """Bypass `where`'s base-formation placement lookup entirely and place
+    next to this point instead, via `routines.placement.near_point`'s ring
+    search - see that function's module docstring for why. Set this when
+    `where`'s precomputed formation has been seen to put `structure_id`'s
+    slot somewhere unusable (e.g. deep behind a mineral line at a proxy
+    site); `None` (every task but one, today) keeps using `request_building_
+    placement` as before. `where` still supplies the task's base location for
+    everything else (gating, `_claim_starting_pair`'s reference), only
+    placement itself is redirected. `closest_to` is ignored when this is
+    set - it only makes sense against a formation, which `near` deliberately
+    skips."""
 
 
 @dataclass(frozen=True)

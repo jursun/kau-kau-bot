@@ -15,6 +15,7 @@ from sc2.ids.unit_typeid import UnitTypeId
 
 from bot.builds.definition import _always
 from bot.core.types import Gate, MacroStep, PointLocator, UnitCreatedHook
+from bot.routines.placement import near_point
 
 if TYPE_CHECKING:
     from sc2.unit import Unit
@@ -150,6 +151,11 @@ def _drive_crew_member(ctx: "BotContext", member: "CrewMember", tasks: "tuple") 
     placement` as-is - it only orders the precalculated spots `where`
     already resolved to, e.g. biasing a home Depot toward the main ramp.
 
+    A task's `near`, when set, skips `request_building_placement`/`where`
+    entirely in favor of `routines.placement.near_point` searching outward
+    from `near(ctx)` - see `WorkerTask.near` for why a task would want that
+    instead.
+
     A task's optional `verify` runs once tracker departure would otherwise
     mark it done, and must pass before `task_index` actually advances - see
     `WorkerTask.verify`'s own docstring for why. A failed `verify` clears
@@ -186,13 +192,18 @@ def _drive_crew_member(ctx: "BotContext", member: "CrewMember", tasks: "tuple") 
     if not task.gate(ctx):
         return
 
-    placement_kwargs = {
-        "base_location": task.where(ctx),
-        "structure_type": task.structure_id,
-    }
-    if task.closest_to is not None:
-        placement_kwargs["closest_to"] = task.closest_to(ctx)
-    placement = ctx.mediator.request_building_placement(**placement_kwargs)
+    if task.near is not None:
+        placement = near_point(
+            ctx, reference=task.near(ctx), structure_type=task.structure_id
+        )
+    else:
+        placement_kwargs = {
+            "base_location": task.where(ctx),
+            "structure_type": task.structure_id,
+        }
+        if task.closest_to is not None:
+            placement_kwargs["closest_to"] = task.closest_to(ctx)
+        placement = ctx.mediator.request_building_placement(**placement_kwargs)
     if placement is None:
         return  # try again next frame
 

@@ -36,6 +36,7 @@ from ares.behaviors.combat import CombatManeuver
 from ares.behaviors.combat.individual import AMove, ShootTargetInRange
 from ares.behaviors.macro import BuildStructure
 from ares.consts import UnitRole
+from cython_extensions import cy_distance_to_squared
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
 
@@ -476,6 +477,32 @@ def test_proxy_crew_forwards_closest_to_when_a_task_sets_it() -> None:
     assert (
         ctx.mediator.request_building_placement.call_args.kwargs["closest_to"] == ramp
     )
+
+
+def test_proxy_crew_uses_near_search_when_a_task_sets_near() -> None:
+    """A task's `near` bypasses `request_building_placement`/`where`
+    entirely - `_drive_crew_member` must place via `routines.placement.
+    near_point`, anchored on `near(ctx)`, instead."""
+    target = Point2((5.0, 5.0))
+    plan = ProxyCrewPlan(
+        x_tasks=(WorkerTask(UnitTypeId.SUPPLYDEPOT, _proxy, near=lambda _c: target),),
+        y_tasks=(WorkerTask(UnitTypeId.BARRACKS, _proxy),),
+        z_tasks=(WorkerTask(UnitTypeId.SUPPLYDEPOT, _proxy),),
+    )
+    ctx = _ctx()
+    ctx.build.crew = plan
+    ctx.state.proxy_crew.x.tag = 5
+    ctx.bot.unit_tag_dict = {5: _worker(5, HOME)}
+    ctx.bot.mineral_field = []
+    ctx.bot.vespene_geyser = []
+    ctx.bot.in_pathing_grid.return_value = True
+    ctx.mediator.can_place_structure.return_value = True
+
+    t.proxy_crew()(ctx)
+
+    ctx.mediator.request_building_placement.assert_not_called()
+    placed = ctx.mediator.build_with_specific_worker.call_args.kwargs["pos"]
+    assert cy_distance_to_squared(placed, target) <= 3.0**2, "must place near `near`"
 
 
 def test_proxy_crew_does_not_reissue_while_still_in_the_tracker() -> None:
