@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from ares.behaviors.macro import BuildStructure
 from cython_extensions import cy_distance_to_squared
 from sc2.ids.unit_typeid import UnitTypeId
+from sc2.position import Point2
 
 from bot.builds.definition import _always
 from bot.core.types import Gate, MacroStep, PointLocator, UnitCreatedHook
@@ -130,18 +131,45 @@ def _claim_starting_pair(ctx: "BotContext") -> None:
     ctx.log("PROXY CREW: X and Y peel off toward the proxy")
 
 
+def _path_worker_toward(ctx: "BotContext", worker: "Unit", target: Point2) -> None:
+    """Walk a crew SCV toward `target` without entering the building tracker.
+
+    `target` must be the task's base / `near` anchor (`task.where` /
+    `task.near`), never a point from `request_building_placement`: that
+    call reserves slots by default, and asking every wait-frame is what
+    sent X and Y toward our own fourth once the proxy base's spots were
+    exhausted. See `_drive_crew_member`.
+    """
+    point = ctx.mediator.find_path_next_point(
+        start=worker.position,
+        target=target,
+        grid=ctx.mediator.get_ground_grid,
+    )
+    worker.move(point)
+
+
 def _drive_crew_member(ctx: "BotContext", member: "CrewMember", tasks: "tuple") -> None:
     """Work one crew member through its task list by one step.
 
-    A task is issued once - `request_building_placement` then
-    `build_with_specific_worker(..., assign_role=False)` - then left alone
-    until the worker's tag drops out of `mediator.get_building_tracker_dict`,
-    which ares itself removes it from the instant the structure completes
-    (`BuildingManager._handle_construction_orders`). That tracker-membership
-    check is the entire completion signal - nothing here infers it from
-    structure counts, which would misattribute one worker's completion to
-    another's identical structure type (Barracks A and B finish within
-    moments of each other, both via this same mechanism).
+    A task enters ares' building tracker once - `request_building_placement`
+    then `build_with_specific_worker(..., assign_role=False)` - and only when
+    we can already afford it and its tech requirement is met. Until then the
+    worker is path'd toward the placement by hand. That matters for X and Y's
+    opening Barracks: putting both in the tracker on frame one left
+    BuildingManager to issue both builds the same frame minerals hit 300,
+    so neither started at 150. Reserving the cost on the bot's mineral
+    count when we queue (mirroring `Unit.build`'s own subtract) means a
+    second crew member driven later this same frame sees the remainder and
+    keeps pathing instead of also queueing.
+
+    Once queued, the worker is left alone until its tag drops out of
+    `mediator.get_building_tracker_dict`, which ares itself removes it from
+    the instant the structure completes (`BuildingManager.
+    _handle_construction_orders`). That tracker-membership check is the
+    entire completion signal - nothing here infers it from structure counts,
+    which would misattribute one worker's completion to another's identical
+    structure type (Barracks A and B finish within moments of each other,
+    both via this same mechanism).
 
     `assign_role=False` is load-bearing: see `bot.consts.PROXY_CREW_ROLE` for
     why the crew's own role must be the only thing that ever touches these
@@ -192,6 +220,22 @@ def _drive_crew_member(ctx: "BotContext", member: "CrewMember", tasks: "tuple") 
     if not task.gate(ctx):
         return
 
+    cost = ctx.bot.calculate_cost(task.structure_id)
+    tech_ready = ctx.bot.tech_requirement_progress(task.structure_id) >= 1.0
+    can_pay = ctx.bot.minerals >= cost.minerals and ctx.bot.vespene >= cost.vespene
+    if not tech_ready or not can_pay:
+        # Path to the task's base (or `near` anchor), NOT a reserved building
+        # slot. `request_building_placement` defaults to `reserve_placement=
+        # True`, and calling it every wait-frame exhausts the proxy base's
+        # spots then spills via `find_alternative` onto other expansions —
+        # including our own fourth. Only ask for a slot once we're ready to
+        # hand the worker to the tracker below.
+        walk_target = (
+            task.near(ctx) if task.near is not None else task.where(ctx)
+        )
+        _path_worker_toward(ctx, worker, walk_target)
+        return
+
     if task.near is not None:
         placement = near_point(
             ctx, reference=task.near(ctx), structure_type=task.structure_id
@@ -207,12 +251,18 @@ def _drive_crew_member(ctx: "BotContext", member: "CrewMember", tasks: "tuple") 
     if placement is None:
         return  # try again next frame
 
+    # Affordable and tech-ready: hand off to the tracker even while still
+    # walking. BuildingManager paths with its own grid and issues the build
+    # once in range. Reserving the cost below stops a later crew member this
+    # same frame from also queueing on the same minerals.
     if ctx.mediator.build_with_specific_worker(
         worker=worker,
         structure_type=task.structure_id,
         pos=placement,
         assign_role=False,
     ):
+        ctx.bot.minerals -= cost.minerals
+        ctx.bot.vespene -= cost.vespene
         member.queued = True
         ctx.log(f"PROXY CREW: {task.label or task.structure_id.name.title()} started")
 
@@ -238,6 +288,13 @@ def proxy_crew() -> MacroStep:
     production having started simply leaves its worker idle wherever its
     previous task finished, for as long as the gate fails, with nothing else
     for it to do since it was never in `UnitRole.GATHERING` to begin with.
+
+    Affordability and tech are checked before a task enters the building
+    tracker: until both pass, the worker is path'd toward the placement by
+    hand. That keeps X and Y from both sitting in the tracker as pending
+    Barracks that BuildingManager only issues together once 300 minerals
+    are banked - with 150, the first crew member driven this frame queues
+    and reserves the cost, and the second keeps walking.
 
     Once a slot's task list is exhausted this step stops touching it -
     `combat.builder_workers_attack`'s existing proximity-based claiming

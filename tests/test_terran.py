@@ -17,7 +17,9 @@ Five things here are easy to get wrong and impossible to eyeball:
   finished" purely off `get_building_tracker_dict` membership, never off
   structure counts — two crew workers building the same structure type
   finish within moments of each other, so a count-based check would
-  misattribute one's completion to the other.
+  misattribute one's completion to the other. It must also refuse to enter
+  the tracker until the task is affordable (and tech-ready), reserving the
+  cost in-frame so X and Y don't both queue Barracks and wait for 300.
 * `steps.terran.claim_z_on_first_scv` must claim exactly once, and must
   ignore anything that isn't an SCV (an Overlord scout, a lost Marine,
   whatever else might fire `on_unit_created` before the 13th SCV does).
@@ -60,6 +62,13 @@ def _worker(tag: int, position: Point2) -> MagicMock:
     return worker
 
 
+def _cost(minerals: int, vespene: int = 0) -> MagicMock:
+    cost = MagicMock()
+    cost.minerals = minerals
+    cost.vespene = vespene
+    return cost
+
+
 def _ctx(rally=None) -> BotContext:
     build = MagicMock()
     build.army.types = frozenset({UnitTypeId.MARINE})
@@ -73,7 +82,19 @@ def _ctx(rally=None) -> BotContext:
     ctx.bot.enemy_start_locations = [Point2((150.0, 150.0))]
     ctx.mediator.get_building_tracker_dict = {}
     ctx.mediator.get_units_from_role.return_value = []
+    ctx.mediator.find_path_next_point.side_effect = lambda **kw: kw["target"]
+    ctx.mediator.get_ground_grid = MagicMock()
     ctx.bot.workers = []
+    # Proxy crew only enters the building tracker once a task is affordable
+    # and its tech requirement is met - default the fakes to "ready to build"
+    # so existing issue/advance tests keep exercising the happy path.
+    ctx.bot.minerals = 1000
+    ctx.bot.vespene = 1000
+    ctx.bot.tech_requirement_progress.return_value = 1.0
+    ctx.bot.calculate_cost.side_effect = lambda unit_type: {
+        UnitTypeId.BARRACKS: _cost(150),
+        UnitTypeId.SUPPLYDEPOT: _cost(100),
+    }.get(unit_type, _cost(0))
     return ctx
 
 
@@ -601,6 +622,66 @@ def test_proxy_crew_holds_a_gated_task_until_its_gate_passes() -> None:
 
     ctx.mediator.build_with_specific_worker.assert_not_called()
     assert ctx.state.proxy_crew.x.queued is False
+
+
+def test_proxy_crew_only_queues_one_barracks_when_minerals_cover_one() -> None:
+    """With 150 minerals, Barracks A (X) must start and Barracks B (Y) must
+    wait - not both sitting idle until 300 and starting together."""
+    ctx = _ctx()
+    ctx.build.crew = _crew_plan()
+    ctx.state.proxy_crew.x.tag = 1
+    ctx.state.proxy_crew.y.tag = 2
+    x_worker = _worker(1, PROXY)
+    y_worker = _worker(2, PROXY)
+    ctx.bot.unit_tag_dict = {1: x_worker, 2: y_worker}
+    ctx.bot.minerals = 150
+    ctx.mediator.request_building_placement.return_value = PROXY
+    ctx.mediator.build_with_specific_worker.return_value = True
+
+    t.proxy_crew()(ctx)
+
+    assert ctx.mediator.build_with_specific_worker.call_count == 1
+    assert ctx.mediator.build_with_specific_worker.call_args.kwargs["worker"] is x_worker
+    assert ctx.state.proxy_crew.x.queued is True
+    assert ctx.state.proxy_crew.y.queued is False
+    assert ctx.bot.minerals == 0
+    y_worker.move.assert_called()
+
+
+def test_proxy_crew_paths_while_waiting_on_minerals() -> None:
+    """While unaffordable, path to `task.where` and do not ask ares for a
+    building slot - every reserved miss eventually spills onto our own
+    expansions via `find_alternative`."""
+    ctx = _ctx()
+    ctx.build.crew = _crew_plan()
+    ctx.state.proxy_crew.x.tag = 5
+    worker = _worker(5, HOME)
+    ctx.bot.unit_tag_dict = {5: worker}
+    ctx.bot.minerals = 50
+
+    t.proxy_crew()(ctx)
+
+    ctx.mediator.build_with_specific_worker.assert_not_called()
+    ctx.mediator.request_building_placement.assert_not_called()
+    assert ctx.state.proxy_crew.x.queued is False
+    worker.move.assert_called_once_with(PROXY)
+
+
+def test_proxy_crew_paths_while_waiting_on_tech() -> None:
+    ctx = _ctx()
+    ctx.build.crew = _crew_plan()
+    ctx.state.proxy_crew.x.tag = 5
+    worker = _worker(5, PROXY)
+    ctx.bot.unit_tag_dict = {5: worker}
+    ctx.bot.minerals = 150
+    ctx.bot.tech_requirement_progress.return_value = 0.5  # Depot still building
+
+    t.proxy_crew()(ctx)
+
+    ctx.mediator.build_with_specific_worker.assert_not_called()
+    ctx.mediator.request_building_placement.assert_not_called()
+    assert ctx.state.proxy_crew.x.queued is False
+    worker.move.assert_called_once_with(PROXY)
 
 
 def test_proxy_crew_gives_up_on_a_dead_worker() -> None:
