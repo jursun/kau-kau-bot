@@ -143,29 +143,21 @@ def release_waves() -> CombatRoutine:
     return routine
 
 
-def release_first_wave_then_stream() -> CombatRoutine:
-    """`release_waves()`'s single-wave sibling: one muster, then no more.
+def release_first_wave_then_stream(muster: bool = True) -> CombatRoutine:
+    """`release_waves()`'s single-wave sibling: one leave, then stream.
 
     Wait once for `combat.wave1_min` defenders and `combat.wave_gate`, and
-    release them together as a mustering wave - same as `release_waves()`'s
-    first wave. From then on (`ctx.state.wave_number >= 1`), skip the wave
-    machinery entirely: every unit that finishes training is promoted to
-    ATTACKING the moment it exists, with no minimum size and, critically,
-    without ever being added to `RunState.mustering_tags`.
+    release them together as ATTACKING. From then on (`ctx.state.wave_number
+    >= 1`), every new defender is promoted to ATTACKING the moment it
+    exists, with no minimum size.
 
-    That omission is the whole mechanism. `attack_squads()` only holds a
-    squad at the rally point while its tags are in `mustering_tags` - a tag
-    that was never added there reads as "already formed up," so
-    `attack_squads()` sends it straight at `targeting.attack_target` on the
-    same frame it was promoted. Nothing waits to group up with anyone; each
-    unit heads to the front on its own and folds into whatever fight is
-    already under way there via `get_squads`' own proximity grouping.
-
-    For a build whose Barracks/Gateway/etc. sit at the front already (a
-    proxy, most obviously), this is "one staged opening push, then a
-    constant trickle of reinforcement" - `release_waves()`'s repeated
-    wave-sizing math has nothing left to do once the opening push is out,
-    because there is no rally-to-home leg for later units to cluster during.
+    When `muster` is True (default), the first wave is also added to
+    `RunState.mustering_tags` so `attack_squads` holds it at the rally
+    point until it clumps - good for proxy armies that spawn already
+    forward. When False, the first wave skips that hold and marches on
+    the same frame (Chargelot-style home production: units are already
+    together at the natural, and holding just invites home defense fights
+    that never leave for the enemy base).
     """
 
     def routine(ctx: "BotContext") -> None:
@@ -191,9 +183,13 @@ def release_first_wave_then_stream() -> CombatRoutine:
             return
 
         ctx.mediator.batch_assign_role(tags=tags, role=UnitRole.ATTACKING)
-        ctx.state.mustering_tags.update(tags)
+        if muster:
+            ctx.state.mustering_tags.update(tags)
         ctx.state.wave_number = 1
-        ctx.log(f"WAVE 1 attack (size={size}) - streaming from here on")
+        ctx.log(
+            f"WAVE 1 attack (size={size}) - streaming from here on"
+            f"{'' if muster else ' (no muster)'}"
+        )
 
     return routine
 

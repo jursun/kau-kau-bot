@@ -56,23 +56,17 @@ BUILD = BuildDefinition(
         long_distance_mine=False,
     ),
     army=Army(
+        # Only ground army that should muster/attack. Prism / Obs / Adept are
+        # trained via `comp` but get support roles in `roles.SUPPORT_ROLES`.
         comp=CHARGELOT_COMP,
-        types=frozenset(
-            {
-                UnitTypeId.ZEALOT,
-                UnitTypeId.STALKER,
-                UnitTypeId.ADEPT,
-                UnitTypeId.WARPPRISM,
-                UnitTypeId.OBSERVER,
-            }
-        ),
+        types=frozenset({UnitTypeId.ZEALOT, UnitTypeId.STALKER}),
         # Warp Gate is started in the opening; keep it here so macro still
         # finishes it if the opening handed off early.
         upgrades=(WARPGATE, CHARGE),
     ),
     combat=Combat(
         routines=(
-            combat.release_first_wave_then_stream(),
+            combat.release_first_wave_then_stream(muster=False),
             combat.defend_home(),
             combat.attack_squads(),
         ),

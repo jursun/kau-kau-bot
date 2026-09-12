@@ -20,7 +20,13 @@ if TYPE_CHECKING:
 SUPPORT_ROLES: dict[Race, dict[UnitTypeId, UnitRole]] = {
     Race.Zerg: {UnitTypeId.QUEEN: UnitRole.QUEEN_INJECT},
     Race.Terran: {},
-    Race.Protoss: {},
+    Race.Protoss: {
+        # Keep these out of DEFENDING/ATTACKING or they suicide with the ball
+        # (Warp Prism especially) and pad wave1_min with non-Zealots.
+        UnitTypeId.WARPPRISM: UnitRole.DROP_SHIP,
+        UnitTypeId.OBSERVER: UnitRole.SCOUTING,
+        UnitTypeId.ADEPT: UnitRole.HARASSING_ADEPT,
+    },
 }
 
 # One flier per race is spent on map vision; the rest keep the default role.

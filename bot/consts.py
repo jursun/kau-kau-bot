@@ -36,8 +36,8 @@ MASS_MARINE_COMP: dict[UnitTypeId, dict[str, float | int]] = {
 # unit of each type. Keep Prism/Obs proportions tiny so SpawnController does
 # not casually roll a second Warp Prism.
 CHARGELOT_COMP: dict[UnitTypeId, dict[str, float | int]] = {
-    UnitTypeId.ZEALOT: {"proportion": 0.78, "priority": 1},
-    UnitTypeId.STALKER: {"proportion": 0.18, "priority": 0},
+    UnitTypeId.ZEALOT: {"proportion": 0.85, "priority": 1},
+    UnitTypeId.STALKER: {"proportion": 0.11, "priority": 0},
     UnitTypeId.WARPPRISM: {"proportion": 0.02, "priority": 0},
     UnitTypeId.OBSERVER: {"proportion": 0.02, "priority": 0},
 }
