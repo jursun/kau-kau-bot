@@ -1,4 +1,4 @@
-"""Smoke-test Four Rax Proxy vs Terran, Zerg, and Protoss on random maps.
+"""Smoke-test Speedling All-In vs Terran, Zerg, and Protoss on random maps.
 
 Race / Debug / build are CLI overrides applied in memory (config.yml is not
 written). Defaults: config.yml for race & Debug when omitted; this script's
@@ -7,10 +7,10 @@ UseData off so ares always picks that opening via `test_123`.
 
 Usage (from repo root):
 
-    poetry run python scripts/smoke_four_rax_proxy.py
-    poetry run python scripts/smoke_four_rax_proxy.py --validate
-    poetry run python scripts/smoke_four_rax_proxy.py --race Terran --build "Four Rax Proxy"
-    poetry run python scripts/smoke_four_rax_proxy.py --difficulty Easy --time-limit 480
+    poetry run python scripts/smoke_speedling_all_in.py
+    poetry run python scripts/smoke_speedling_all_in.py --validate
+    poetry run python scripts/smoke_speedling_all_in.py --race Zerg --build "Speedling All-In"
+    poetry run python scripts/smoke_speedling_all_in.py --difficulty Easy --time-limit 480
 
 Exit status is 0 when every game finishes without raising (Victory / Defeat /
 Tie all count as a smoke pass). Non-zero if a game crashes.
@@ -27,8 +27,8 @@ if str(ROOT) not in sys.path:
 
 from scripts.smoke_common import run_smoke  # noqa: E402
 
-BUILD_NAME = "Four Rax Proxy"
-DEFAULT_RACE = "Terran"
+BUILD_NAME = "Speedling All-In"
+DEFAULT_RACE = "Zerg"
 
 
 if __name__ == "__main__":
