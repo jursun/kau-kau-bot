@@ -82,7 +82,7 @@ def test_attack_objective_is_enemy_main_once_natural_is_cleared() -> None:
 
 
 def test_attack_objective_scouts_once_enemy_main_is_cleared() -> None:
-    """Main seen-and-gone → hunt via attack_target, not camp."""
+    """Main seen-and-gone → hunt via hunt_remaining_bases, not camp."""
     ctx = MagicMock()
     ctx.mediator.get_enemy_nat = Point2((50.0, 50.0))
     ctx.bot.enemy_start_locations = [Point2((70.0, 70.0))]
@@ -92,12 +92,12 @@ def test_attack_objective_scouts_once_enemy_main_is_cleared() -> None:
     scouted = Point2((120.0, 30.0))
 
     with patch(
-        "bot.builds.terran.four_rax_proxy.targeting.attack_target",
+        "bot.builds.terran.four_rax_proxy.targeting.hunt_remaining_bases",
         return_value=scouted,
-    ) as attack_target:
+    ) as hunt:
         assert attack_objective(ctx) == scouted
-        attack_target.assert_called_once()
-        assert attack_target.call_args.args[1] == ctx.bot.enemy_start_locations[0]
+        hunt.assert_called_once()
+        assert hunt.call_args.args[1] == ctx.bot.enemy_start_locations[0]
 
 
 def main() -> int:

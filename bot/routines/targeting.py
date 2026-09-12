@@ -90,6 +90,49 @@ def attack_target(ctx: "BotContext", from_pos: Point2) -> Point2:
     return ctx.bot.enemy_start_locations[0]
 
 
+def _is_our_expansion(ctx: "BotContext", location: Point2) -> bool:
+    """True when `location` is our main or natural - those sit in
+    `get_enemy_expansions` (every base except the enemy start) and must
+    not pull a post-main scout sweep back onto our own side of the map."""
+    radius_sq = MAIN_CLEAR_RADIUS**2
+    if cy_distance_to_squared(location, ctx.bot.start_location) <= radius_sq:
+        return True
+    return cy_distance_to_squared(location, ctx.mediator.get_own_nat) <= radius_sq
+
+
+def hunt_remaining_bases(ctx: "BotContext", from_pos: Point2) -> Point2:
+    """Find a hidden enemy base after the main townhall is gone.
+
+    Unlike `attack_target`, leftover non-townhall structures (pylons,
+    depots, production in a dead main) do **not** pin the army in place:
+    visible townhalls win, then the next expansion that currently has no
+    vision. Only once every expansion has been checked do remaining
+    structures get cleaned up. Skips our own main/natural so a one-base
+    all-in does not "scout" home.
+    """
+    townhalls = ctx.bot.enemy_structures.of_type(ALL_TOWNHALL_TYPES)
+    if townhalls:
+        target = cy_closest_to(position=from_pos, units=townhalls)
+        return _nearest_defender(ctx, target.position) or target.position
+
+    for location, _distance in ctx.mediator.get_enemy_expansions:
+        if _is_our_expansion(ctx, location):
+            continue
+        if not ctx.bot.is_visible(location):
+            return location
+
+    structures = ctx.bot.enemy_structures
+    if structures:
+        target = cy_closest_to(position=from_pos, units=structures)
+        return target.position
+
+    for point in focus_points(ctx):
+        if not ctx.bot.is_visible(point):
+            return point
+
+    return ctx.bot.enemy_start_locations[0]
+
+
 def enemy_third(ctx: "BotContext") -> Point2:
     """The enemy's third base. A `PointLocator`, for builds that want to put
     something there - a proxy, a rally - rather than merely walk to it."""

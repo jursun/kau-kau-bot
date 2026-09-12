@@ -44,10 +44,11 @@ push (see `combat.builder_workers_attack`'s docstring).
 Fallback once the enemy main's townhall has been seen and destroyed
 (`targeting.enemy_main_fallen`): pull one mining SCV to keep laying Depots
 at home (`steps.terran.continuous_main_depots`) so Marines are not supply-
-blocked while hunting, and point the push at `targeting.attack_target` so
-squads walk unscouted expansions for hidden bases instead of camping an
-empty start location. Opening supply stays crew Depots only — no
-`AutoSupply`, which races Z for the first Depot.
+blocked while hunting, and point the push at
+`targeting.hunt_remaining_bases` so squads walk unscouted expansions for
+hidden townhalls instead of camping leftover buildings in a dead main.
+Opening supply stays crew Depots only — no `AutoSupply`, which races Z
+for the first Depot.
 
 Not yet validated in-game.
 """
@@ -147,9 +148,10 @@ def attack_objective(ctx) -> Point2:
     townhall is down (`targeting.enemy_natural_cleared`) the next step is
     the enemy start location, which takes them up the ramp into the main.
     Once the main's townhall has been seen and destroyed
-    (`targeting.enemy_main_fallen`), fall through to `targeting.attack_target`
-    so the army hunts remaining structures and walks unscouted expansions
-    for hidden bases instead of sitting on an empty start location.
+    (`targeting.enemy_main_fallen`), fall through to
+    `targeting.hunt_remaining_bases` — visible townhalls first, then
+    unscouted expansions — so leftover pylons in a dead main cannot keep
+    the army from searching for a hidden base.
 
     Order matters: check the natural before the main. A townhall still at
     the natural means the ramp fight is not over. Use `enemy_main_fallen`
@@ -166,7 +168,7 @@ def attack_objective(ctx) -> Point2:
         if attackers
         else ctx.bot.enemy_start_locations[0]
     )
-    return targeting.attack_target(ctx, from_pos)
+    return targeting.hunt_remaining_bases(ctx, from_pos)
 
 
 def _marine_training_started(ctx) -> bool:

@@ -126,6 +126,62 @@ def test_attack_target_falls_through_to_focus_points_with_no_structures() -> Non
     assert targeting.attack_target(ctx, FROM_POS) == Point2((1.0, 1.0))
 
 
+# --- targeting.hunt_remaining_bases --------------------------------------
+
+
+def test_hunt_remaining_bases_ignores_leftover_main_structures_to_scout() -> None:
+    """Pylons in a dead main must not block the expansion sweep."""
+    pylon = _structure(FROM_POS, type_id=UnitTypeId.PYLON)
+    hidden = Point2((200.0, 50.0))
+    ctx = _ctx(structures=[pylon])
+    ctx.bot.start_location = Point2((10.0, 10.0))
+    ctx.mediator.get_own_nat = Point2((20.0, 10.0))
+    ctx.mediator.get_enemy_expansions = [(hidden, 30.0)]
+    ctx.bot.is_visible.side_effect = lambda p: p != hidden
+    ctx.bot.enemy_start_locations = [Point2((70.0, 70.0))]
+
+    assert targeting.hunt_remaining_bases(ctx, FROM_POS) == hidden
+
+
+def test_hunt_remaining_bases_prefers_a_visible_townhall_over_scouting() -> None:
+    hatchery = _structure(HATCHERY)
+    hidden = Point2((200.0, 50.0))
+    ctx = _ctx(structures=[hatchery])
+    ctx.bot.start_location = Point2((10.0, 10.0))
+    ctx.mediator.get_own_nat = Point2((20.0, 10.0))
+    ctx.mediator.get_enemy_expansions = [(hidden, 30.0)]
+    ctx.bot.is_visible.return_value = False
+
+    assert targeting.hunt_remaining_bases(ctx, FROM_POS) == HATCHERY
+
+
+def test_hunt_remaining_bases_skips_our_own_expansions() -> None:
+    our_nat = Point2((20.0, 10.0))
+    hidden = Point2((200.0, 50.0))
+    ctx = _ctx(structures=[])
+    ctx.bot.start_location = Point2((10.0, 10.0))
+    ctx.mediator.get_own_nat = our_nat
+    ctx.mediator.get_enemy_expansions = [(our_nat, 10.0), (hidden, 30.0)]
+    ctx.bot.is_visible.return_value = False
+    ctx.bot.enemy_start_locations = [Point2((70.0, 70.0))]
+    ctx.build.combat.focus = ()
+
+    assert targeting.hunt_remaining_bases(ctx, FROM_POS) == hidden
+
+
+def test_hunt_remaining_bases_cleans_up_structures_after_expansions_checked() -> None:
+    pylon = _structure(FROM_POS, type_id=UnitTypeId.PYLON)
+    visible_exp = Point2((200.0, 50.0))
+    ctx = _ctx(structures=[pylon])
+    ctx.bot.start_location = Point2((10.0, 10.0))
+    ctx.mediator.get_own_nat = Point2((20.0, 10.0))
+    ctx.mediator.get_enemy_expansions = [(visible_exp, 30.0)]
+    ctx.bot.is_visible.return_value = True
+    ctx.bot.enemy_start_locations = [Point2((70.0, 70.0))]
+
+    assert targeting.hunt_remaining_bases(ctx, FROM_POS) == pylon.position
+
+
 # --- targeting locators --------------------------------------------------
 
 
