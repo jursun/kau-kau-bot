@@ -38,6 +38,8 @@ PRISM_STANDOFF: float = 6.0
 OBS_FOLLOW_RADIUS: float = 3.0
 """How tightly the Observer hugs the army destination / center."""
 SCOUT_WORKER_TYPES = frozenset({UnitTypeId.SCV, UnitTypeId.PROBE, UnitTypeId.DRONE})
+
+
 def _biggest_attacking_squad(ctx: "BotContext"):
     squads = ctx.mediator.get_squads(role=UnitRole.ATTACKING, squad_radius=9.0)
     if not squads:
@@ -67,7 +69,11 @@ def _warpgates_ready_to_warp(ctx: "BotContext") -> bool:
 
 
 def escort_warp_prism():
-    """Phase behind the army; reposition in transport mode while WG on CD."""
+    """Phase behind the army; reposition in transport mode while WG on CD.
+
+    One `CombatManeuver` per Prism per frame (APM-safe): air influence retreat
+    first, then morph / move so orders do not fight each other.
+    """
 
     def routine(ctx: "BotContext") -> None:
         prisms = [
@@ -81,57 +87,64 @@ def escort_warp_prism():
         army = _army_anchor(ctx)
         home = ctx.mediator.get_own_nat
         can_warp = _warpgates_ready_to_warp(ctx)
+        grid = ctx.mediator.get_air_grid
 
         for prism in prisms:
+            maneuver = CombatManeuver()
+            maneuver.add(KeepUnitSafe(unit=prism, grid=grid))
+
             if army is None:
-                # No ball yet — sit near natural / production.
                 hold = targeting.rally_point(ctx)
                 if prism.type_id == UnitTypeId.WARPPRISMPHASING:
-                    ctx.bot.register_behavior(
+                    maneuver.add(
                         UseAbility(
                             AbilityId.MORPH_WARPPRISMTRANSPORTMODE, prism
                         )
                     )
-                ctx.bot.register_behavior(AMove(unit=prism, target=hold))
+                maneuver.add(
+                    MoveToSafeTarget(unit=prism, grid=grid, target=hold)
+                )
+                ctx.bot.register_behavior(maneuver)
                 continue
 
             # Behind the army: from army toward our natural.
             behind = Point2(cy_towards(army, home, PRISM_STANDOFF))
 
             if can_warp:
-                # Phase at the warp pocket behind the ball.
-                if prism.type_id != UnitTypeId.WARPPRISMPHASING:
-                    if AbilityId.MORPH_WARPPRISMPHASINGMODE in prism.abilities:
-                        ctx.bot.register_behavior(
-                            UseAbility(
-                                AbilityId.MORPH_WARPPRISMPHASINGMODE, prism
-                            )
-                        )
-                        continue
                 dist = cy_distance_to(prism.position, behind)
                 if dist > 2.5:
-                    # Need to move — drop to transport if phased, then move.
+                    # Must move — drop phase first, then path on the air grid.
                     if prism.type_id == UnitTypeId.WARPPRISMPHASING:
-                        ctx.bot.register_behavior(
+                        maneuver.add(
                             UseAbility(
                                 AbilityId.MORPH_WARPPRISMTRANSPORTMODE, prism
                             )
                         )
-                    else:
-                        ctx.bot.register_behavior(
-                            AMove(unit=prism, target=behind)
+                    maneuver.add(
+                        MoveToSafeTarget(
+                            unit=prism, grid=grid, target=behind
                         )
-                # else already phased on spot — stay
+                    )
+                elif prism.type_id != UnitTypeId.WARPPRISMPHASING:
+                    if AbilityId.MORPH_WARPPRISMPHASINGMODE in prism.abilities:
+                        maneuver.add(
+                            UseAbility(
+                                AbilityId.MORPH_WARPPRISMPHASINGMODE, prism
+                            )
+                        )
+                # else already phased on the pocket — stay
             else:
-                # Warpgates cooling: reposition in transport mode.
                 if prism.type_id == UnitTypeId.WARPPRISMPHASING:
-                    ctx.bot.register_behavior(
+                    maneuver.add(
                         UseAbility(
                             AbilityId.MORPH_WARPPRISMTRANSPORTMODE, prism
                         )
                     )
-                else:
-                    ctx.bot.register_behavior(AMove(unit=prism, target=behind))
+                maneuver.add(
+                    MoveToSafeTarget(unit=prism, grid=grid, target=behind)
+                )
+
+            ctx.bot.register_behavior(maneuver)
 
     return routine
 
@@ -302,8 +315,22 @@ def scout_probe_harass():
     return routine
 
 
+def _adept_confirm_shade(adept) -> UseAbility | None:
+    """Teleport into an already-placed shade — cast alone does not move the Adept."""
+    if AbilityId.CANCEL_ADEPTPHASESHIFT in adept.abilities:
+        return UseAbility(AbilityId.CANCEL_ADEPTPHASESHIFT, adept)
+    if AbilityId.CANCEL_ADEPTSHADEPHASESHIFT in adept.abilities:
+        return UseAbility(AbilityId.CANCEL_ADEPTSHADEPHASESHIFT, adept)
+    return None
+
+
 def harassing_adept():
-    """Shade chase low-HP flee / shade out when shields gone; @3:00 natural."""
+    """Shade chase low-HP / shade out when shields gone; @3:00 natural.
+
+    Shade placement (`ADEPTPHASESHIFT`) only drops the projection. Confirm with
+    `CANCEL_ADEPTPHASESHIFT` (or shade cancel) once that ability is available,
+    otherwise the Adept never teleports.
+    """
 
     def routine(ctx: "BotContext") -> None:
         adepts = ctx.mediator.get_units_from_role(
@@ -318,6 +345,14 @@ def harassing_adept():
 
         for adept in adepts:
             maneuver = CombatManeuver()
+            # Confirm an outstanding shade before issuing new micro.
+            confirm = _adept_confirm_shade(adept)
+            if confirm is not None:
+                maneuver.add(confirm)
+                maneuver.add(KeepUnitSafe(unit=adept, grid=grid))
+                ctx.bot.register_behavior(maneuver)
+                continue
+
             enemies_near = ctx.mediator.get_units_in_range(
                 start_points=[adept.position],
                 distances=12.0,
@@ -358,9 +393,12 @@ def harassing_adept():
                         prey.position,
                     )
                 )
+                maneuver.add(KeepUnitSafe(unit=adept, grid=grid))
                 maneuver.add(AttackTarget(unit=adept, target=prey))
                 ctx.bot.register_behavior(maneuver)
                 continue
+
+            maneuver.add(KeepUnitSafe(unit=adept, grid=grid))
 
             if go_natural:
                 workers = [
