@@ -297,9 +297,11 @@ def proxy_crew() -> MacroStep:
     and reserves the cost, and the second keeps walking.
 
     Once a slot's task list is exhausted this step stops touching it -
-    `combat.builder_workers_attack`'s existing proximity-based claiming
-    (identity-blind; it has no idea this was "x") picks it up from there once
-    its own `claim_gate` passes.
+    `combat.builder_workers_attack`'s proximity-based claiming (identity-
+    blind; it has no idea this was "x") picks it up from there once its own
+    `claim_gate` passes *and* the worker is no longer listed as an active
+    crew member (see `_active_crew_tags`). Claiming earlier while tasks
+    remain is what made Y oscillate between Depot pathing and attack orders.
     """
 
     def step(ctx: "BotContext"):

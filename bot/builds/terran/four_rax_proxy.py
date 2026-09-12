@@ -233,10 +233,11 @@ BUILD = BuildDefinition(
             # then main once the natural is cleared) - no per-Marine kite.
             combat.attack_squads(),
             # Every crew worker that has worked through its own task list
-            # joins the push once all four Barracks are accounted for. This
-            # doesn't know or care which of X/Y/Z it's claiming — see its
-            # own docstring for why "near the proxy, not in the building
-            # tracker, not mid-construction" is a safe stand-in for "done".
+            # joins the push once all four Barracks are accounted for.
+            # `builder_workers_attack` also refuses to claim any crew slot
+            # that still has tasks left — so Y is not yanked into the attack
+            # while the proxy Depot is still owed, even though this gate
+            # opens as soon as Barracks D starts. See its docstring.
             combat.builder_workers_attack(
                 proxy_location,
                 claim_gate=gates.structure_started(UnitTypeId.BARRACKS, PROXY_BARRACKS),

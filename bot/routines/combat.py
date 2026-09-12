@@ -29,13 +29,38 @@ from sc2.position import Point2
 from sc2.unit import Unit
 from sc2.units import Units
 
-from bot.builds.definition import _always
+from bot.builds.definition import ProxyCrewPlan, _always
 from bot.consts import IGNORED_ENEMY_TYPES
 from bot.core.types import CombatRoutine, Gate, PointLocator
 from bot.routines import targeting
 
 if TYPE_CHECKING:
     from bot.core.context import BotContext
+
+
+def _active_crew_tags(ctx: "BotContext") -> set[int]:
+    """Tags of proxy-crew workers that still have tasks left.
+
+    `builder_workers_attack` must not claim these: `proxy_crew` still issues
+    path/build orders for them, and a `PROXY_WORKER` attack/`AMove` on the
+    same frame is what stuck Y cycling between the Depot site and the attack
+    objective once all four Barracks were under way (claim_gate open) while
+    Y's second task was still pending.
+    """
+    plan = ctx.build.crew
+    if not isinstance(plan, ProxyCrewPlan):
+        return set()
+    crew = ctx.state.proxy_crew
+    busy: set[int] = set()
+    for member, tasks in (
+        (crew.x, plan.x_tasks),
+        (crew.y, plan.y_tasks),
+        (crew.z, plan.z_tasks),
+    ):
+        if member.tag is not None and member.task_index < len(tasks):
+            busy.add(member.tag)
+    return busy
+
 
 DEFENDER_ENGAGE_RANGE: float = 12.0
 SQUAD_ENGAGE_RANGE: float = 11.5
@@ -432,10 +457,14 @@ def builder_workers_attack(
     nothing at that point; adding them to the push is worth a Marine each.
 
     Claiming is by *situation*, not by tag: a worker is claimed if it is near
-    `where`, not in ares' building tracker, and not currently constructing.
-    Those two exclusions are what make it safe - a worker still walking to
-    the proxy to build, or mid-build, is in the tracker and is left alone.
-    Nothing has to remember which SCV built which Barracks.
+    `where`, not in ares' building tracker, not currently constructing, and
+    not still mid `ProxyCrewPlan` (any `ctx.state.proxy_crew` slot whose
+    `task_index` has not yet exhausted that slot's task list). The tracker /
+    constructing checks cover ares-dispatched builders; the crew check covers
+    the gap between tasks (e.g. Y waiting on minerals for the proxy Depot
+    after Barracks B) when the worker is near the proxy, idle of the tracker,
+    and would otherwise be yanked into `PROXY_WORKER` while `proxy_crew` still
+    path/build-orders it every frame.
 
     `claim_gate` is the part that is easy to get wrong, so it is explicit.
     Claiming assigns `UnitRole.PROXY_WORKER`, and `select_worker` only ever
@@ -445,7 +474,8 @@ def builder_workers_attack(
     eligible to build it, and a fresh SCV gets pulled from home for the
     walk instead. So the gate should say "every Barracks this build wants is
     already standing or under way" - after that there is nothing left for a
-    builder to be saved for.
+    *generic* builder to be saved for. Crew workers with remaining tasks are
+    still excluded separately via `_active_crew_tags`.
 
     Before the first wave is released the claimed workers wait at the proxy
     rather than running in alone; from wave 1 on they attack the same target
@@ -465,9 +495,10 @@ def builder_workers_attack(
         already = {
             u.tag for u in ctx.mediator.get_units_from_role(role=UnitRole.PROXY_WORKER)
         }
+        busy_crew = _active_crew_tags(ctx)
         radius_sq = claim_radius**2
         for worker in ctx.bot.workers:
-            if worker.tag in already or worker.tag in tracker:
+            if worker.tag in already or worker.tag in tracker or worker.tag in busy_crew:
                 continue
             if worker.is_constructing_scv:
                 continue
@@ -482,7 +513,15 @@ def builder_workers_attack(
         if claim_gate(ctx):
             _claim(ctx, point)
 
-        workers = ctx.mediator.get_units_from_role(role=UnitRole.PROXY_WORKER)
+        busy_crew = _active_crew_tags(ctx)
+        # Skip anyone still mid-crew even if an earlier frame already assigned
+        # PROXY_WORKER — otherwise path/build from `proxy_crew` and attack/
+        # AMove from this routine keep overwriting each other on the same SCV.
+        workers = [
+            u
+            for u in ctx.mediator.get_units_from_role(role=UnitRole.PROXY_WORKER)
+            if u.tag not in busy_crew
+        ]
         if not workers:
             return
 

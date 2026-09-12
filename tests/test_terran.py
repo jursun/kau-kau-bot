@@ -9,7 +9,10 @@ Five things here are easy to get wrong and impossible to eyeball:
   already dispatched to build something. A claimed worker leaves
   `UnitRole.GATHERING`, and `select_worker` only ever looks at GATHERING —
   so a wrong claim silently removes a builder from the pool that
-  `proxy_barracks` draws from.
+  `proxy_barracks` draws from. It must also leave `ProxyCrewPlan` workers
+  alone until their own task list is exhausted: claiming Y while it still
+  owes the proxy Depot puts `proxy_crew` path/build orders and
+  `PROXY_WORKER` attack/`AMove` on the same SCV every frame.
 * A build that sets `combat.rally` must actually get that point back out of
   `targeting.rally_point`, and must not also be handed mineral-line hold
   positions on the other side of the map.
@@ -75,6 +78,11 @@ def _ctx(rally=None) -> BotContext:
     build.combat.rally = rally
     build.combat.rally_offset = 8.0
     build.combat.focus = ()
+    # MagicMock attributes are truthy by default; leave this unset the same
+    # way a build without an override does, so `targeting.squad_destination`
+    # falls through to the enemy start / focus logic under test.
+    build.combat.attack_objective = None
+    build.crew = None
     ctx = BotContext(bot=MagicMock(), build=build, state=RunState())
     ctx.bot.enemy_structures = []
     ctx.mediator.get_enemy_expansions = []
@@ -190,6 +198,45 @@ def test_does_not_claim_a_worker_mid_build() -> None:
 def test_does_not_claim_a_worker_at_home() -> None:
     ctx = _ctx()
     assert _run_claim(ctx, [_worker(9, HOME)]) == []
+
+
+def test_does_not_claim_a_crew_worker_with_tasks_left() -> None:
+    """Four Rax's claim_gate opens once all four Barracks are under way,
+    which is before Y finishes its second task (the proxy Depot). Between
+    Barracks B completing and the Depot being affordable Y sits near the
+    proxy, out of the building tracker, and not constructing — exactly the
+    situation claim used to treat as "stranded". Claiming then made
+    `proxy_crew` and `builder_workers_attack` fight over Y's orders every
+    frame (path-to-Depot vs attack/`AMove` elsewhere)."""
+    ctx = _ctx()
+    ctx.build.crew = ProxyCrewPlan(
+        x_tasks=(WorkerTask(UnitTypeId.BARRACKS, _proxy),),
+        y_tasks=(
+            WorkerTask(UnitTypeId.BARRACKS, _proxy),
+            WorkerTask(UnitTypeId.SUPPLYDEPOT, _proxy),
+        ),
+        z_tasks=(WorkerTask(UnitTypeId.SUPPLYDEPOT, _proxy),),
+    )
+    ctx.state.proxy_crew.y.tag = 2
+    ctx.state.proxy_crew.y.task_index = 1  # Barracks B done; Depot still owed
+
+    assert _run_claim(ctx, [_worker(2, PROXY)]) == []
+
+
+def test_claims_a_crew_worker_once_its_task_list_is_done() -> None:
+    ctx = _ctx()
+    ctx.build.crew = ProxyCrewPlan(
+        x_tasks=(WorkerTask(UnitTypeId.BARRACKS, _proxy),),
+        y_tasks=(
+            WorkerTask(UnitTypeId.BARRACKS, _proxy),
+            WorkerTask(UnitTypeId.SUPPLYDEPOT, _proxy),
+        ),
+        z_tasks=(WorkerTask(UnitTypeId.SUPPLYDEPOT, _proxy),),
+    )
+    ctx.state.proxy_crew.y.tag = 2
+    ctx.state.proxy_crew.y.task_index = 2  # both of Y's tasks finished
+
+    assert _run_claim(ctx, [_worker(2, PROXY)]) == [2]
 
 
 def test_does_not_reclaim_a_worker_it_already_owns() -> None:
