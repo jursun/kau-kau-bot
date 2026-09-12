@@ -16,7 +16,11 @@ def is_supply_blocked(bot: Any) -> bool:
 
 
 def idle_ready_townhalls(bot: Any) -> list[Any]:
-    """Ready townhalls that report idle this frame."""
+    """Ready townhalls that report idle this frame.
+
+    Meaningful for Terran/Protoss only. Zerg hatcheries stay `is_idle` while
+    larva morphs, so callers must race-gate before treating this as idle prod.
+    """
     townhalls = getattr(bot, "townhalls", None)
     if townhalls is None:
         return []

@@ -63,6 +63,14 @@ def test_units_parked_empty_without_grid() -> None:
     assert qa.units_parked_in_influence(bot) == []
 
 
+
+def test_idle_ready_townhalls_still_reports_idle_hatches() -> None:
+    """Helper is race-agnostic; BaseValidator must race-gate Zerg callers."""
+    ready = [_th(1, True)]
+    bot = SimpleNamespace(townhalls=SimpleNamespace(ready=ready))
+    assert [t.tag for t in qa.idle_ready_townhalls(bot)] == [1]
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failures = 0

@@ -576,15 +576,18 @@ class BaseValidator:
     # ── Validation logic ─────────────────────────────────────────────────
 
     def _track_combat_qa(self) -> None:
-        """Idle ready townhalls + ATTACKING units parked in unsafe influence.
+        """Idle ready townhalls (T/P) + ATTACKING units parked in unsafe influence.
 
         Same grace window as supply blocks so the opening does not FAIL for
         expected early idling. Influence parking uses `is_position_safe` on
         the ground grid — the predicate KeepUnitSafe consults.
+
+        Zerg hatcheries are usually `is_idle` while larva trains, so idle
+        townhall tracking is Terran/Protoss only (race-gated).
         """
         if self.time < self.SUPPLY_BLOCK_GRACE_PERIOD:
             return
-        if intel_qa.idle_ready_townhalls(self.ai):
+        if self.ctx.build.race != Race.Zerg and intel_qa.idle_ready_townhalls(self.ai):
             self._idle_townhall_frames += 1
         if intel_qa.units_parked_in_influence(self.ai):
             self._influence_parking_frames += 1
@@ -593,14 +596,22 @@ class BaseValidator:
         """Ship-gate checks for supply-adjacent production + influence parking.
 
         Supply Management stays in Stage 1; this stage covers idle townhalls
-        and army parking in bad ground influence after influence retreat.
+        (non-Zerg) and army parking in bad ground influence after retreat.
         """
-        return [
-            StepResult(
+        if self.ctx.build.race == Race.Zerg:
+            idle = StepResult(
+                "Idle Townhalls",
+                True,
+                "n/a for Zerg (hatch is_idle while larva trains)",
+            )
+        else:
+            idle = StepResult(
                 "Idle Townhalls",
                 self._idle_townhall_frames < 50,
                 f"idle-townhall frames: {self._idle_townhall_frames}",
-            ),
+            )
+        return [
+            idle,
             StepResult(
                 "Influence Parking",
                 self._influence_parking_frames < 50,
