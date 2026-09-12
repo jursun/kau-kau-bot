@@ -4,6 +4,9 @@
   python run.py --validate      # local game + rush milestone report at game end
   python run.py --LadderServer  # invoked by AI Arena's LadderManager
 
+Local and --validate games auto-leave at 7:00 game time (team policy).
+Ladder games never use that limit. Past 7:00 needs Jason confirm via CoS.
+
 Local settings live under `LocalGame:` in config.yml. Bot name / race come
 from `MyBotName` / `MyBotRace` in the same file, which is also what
 `scripts/create_ladder_zip.py` reads.
@@ -31,7 +34,7 @@ from sc2.main import run_game  # noqa: E402
 from sc2.maps import Map  # noqa: E402
 from sc2.player import Bot, Computer  # noqa: E402
 
-from bot.main import KauKauBot  # noqa: E402
+from bot.main import KauKauBot, LOCAL_GAME_TIME_LIMIT_SECONDS  # noqa: E402
 
 CONFIG_FILE: str = "config.yml"
 MAP_FILE_EXT: str = "SC2Map"
@@ -69,40 +72,55 @@ def load_config() -> dict:
         return yaml.safe_load(config_file) or {}
 
 
-def build_bot_ai(validate: bool):
+def build_bot_ai(
+    validate: bool, *, local_time_limit: float | None = None
+):
     """Return a bot instance, optionally with a build-specific validator
-    attached."""
+    attached.
+
+    `local_time_limit` (seconds of game time) enables the team 7:00 auto-leave
+    policy for local / `--validate` runs. Pass `None` for ladder so AI Arena
+    games never quit early.
+    """
     if not validate:
-        return KauKauBot()
+        bot = KauKauBot()
+    else:
+        from tests.validators.registry import validator_for_build
 
-    from tests.validators.registry import validator_for_build
+        class ValidatedKauKauBot(KauKauBot):
+            """KauKauBot with a build-specific milestone validator attached.
 
-    class ValidatedKauKauBot(KauKauBot):
-        """KauKauBot with a build-specific milestone validator attached.
+            The validator can't be picked until `KauKauBot.on_start` sets
+            `self.ctx.build.name` (ares picks the opening at runtime), so it's
+            constructed fresh in `on_start` via `validator_for_build` and driven
+            explicitly from the hooks below - composition, not inheritance.
+            """
 
-        The validator can't be picked until `KauKauBot.on_start` sets
-        `self.ctx.build.name` (ares picks the opening at runtime), so it's
-        constructed fresh in `on_start` via `validator_for_build` and driven
-        explicitly from the hooks below - composition, not inheritance.
-        """
+            validator = None
 
-        validator = None
+            async def on_start(self) -> None:
+                await KauKauBot.on_start(self)
+                validator_cls = validator_for_build(self.ctx.build.name)
+                self.validator = validator_cls(self)
 
-        async def on_start(self) -> None:
-            await KauKauBot.on_start(self)
-            validator_cls = validator_for_build(self.ctx.build.name)
-            self.validator = validator_cls(self)
+            async def on_step(self, iteration: int) -> None:
+                self.validator.on_step(iteration)
+                await KauKauBot.on_step(self, iteration)
 
-        async def on_step(self, iteration: int) -> None:
-            self.validator.on_step(iteration)
-            await KauKauBot.on_step(self, iteration)
+            async def on_end(self, game_result) -> None:
+                self.validator.on_end()
+                await KauKauBot.on_end(self, game_result)
 
-        async def on_end(self, game_result) -> None:
-            self.validator.on_end()
-            await KauKauBot.on_end(self, game_result)
+        logger.info("Rush validation ENABLED - report prints at game end.")
+        bot = ValidatedKauKauBot()
 
-    logger.info("Rush validation ENABLED - report prints at game end.")
-    return ValidatedKauKauBot()
+    bot.local_game_time_limit = local_time_limit
+    if local_time_limit is not None:
+        logger.info(
+            f"Local game time limit ENABLED - leave at "
+            f"{local_time_limit:.0f}s game time (7:00 team policy)."
+        )
+    return bot
 
 
 def resolve_map_list(local_cfg: dict) -> list[str]:
@@ -159,9 +177,16 @@ def main() -> None:
     bot_name: str = config.get(MY_BOT_NAME, "KauKauBot")
     race: Race = Race[config.get(MY_BOT_RACE, "Zerg").title()]
 
-    bot = Bot(race, build_bot_ai(args.validate), bot_name)
+    is_ladder = "--LadderServer" in sys.argv
+    # Team policy: auto-leave local/validate at 7:00; never on ladder.
+    local_limit = None if is_ladder else LOCAL_GAME_TIME_LIMIT_SECONDS
+    bot = Bot(
+        race,
+        build_bot_ai(args.validate, local_time_limit=local_limit),
+        bot_name,
+    )
 
-    if "--LadderServer" in sys.argv:
+    if is_ladder:
         logger.info("Starting ladder game...")
         result, opponent_id = run_ladder_game(bot)
         logger.info(f"{result} against opponent {opponent_id}")
