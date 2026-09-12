@@ -10,9 +10,10 @@ Gateways, Robotics Facility → Warp Prism (+ Observer when gas allows), and
 flood Chargelots. Gas workers peel off once Charge is paid for so minerals
 go into Gates and Zealots; leave a trickle for Stalkers / Prism / Obs.
 
-Intended hit: ~5:45 with Warp Prism, a ball of Zealots, and a few Stalkers
-(wshadows PvT guide). Prism load/drop micro and reactive Shield Batteries
-are follow-ups — this commit gets the macro timing online first.
+Intended hit: leave ~5:20, on the enemy base ~5:45 with Warp Prism
+phasing behind the ball, Observer overhead, and a few Stalkers (wshadows
+PvT guide). Scout Probe harasses until 2:00; Adept shades and hits the
+natural at 3:00. Gateways 2-4 wall the natural.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from sc2.ids.upgrade_id import UpgradeId
 
 from bot.builds.definition import Army, BuildDefinition, Combat, Economy
 from bot.consts import CHARGELOT_COMP, FOCUS_MAIN, FOCUS_NATURAL
-from bot.routines import combat, gates
+from bot.routines import combat, gates, protoss_support as ps
 from bot.steps import common as c
 from bot.steps import protoss as p
 
@@ -34,9 +35,11 @@ GATEWAY_COUNT = 8
 # roughly this before minerals dump into Gates / Zealots.
 WORKER_TARGET = 26
 
-# First leave once Charge is done and a meaningful Zealot ball exists.
-# Guide hit is ~5:45; size gates the leave more reliably than a clock.
+# Leave across the map at 5:20 once Charge is done and a Zealot ball exists;
+# guide hit on the enemy base is ~5:45. Clock + Charge both required so we
+# do not trickle out early without Charge, or sit home after 5:20.
 FIRST_WAVE = 12
+ARMY_LEAVE_TIME = 5 * 60 + 20
 
 CHARGE = UpgradeId.CHARGE
 WARPGATE = UpgradeId.WARPGATERESEARCH
@@ -69,8 +72,16 @@ BUILD = BuildDefinition(
             combat.release_first_wave_then_stream(muster=False),
             combat.defend_home(),
             combat.attack_squads(),
+            ps.escort_warp_prism(),
+            ps.escort_observer(),
+            ps.harassing_adept(),
+            ps.scout_probe_harass(),
         ),
-        wave_gate=gates.upgrade_done(CHARGE),
+        # Charge done AND 5:20 — army on the map by then, base hit ~5:45.
+        wave_gate=gates.all_of(
+            gates.upgrade_done(CHARGE),
+            gates.after_time(ARMY_LEAVE_TIME),
+        ),
         wave1_min=FIRST_WAVE,
         wave_growth=1.0,  # unused once streaming; kept for validator math
         focus=(FOCUS_NATURAL, FOCUS_MAIN),
@@ -90,9 +101,12 @@ BUILD = BuildDefinition(
     ),
     macro_steps=(
         # Gates before Robo so the 8-Gate commit is never waiting on gas units.
+        # Gates 2-4 wall the natural (exit path left); rest in main.
+        # Opening already placed Gateway 1; wall_natural covers the next 3.
         p.gateways(
             GATEWAY_COUNT,
             gate=gates.upgrade_started(CHARGE),
+            wall_natural=3,
         ),
         c.structure(
             UnitTypeId.ROBOTICSFACILITY,

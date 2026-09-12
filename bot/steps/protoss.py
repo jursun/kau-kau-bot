@@ -18,7 +18,11 @@ if TYPE_CHECKING:
     from bot.core.context import BotContext
 
 
-def gateways(count: int, gate: Gate = _always) -> MacroStep:
+def gateways(
+    count: int,
+    gate: Gate = _always,
+    wall_natural: int = 0,
+) -> MacroStep:
     """Keep `count` Gateways + Warp Gates combined.
 
     `BuildStructure` only counts the type you ask for. Once Warp Gate
@@ -26,6 +30,11 @@ def gateways(count: int, gate: Gate = _always) -> MacroStep:
     which would otherwise make ares keep laying Gateways forever. Subtract
     existing Warp Gates from `to_count` so the total production buildings
     stop at `count`.
+
+    When `wall_natural` > 0, the next `wall_natural` Gateways after the
+    opening one are placed at the natural with `wall=True` (ares wall
+    slots leave a unit exit path). Remaining Gateways go in the main /
+    production base as before.
     """
 
     def step(ctx: "BotContext"):
@@ -44,6 +53,18 @@ def gateways(count: int, gate: Gate = _always) -> MacroStep:
             f"MACRO gateways: building toward {count} "
             f"(now gates={ready_gates}+{pending_gates} warpgates={warpgates})",
         )
+
+        # Opening Gateway is usually in main. While total is still within
+        # 1 + wall_natural, prefer natural wall placements.
+        use_nat_wall = wall_natural > 0 and total < 1 + wall_natural
+        if use_nat_wall:
+            return BuildStructure(
+                base_location=ctx.mediator.get_own_nat,
+                structure_id=UnitTypeId.GATEWAY,
+                to_count=max(0, count - warpgates),
+                wall=True,
+                find_alternative=True,
+            )
 
         return BuildStructure(
             base_location=ctx.production_location,
