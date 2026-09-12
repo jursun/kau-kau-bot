@@ -28,6 +28,10 @@ NATURAL_CLEAR_RADIUS: float = 15.0
 """How close to `get_enemy_nat` an enemy townhall must be to still count
 the natural as standing - see `enemy_natural_cleared`."""
 
+MAIN_CLEAR_RADIUS: float = 15.0
+"""How close to the enemy start an enemy townhall must be to still count
+the main as standing - see `enemy_main_cleared`."""
+
 
 def focus_points(ctx: "BotContext") -> list[Point2]:
     """Resolve the build's focus keywords to map positions."""
@@ -120,6 +124,44 @@ def enemy_natural_cleared(
         cy_distance_to_squared(th.position, nat) <= radius_sq
         for th in ctx.bot.enemy_structures.of_type(ALL_TOWNHALL_TYPES)
     )
+
+
+def enemy_main_cleared(
+    ctx: "BotContext", radius: float = MAIN_CLEAR_RADIUS
+) -> bool:
+    """True when no *visible* enemy townhall stands near the enemy start.
+
+    Fog of war makes this true from frame one before anything has been
+    scouted - prefer `enemy_main_fallen` for anything that must wait until
+    the main was actually seen and then destroyed.
+    """
+    main = ctx.bot.enemy_start_locations[0]
+    radius_sq = radius**2
+    return not any(
+        cy_distance_to_squared(th.position, main) <= radius_sq
+        for th in ctx.bot.enemy_structures.of_type(ALL_TOWNHALL_TYPES)
+    )
+
+
+def enemy_main_fallen(
+    ctx: "BotContext", radius: float = MAIN_CLEAR_RADIUS
+) -> bool:
+    """True once a townhall was seen at the enemy start and is now gone.
+
+    Latches `ctx.state.enemy_main_townhall_seen` on the first sighting so fog
+    of war cannot open cleanup / scout behavior before the main has ever
+    been found. Call from gates and combat every frame - the latch is
+    cheap and idempotent.
+    """
+    main = ctx.bot.enemy_start_locations[0]
+    radius_sq = radius**2
+    has_th = any(
+        cy_distance_to_squared(th.position, main) <= radius_sq
+        for th in ctx.bot.enemy_structures.of_type(ALL_TOWNHALL_TYPES)
+    )
+    if has_th:
+        ctx.state.enemy_main_townhall_seen = True
+    return ctx.state.enemy_main_townhall_seen and not has_th
 
 
 def squad_destination(ctx: "BotContext", from_pos: Point2) -> Point2:

@@ -63,27 +63,43 @@ def gas_workers(pull_off: Gate | None = None, when_pulled: int = 0) -> MacroStep
     return step
 
 
-def auto_supply() -> MacroStep:
+def auto_supply(gate: Gate = _always) -> MacroStep:
+    """Keep Depots/Overlords ahead of production, once `gate` passes.
+
+    Attributes:
+        gate: Extra condition - e.g. a build that deliberately skips generic
+            supply during its opening (crew Depots only) and only turns this
+            on later.
+    """
+
     def step(ctx: "BotContext"):
+        if not gate(ctx):
+            return None
         return AutoSupply(ctx.production_location)
 
     return step
 
 
-def build_workers(gate: Gate = _always) -> MacroStep:
-    """Train workers up to `ctx.worker_target`, once `gate` passes.
+def build_workers(gate: Gate = _always, to_count: int | None = None) -> MacroStep:
+    """Train workers up to `ctx.worker_target` (or `to_count`), once `gate`
+    passes.
 
     Attributes:
         gate: Extra condition beyond `MacroPlan`'s usual "only if nothing
             higher-priority acted this frame" - e.g. a build that wants its
             *next* worker held back until some other condition of its own,
             not merely whenever resources allow it.
+        to_count: Override the build's usual `ctx.worker_target`. A build
+            that lifts its worker cap mid-game (cleanup after an all-in)
+            passes a higher ceiling here without rewriting `Economy`.
     """
 
     def step(ctx: "BotContext"):
         if not gate(ctx):
             return None
-        return BuildWorkers(to_count=ctx.worker_target)
+        return BuildWorkers(
+            to_count=ctx.worker_target if to_count is None else to_count
+        )
 
     return step
 

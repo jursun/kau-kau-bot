@@ -15,6 +15,7 @@ from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
 
 from bot.builds.definition import _always
+from bot.consts import SUPPLY_BUILDER_ROLE
 from bot.core.types import Gate, MacroStep, PointLocator, UnitCreatedHook
 from bot.routines.placement import near_point
 
@@ -313,6 +314,70 @@ def proxy_crew() -> MacroStep:
         _drive_crew_member(ctx, crew.x, plan.x_tasks)
         _drive_crew_member(ctx, crew.y, plan.y_tasks)
         _drive_crew_member(ctx, crew.z, plan.z_tasks)
+        return None
+
+    return step
+
+
+def continuous_main_depots(gate: Gate = _always) -> MacroStep:
+    """Pull one mining SCV and keep laying Supply Depots at our main.
+
+    Belongs in `always`: once `gate` opens it claims a single `GATHERING`
+    worker into `SUPPLY_BUILDER_ROLE` and drives it the same way
+    `proxy_crew` drives a task - `build_with_specific_worker` with
+    `assign_role=False`, waiting on tracker membership between Depots.
+    Stops issuing new Depots once supply is capped at 200.
+
+    Deliberately not `AutoSupply`: that races the opening crew for the
+    first Depot and scales past a fixed structure count. This only ever
+    runs after an explicit gate (Four Rax: `targeting.enemy_main_fallen`)
+    and only ever with the one worker it claimed.
+    """
+
+    def step(ctx: "BotContext"):
+        if not gate(ctx):
+            return None
+        if ctx.bot.supply_cap >= 200:
+            return None
+
+        tag = ctx.state.cleanup_depot_builder_tag
+        worker = ctx.bot.unit_tag_dict.get(tag) if tag is not None else None
+        if worker is None:
+            worker = ctx.mediator.select_worker(
+                target_position=ctx.production_location, force_close=True
+            )
+            if worker is None:
+                return None
+            ctx.mediator.assign_role(tag=worker.tag, role=SUPPLY_BUILDER_ROLE)
+            ctx.state.cleanup_depot_builder_tag = worker.tag
+            ctx.state.cleanup_depot_queued = False
+            ctx.log("CLEANUP: SCV claimed for continuous Depots")
+
+        if ctx.state.cleanup_depot_queued:
+            if worker.tag in ctx.mediator.get_building_tracker_dict:
+                return None
+            ctx.state.cleanup_depot_queued = False
+
+        cost = ctx.bot.calculate_cost(UnitTypeId.SUPPLYDEPOT)
+        if ctx.bot.minerals < cost.minerals:
+            return None
+
+        placement = ctx.mediator.request_building_placement(
+            base_location=ctx.production_location,
+            structure_type=UnitTypeId.SUPPLYDEPOT,
+        )
+        if placement is None:
+            return None
+
+        if ctx.mediator.build_with_specific_worker(
+            worker=worker,
+            structure_type=UnitTypeId.SUPPLYDEPOT,
+            pos=placement,
+            assign_role=False,
+        ):
+            ctx.bot.minerals -= cost.minerals
+            ctx.state.cleanup_depot_queued = True
+            ctx.log("CLEANUP: Supply Depot started")
         return None
 
     return step

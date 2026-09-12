@@ -336,6 +336,19 @@ def test_build_workers_returns_none_before_its_gate() -> None:
     assert c.build_workers(gate=lambda _ctx: False)(ctx) is None
 
 
+def test_build_workers_honors_an_explicit_to_count() -> None:
+    ctx = _ctx()
+    behavior = c.build_workers(to_count=22)(ctx)
+
+    assert isinstance(behavior, BuildWorkers)
+    assert behavior.to_count == 22
+
+
+def test_auto_supply_returns_none_before_its_gate() -> None:
+    ctx = _ctx()
+    assert c.auto_supply(gate=lambda _ctx: False)(ctx) is None
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failures = 0

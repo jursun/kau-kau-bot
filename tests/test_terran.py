@@ -743,6 +743,69 @@ def test_proxy_crew_gives_up_on_a_dead_worker() -> None:
     assert ctx.state.proxy_crew.x.task_index == len(plan.x_tasks)
 
 
+# --- steps.terran.continuous_main_depots ---------------------------------
+
+
+def test_continuous_main_depots_does_nothing_before_gate() -> None:
+    ctx = _ctx()
+    assert t.continuous_main_depots(gate=lambda _c: False)(ctx) is None
+    assert ctx.state.cleanup_depot_builder_tag is None
+    ctx.mediator.select_worker.assert_not_called()
+
+
+def test_continuous_main_depots_claims_one_miner_and_starts_a_depot() -> None:
+    ctx = _ctx()
+    ctx.bot.start_location = HOME
+    ctx.bot.supply_cap = 23
+    worker = _worker(7, HOME)
+    ctx.bot.unit_tag_dict = {}
+    ctx.mediator.select_worker.return_value = worker
+    ctx.mediator.request_building_placement.return_value = Point2((21.0, 21.0))
+    ctx.mediator.build_with_specific_worker.return_value = True
+
+    assert t.continuous_main_depots(gate=lambda _c: True)(ctx) is None
+
+    ctx.mediator.select_worker.assert_called_once()
+    ctx.mediator.assign_role.assert_called_once()
+    assert ctx.state.cleanup_depot_builder_tag == 7
+    assert ctx.state.cleanup_depot_queued is True
+    ctx.mediator.build_with_specific_worker.assert_called_once()
+    assert ctx.mediator.build_with_specific_worker.call_args.kwargs["assign_role"] is False
+    assert ctx.bot.minerals == 900  # 1000 - 100 Depot
+
+
+def test_continuous_main_depots_waits_while_queued_then_builds_again() -> None:
+    ctx = _ctx()
+    ctx.bot.start_location = HOME
+    ctx.bot.supply_cap = 31
+    worker = _worker(7, HOME)
+    ctx.bot.unit_tag_dict = {7: worker}
+    ctx.state.cleanup_depot_builder_tag = 7
+    ctx.state.cleanup_depot_queued = True
+    ctx.mediator.get_building_tracker_dict = {7: {}}
+
+    t.continuous_main_depots(gate=lambda _c: True)(ctx)
+    ctx.mediator.build_with_specific_worker.assert_not_called()
+    assert ctx.state.cleanup_depot_queued is True
+
+    ctx.mediator.get_building_tracker_dict = {}
+    ctx.mediator.request_building_placement.return_value = Point2((22.0, 22.0))
+    ctx.mediator.build_with_specific_worker.return_value = True
+
+    t.continuous_main_depots(gate=lambda _c: True)(ctx)
+    ctx.mediator.build_with_specific_worker.assert_called_once()
+    assert ctx.state.cleanup_depot_queued is True
+
+
+def test_continuous_main_depots_stops_at_supply_cap() -> None:
+    ctx = _ctx()
+    ctx.bot.supply_cap = 200
+    ctx.bot.start_location = HOME
+
+    assert t.continuous_main_depots(gate=lambda _c: True)(ctx) is None
+    ctx.mediator.select_worker.assert_not_called()
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failures = 0

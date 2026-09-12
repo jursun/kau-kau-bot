@@ -7,7 +7,9 @@ attack-objective choices:
 * The proxy Depot - must use ares' formation at `proxy_location` (`near` is
   unset), not a ring search next to standing Barracks.
 * `attack_objective` - stutter destination is the enemy ramp bottom while
-  the natural stands, then the enemy main once it is cleared.
+  the natural stands, the enemy main once the natural is cleared, and
+  `targeting.attack_target` (scout remaining / hidden bases) once the main
+  is cleared too.
 
 Runs under pytest, or standalone with no test dependency:
 
@@ -17,7 +19,7 @@ Runs under pytest, or standalone with no test dependency:
 from __future__ import annotations
 
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
@@ -64,14 +66,38 @@ def test_attack_objective_is_ramp_bottom_while_natural_stands() -> None:
 
 
 def test_attack_objective_is_enemy_main_once_natural_is_cleared() -> None:
+    """Natural gone, main still standing → walk up the ramp into the start."""
     ctx = MagicMock()
     ctx.mediator.get_enemy_nat = Point2((50.0, 50.0))
     ctx.mediator.get_enemy_ramp.bottom_center = Point2((60.0, 60.0))
     main = Point2((70.0, 70.0))
     ctx.bot.enemy_start_locations = [main]
-    ctx.bot.enemy_structures.of_type.return_value = []
+    # Townhall still at the enemy start — main not cleared yet.
+    hatch = MagicMock()
+    hatch.position = main
+    hatch.type_id = UnitTypeId.COMMANDCENTER
+    ctx.bot.enemy_structures.of_type.return_value = [hatch]
 
     assert attack_objective(ctx) == main
+
+
+def test_attack_objective_scouts_once_enemy_main_is_cleared() -> None:
+    """Main seen-and-gone → hunt via attack_target, not camp."""
+    ctx = MagicMock()
+    ctx.mediator.get_enemy_nat = Point2((50.0, 50.0))
+    ctx.bot.enemy_start_locations = [Point2((70.0, 70.0))]
+    ctx.bot.enemy_structures.of_type.return_value = []
+    ctx.units_in_role.return_value = []
+    ctx.state.enemy_main_townhall_seen = True
+    scouted = Point2((120.0, 30.0))
+
+    with patch(
+        "bot.builds.terran.four_rax_proxy.targeting.attack_target",
+        return_value=scouted,
+    ) as attack_target:
+        assert attack_objective(ctx) == scouted
+        attack_target.assert_called_once()
+        assert attack_target.call_args.args[1] == ctx.bot.enemy_start_locations[0]
 
 
 def main() -> int:

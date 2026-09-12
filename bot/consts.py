@@ -82,3 +82,10 @@ IGNORED_ENEMY_TYPES: frozenset[UnitTypeId] = frozenset(
 # same trick `UnitRole.SCOUTING`/`UnitRole.QUEEN_INJECT` already use elsewhere
 # in this codebase for "our own bookkeeping, not ares'".
 PROXY_CREW_ROLE: UnitRole = UnitRole.GATE_KEEPER
+
+# Same unused-slot trick as `PROXY_CREW_ROLE`: a dedicated SCV that keeps
+# laying Supply Depots after an all-in (see `steps.terran.continuous_main_
+# depots`) must not sit in `GATHERING` (Mining would reclaim it) or
+# `BUILDING`/`PERSISTENT_BUILDER` (ares sweeps those back to minerals).
+# `CONTROL_GROUP_ONE` is never written by ares itself.
+SUPPLY_BUILDER_ROLE: UnitRole = UnitRole.CONTROL_GROUP_ONE

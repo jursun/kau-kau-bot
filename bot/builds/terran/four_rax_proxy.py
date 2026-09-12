@@ -41,14 +41,25 @@ the enemy's, and per-Marine kiting (`MARINE_MIN_ENGAGE_RANGE`) when it does
 not - see `combat.attack_squads`. Crew SCVs that finish their tasks join the
 push (see `combat.builder_workers_attack`'s docstring).
 
+Fallback once the enemy main's townhall has been seen and destroyed
+(`targeting.enemy_main_fallen`): pull one mining SCV to keep laying Depots
+at home (`steps.terran.continuous_main_depots`) so Marines are not supply-
+blocked while hunting, and point the push at `targeting.attack_target` so
+squads walk unscouted expansions for hidden bases instead of camping an
+empty start location. Opening supply stays crew Depots only — no
+`AutoSupply`, which races Z for the first Depot.
+
 Not yet validated in-game.
 """
 
 from __future__ import annotations
 
+from cython_extensions import cy_center
 from sc2.data import Race
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
+
+from ares.consts import UnitRole
 
 from bot.builds.definition import (
     Army,
@@ -129,18 +140,33 @@ def ramp_location(ctx) -> Point2:
 
 
 def attack_objective(ctx) -> Point2:
-    """Where the Marine push advances: enemy ramp bottom until the natural
-    is gone, then up into the main.
+    """Where the Marine push advances: ramp bottom → main → scout.
 
-    `StutterGroupForward` (via `attack_squads` with no `min_engage_range`)
-    walks the squad toward this point between shots. The natural is the
-    fight in front of the choke; once its townhall is down
-    (`targeting.enemy_natural_cleared`) the next step is the enemy start
-    location, which takes them up the ramp into the main.
+    `StutterGroupForward` / kite walks the squad toward this point between
+    shots. The natural is the fight in front of the choke; once its
+    townhall is down (`targeting.enemy_natural_cleared`) the next step is
+    the enemy start location, which takes them up the ramp into the main.
+    Once the main's townhall has been seen and destroyed
+    (`targeting.enemy_main_fallen`), fall through to `targeting.attack_target`
+    so the army hunts remaining structures and walks unscouted expansions
+    for hidden bases instead of sitting on an empty start location.
+
+    Order matters: check the natural before the main. A townhall still at
+    the natural means the ramp fight is not over. Use `enemy_main_fallen`
+    (not the fog-naive `enemy_main_cleared`) so scout mode cannot open
+    before the main has ever been spotted.
     """
-    if targeting.enemy_natural_cleared(ctx):
+    if not targeting.enemy_natural_cleared(ctx):
+        return targeting.enemy_ramp_bottom(ctx)
+    if not targeting.enemy_main_fallen(ctx):
         return ctx.bot.enemy_start_locations[0]
-    return targeting.enemy_ramp_bottom(ctx)
+    attackers = ctx.units_in_role(UnitRole.ATTACKING)
+    from_pos = (
+        Point2(cy_center(attackers))
+        if attackers
+        else ctx.bot.enemy_start_locations[0]
+    )
+    return targeting.attack_target(ctx, from_pos)
 
 
 def _marine_training_started(ctx) -> bool:
@@ -235,7 +261,7 @@ BUILD = BuildDefinition(
             combat.release_first_wave_then_stream(),
             # Stutter when we outnumber the local fight; kite at
             # MARINE_MIN_ENGAGE_RANGE when we do not. Destination is still
-            # `attack_objective` (ramp bottom → main).
+            # `attack_objective` (ramp bottom → main → scout).
             combat.attack_squads(min_engage_range=MARINE_MIN_ENGAGE_RANGE),
             # Every crew worker that has worked through its own task list
             # joins the push once all four Barracks are accounted for.
@@ -268,6 +294,9 @@ BUILD = BuildDefinition(
         # this same step. See `steps.terran.proxy_crew`'s docstring for why
         # this has to run every frame rather than as a gated macro step.
         t.proxy_crew(),
+        # After the enemy main falls: one miner becomes a dedicated Depot
+        # builder at home. Not AutoSupply — that races the opening crew.
+        t.continuous_main_depots(gate=targeting.enemy_main_fallen),
     ),
     macro_steps=(
         # No `c.auto_supply()` here, deliberately. `PROXY_CREW` already
@@ -290,6 +319,7 @@ BUILD = BuildDefinition(
         # none if its worker dies (see `_drive_crew_member`'s dead-worker
         # branch). See `terran_builds.yml` for the matching removal of
         # `AutoSupplyAtSupply`, ares' other generic supply mechanism.
+        # Post-main supply is `continuous_main_depots` in `always` above.
         #
         # Marines outrank SCVs every frame. A `MacroPlan` stops at the first
         # step that acts, so SCVs are only built on frames where every ready

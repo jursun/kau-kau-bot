@@ -49,4 +49,14 @@ class RunState:
     """Attacking units still forming up at the rally point (see
     `bot.routines.combat.attack_squads`)."""
     proxy_crew: ProxyCrewState = field(default_factory=ProxyCrewState)
+    cleanup_depot_builder_tag: int | None = None
+    """SCV claimed by `steps.terran.continuous_main_depots` once the enemy
+    main has fallen - stays off the mineral line laying Depots."""
+    enemy_main_townhall_seen: bool = False
+    """Latches True the first time a townhall is visible near the enemy
+    start - see `targeting.enemy_main_fallen`. Without this, fog of war
+    makes "no townhall near start" true from frame one."""
+    cleanup_depot_queued: bool = False
+    """True while the cleanup Depot builder is in ares' building tracker
+    for its current Depot - same meaning as `CrewMember.queued`."""
     log_once: LogOnce = field(default_factory=LogOnce)

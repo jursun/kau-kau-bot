@@ -174,6 +174,52 @@ def test_enemy_natural_not_cleared_with_townhall_at_nat() -> None:
     assert not targeting.enemy_natural_cleared(ctx)
 
 
+def test_enemy_main_cleared_when_no_townhall_near_start() -> None:
+    ctx = MagicMock()
+    main = Point2((70.0, 70.0))
+    ctx.bot.enemy_start_locations = [main]
+    far_hatch = _structure(Point2((200.0, 200.0)), UnitTypeId.HATCHERY)
+    ctx.bot.enemy_structures.of_type.return_value = [far_hatch]
+
+    assert targeting.enemy_main_cleared(ctx)
+
+
+def test_enemy_main_not_cleared_with_townhall_at_start() -> None:
+    ctx = MagicMock()
+    main = Point2((70.0, 70.0))
+    ctx.bot.enemy_start_locations = [main]
+    hatch = _structure(main, UnitTypeId.NEXUS)
+    ctx.bot.enemy_structures.of_type.return_value = [hatch]
+
+    assert not targeting.enemy_main_cleared(ctx)
+
+
+def test_enemy_main_fallen_false_before_main_is_ever_seen() -> None:
+    """Fog of war: no visible TH must not open cleanup / scout mode."""
+    ctx = MagicMock()
+    ctx.bot.enemy_start_locations = [Point2((70.0, 70.0))]
+    ctx.bot.enemy_structures.of_type.return_value = []
+    ctx.state.enemy_main_townhall_seen = False
+
+    assert not targeting.enemy_main_fallen(ctx)
+    assert ctx.state.enemy_main_townhall_seen is False
+
+
+def test_enemy_main_fallen_true_after_seen_then_gone() -> None:
+    ctx = MagicMock()
+    main = Point2((70.0, 70.0))
+    ctx.bot.enemy_start_locations = [main]
+    hatch = _structure(main, UnitTypeId.NEXUS)
+    ctx.bot.enemy_structures.of_type.return_value = [hatch]
+    ctx.state.enemy_main_townhall_seen = False
+
+    assert not targeting.enemy_main_fallen(ctx)
+    assert ctx.state.enemy_main_townhall_seen is True
+
+    ctx.bot.enemy_structures.of_type.return_value = []
+    assert targeting.enemy_main_fallen(ctx)
+
+
 def test_squad_destination_uses_attack_objective_when_set() -> None:
     ctx = MagicMock()
     objective = Point2((7.0, 8.0))
