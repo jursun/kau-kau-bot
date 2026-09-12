@@ -257,8 +257,21 @@ def scout_probe_harass():
             return
 
         if ctx.bot.time >= SCOUT_PROBE_HOME_TIME:
+            home_minerals = ctx.bot.mineral_field.closer_than(
+                12, ctx.bot.start_location
+            )
             for scout in scouts:
                 ctx.mediator.assign_role(tag=scout.tag, role=UnitRole.GATHERING)
+                # One durable order: path home and mine (no AMove+gather fight).
+                if home_minerals:
+                    patch = cy_closest_to(
+                        position=scout.position, units=home_minerals
+                    )
+                    scout.gather(patch)
+                else:
+                    ctx.bot.register_behavior(
+                        AMove(unit=scout, target=ctx.bot.start_location)
+                    )
                 ctx.log("SCOUT probe returning home @2:00")
             ctx.state.scout_tags.clear()
             return
@@ -274,14 +287,15 @@ def scout_probe_harass():
                     AttackTarget(unit=scout, target=target)
                 )
                 continue
-            # Disrupt mining: briefly attack-move / gather enemy mineral patch.
+            # Disrupt mining: exactly one command per frame (no AMove+gather).
             if minerals:
                 patch = cy_closest_to(position=scout.position, units=minerals)
-                # Attack the patch worker line via gather interrupt: move onto
-                # the patch then right-click gather so pathing jostles workers.
-                ctx.bot.register_behavior(AMove(unit=scout, target=patch.position))
                 if cy_distance_to(scout.position, patch.position) < 1.5:
                     scout.gather(patch)
+                else:
+                    ctx.bot.register_behavior(
+                        AMove(unit=scout, target=patch.position)
+                    )
             else:
                 ctx.bot.register_behavior(AMove(unit=scout, target=enemy_main))
 
