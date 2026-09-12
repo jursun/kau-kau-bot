@@ -1,6 +1,6 @@
 """`2base Chargelot All-In`'s own Validation Report shape.
 
-Same four-stage layout as the Zerg all-ins (no proxy crew). Stage 2 covers
+Same layout as the Zerg all-ins (no proxy crew), plus Stage 5 Combat QA. Stage 2 covers
 Twilight / Robo / Gate count via structure trackers; Stage 3 is Charge.
 """
 
@@ -23,4 +23,5 @@ class TwoBaseChargelotAllInValidator(BaseValidator):
         }
         wave_label = self.ctx.build.combat.wave_stage_label
         stages[f"Stage 4: {wave_label}"] = self._validate_waves()
+        stages["Stage 5: Combat QA"] = self._validate_combat_qa()
         return stages

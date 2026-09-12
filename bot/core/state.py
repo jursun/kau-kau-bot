@@ -51,6 +51,10 @@ class RunState:
     wave_number: int = 0
     next_wave_size: int = 0
     scout_tags: set[int] = field(default_factory=set)
+    scout_probe_done: bool = False
+    """Latches True after scout Probe home@2:00 so we never re-claim."""
+    scout_probe_miss_frames: int = 0
+    """Consecutive frames the claimed scout Probe was missing from unit lists."""
     mustering_tags: set[int] = field(default_factory=set)
     """Attacking units still forming up at the rally point (see
     `bot.routines.combat.attack_squads`)."""
