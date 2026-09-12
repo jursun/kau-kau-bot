@@ -12,6 +12,9 @@ from tests.validators.registry import (
     validator_for_build,
 )
 from tests.validators.speedling_all_in_validator import SpeedlingAllInValidator
+from tests.validators.two_base_chargelot_all_in_validator import (
+    TwoBaseChargelotAllInValidator,
+)
 from tests.validators.upgrade_rush_validator import UpgradeRushValidator
 
 
@@ -19,6 +22,10 @@ def test_validator_for_build_resolves_every_registered_build() -> None:
     assert validator_for_build("Four Rax Proxy") is FourRaxProxyValidator
     assert validator_for_build("UpgradeRush") is UpgradeRushValidator
     assert validator_for_build("Speedling All-In") is SpeedlingAllInValidator
+    assert (
+        validator_for_build("2base Chargelot All-In")
+        is TwoBaseChargelotAllInValidator
+    )
 
 
 def test_validator_for_build_falls_back_to_base_validator_for_an_unknown_name() -> None:

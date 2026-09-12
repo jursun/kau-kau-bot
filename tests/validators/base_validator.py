@@ -99,6 +99,8 @@ UPGRADE_LABELS: Dict[UpgradeId, str] = {
     UpgradeId.ZERGMELEEWEAPONSLEVEL3: "Melee Attacks +3",
     UpgradeId.ZERGGROUNDARMORSLEVEL3: "Ground Carapace +3",
     UpgradeId.ZERGLINGATTACKSPEED: "Adrenal Glands",
+    UpgradeId.CHARGE: "Charge",
+    UpgradeId.WARPGATERESEARCH: "Warp Gate",
 }
 
 STRUCTURE_LABELS: Dict[UnitTypeId, str] = {

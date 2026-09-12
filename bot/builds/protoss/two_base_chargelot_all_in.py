@@ -1,0 +1,109 @@
+"""2-base Chargelot All-In — blink-looking opener into mass Charge Zealots.
+
+Opening (`protoss_builds.yml`): standard gate → gas → nexus → cyber → gas →
+pylon timings so the build reads as a blink / macro opener. Chrono Adept,
+Twilight + Warp Gate ASAP, chrono Charge, two Stalkers — then the dynamic
+plan takes over.
+
+After the opening: saturate two bases (~26 probes), keep building to eight
+Gateways, Robotics Facility → Warp Prism (+ Observer when gas allows), and
+flood Chargelots. Gas workers peel off once Charge is paid for so minerals
+go into Gates and Zealots; leave a trickle for Stalkers / Prism / Obs.
+
+Intended hit: ~5:45 with Warp Prism, a ball of Zealots, and a few Stalkers
+(wshadows PvT guide). Prism load/drop micro and reactive Shield Batteries
+are follow-ups — this commit gets the macro timing online first.
+"""
+
+from __future__ import annotations
+
+from sc2.data import Race
+from sc2.ids.unit_typeid import UnitTypeId
+from sc2.ids.upgrade_id import UpgradeId
+
+from bot.builds.definition import Army, BuildDefinition, Combat, Economy
+from bot.consts import CHARGELOT_COMP, FOCUS_MAIN, FOCUS_NATURAL
+from bot.routines import combat, gates
+from bot.steps import common as c
+from bot.steps import protoss as p
+
+# Full gateway count once the all-in commits (1 from the opening + 7 more).
+GATEWAY_COUNT = 8
+
+# Two bases mining; probe chrono on both nexi during the opening aims for
+# roughly this before minerals dump into Gates / Zealots.
+WORKER_TARGET = 26
+
+# First leave once Charge is done and a meaningful Zealot ball exists.
+# Guide hit is ~5:45; size gates the leave more reliably than a clock.
+FIRST_WAVE = 12
+
+CHARGE = UpgradeId.CHARGE
+
+
+BUILD = BuildDefinition(
+    name="2base Chargelot All-In",
+    label="2base Chargelot All-In",
+    race=Race.Protoss,
+    economy=Economy(
+        worker_target=WORKER_TARGET,
+        workers_per_base=16,
+        max_bases=2,
+        gas_per_base=2,
+        max_gas=2,
+        workers_per_gas=3,
+        long_distance_mine=False,
+    ),
+    army=Army(
+        comp=CHARGELOT_COMP,
+        types=frozenset(
+            {
+                UnitTypeId.ZEALOT,
+                UnitTypeId.STALKER,
+                UnitTypeId.ADEPT,
+                UnitTypeId.WARPPRISM,
+                UnitTypeId.OBSERVER,
+            }
+        ),
+        upgrades=(CHARGE,),
+    ),
+    combat=Combat(
+        routines=(
+            combat.release_first_wave_then_stream(),
+            combat.defend_home(),
+            combat.attack_squads(),
+        ),
+        wave_gate=gates.upgrade_done(CHARGE),
+        wave1_min=FIRST_WAVE,
+        wave_growth=1.0,  # unused once streaming; kept for validator math
+        focus=(FOCUS_NATURAL, FOCUS_MAIN),
+        wave_stage_label="Chargelot All-In",
+    ),
+    always=(
+        c.mining(),
+        # Full gas until Charge is under way, then peel for mineral flood.
+        # Keep one per geyser so Robo units / extra Stalkers stay fundable.
+        c.gas_workers(
+            pull_off=gates.upgrade_started(CHARGE),
+            when_pulled=1,
+        ),
+    ),
+    macro_steps=(
+        c.auto_supply(),
+        # Gates before Robo so the 8-Gate commit is never waiting on gas units.
+        p.gateways(
+            GATEWAY_COUNT,
+            gate=gates.upgrade_started(CHARGE),
+        ),
+        c.structure(
+            UnitTypeId.ROBOTICSFACILITY,
+            1,
+            gate=gates.upgrade_started(CHARGE),
+        ),
+        c.expansions(),
+        c.gas_buildings(),
+        c.upgrades(),
+        c.build_workers(),
+        c.spawn_army(),
+    ),
+)

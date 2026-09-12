@@ -1,0 +1,71 @@
+# KauKauBot Protoss openings, run by the ares BuildOrderRunner.
+#
+# Ares looks for `<race>_builds.yml` in the repo root, lowercase, and reads
+# whichever one matches `MyBotRace` in config.yml. With `MyBotRace: Protoss`,
+# this file is the live ladder opening list.
+#
+# Forcing an opening locally: set `Debug: True` in config.yml (ares then uses
+# the `test_123` opponent id) and put the opening you want first in the
+# `test_123` cycle below — or use `scripts/smoke_2base_chargelot_all_in.py`,
+# which applies race/debug/build overrides in memory without editing this file.
+# See ARCHITECTURE.md gotcha 4.
+
+# Save game opening + result to ./data so ares can switch openings after a loss.
+UseData: True
+# Cycle: keep the opening while it wins, advance to the next one after a defeat.
+BuildSelection: Cycle
+MinGamesWinrateBased: 5
+
+BuildChoices:
+    # Active when `Debug: True` in config.yml.
+    test_123:
+        BotName: LocalDebug
+        Cycle:
+            - 2base Chargelot All-In
+
+    Terran:
+        BotName: TerranRace
+        Cycle:
+            - 2base Chargelot All-In
+
+    Protoss:
+        BotName: ProtossRace
+        Cycle:
+            - 2base Chargelot All-In
+
+    Zerg:
+        BotName: ZergRace
+        Cycle:
+            - 2base Chargelot All-In
+
+    Random:
+        BotName: RandomRace
+        Cycle:
+            - 2base Chargelot All-In
+
+Builds:
+    # Standard PvT-looking opener (gate → gas → nexus → cyber → gas → pylon)
+    # into Twilight / Warp Gate / Charge, then hand off to the dynamic plan
+    # for 8 gates, Robo, Warp Prism, and mass Chargelots. Timings from the
+    # wshadows 2-base Chargelot guide.
+    2base Chargelot All-In:
+        ConstantWorkerProductionTill: 26
+        AutoSupplyAtSupply: 23
+        OpeningBuildOrder:
+            - 14 pylon @ ramp
+            - 15 gate @ ramp
+            - 15 worker_scout:
+                [ enemy_nat, enemy_spawn, enemy_nat ]
+            - 17 gas
+            - 20 expand
+            - 20 core @ ramp
+            - 21 gas
+            - 22 pylon @ nat
+            - 22 adept
+            - 22 chrono @ gateway
+            - 22 twilightcouncil
+            - 24 warpgateresearch
+            - 26 charge
+            - 26 chrono @ twilightcouncil
+            - 26 stalker
+            - 32 stalker

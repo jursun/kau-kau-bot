@@ -13,6 +13,7 @@ StarCraft II bot for [AI Arena](https://aiarena.net/), built on
 | Four Rax Proxy | Proxy Barracks Marine all-in at the enemy fourth | Ladder Ready |
 | Speedling All-In | Overlord, pool, gas, metabolic boost, macro hatch, zergling flood into the enemy main | Ready (set `MyBotRace: Zerg`) |
 | Upgrade Rush | Zergling flood by maximizing upgrades with double evo | Ready (set `MyBotRace: Zerg`) |
+| 2base Chargelot All-In | Blink-looking 2-base opener into 8-Gate Charge Zealots + Warp Prism | Ready (set `MyBotRace: Protoss`) |
 
 ## Getting started
 
@@ -118,7 +119,8 @@ To force a specific opening:
 
 1. Set `Debug: True` in `config.yml` so local games use the `test_123` cycle.
 2. Put the opening you want first under `BuildChoices.test_123.Cycle` in
-   `terran_builds.yml` or `zerg_builds.yml` (YAML key for Upgrade Rush is
+   `terran_builds.yml`, `zerg_builds.yml`, or `protoss_builds.yml` (YAML key
+   for Upgrade Rush is
    still `UpgradeRush`).
 3. Clear the local data file for that opponent id (`data/None-terran.json` /
    `data/None-zerg.json` for a plain local game, or the whole `data/`
@@ -145,7 +147,7 @@ bot/
     definition.py      # BuildDefinition / Economy / Army / Combat
     zerg/              # one module per build, each exporting BUILD
     terran/            # Four Rax Proxy
-    protoss/           # empty
+    protoss/           # 2base Chargelot All-In
   steps/               # macro step factories (common.py + one per race)
   routines/            # combat / scouting routines and reusable gates
   behaviors/zerg/      # custom ares Behaviors (inject, queens)
@@ -153,6 +155,7 @@ ares-sc2/              # git submodule (framework + its python-sc2 fork)
 config.yml             # ares config + local play settings (`MyBotRace`)
 terran_builds.yml      # Terran openings (live when MyBotRace: Terran)
 zerg_builds.yml        # Zerg openings (live when MyBotRace: Zerg)
+protoss_builds.yml     # Protoss openings (live when MyBotRace: Protoss)
 run.py / ladder.py     # local play and AI Arena entry points
 tests/test_builds.py   # registry <-> YAML consistency check
 ```
