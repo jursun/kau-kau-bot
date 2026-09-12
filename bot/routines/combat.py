@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ares.behaviors.combat import CombatManeuver
-from ares.behaviors.combat.group import AMoveGroup, StutterGroupForward
+from ares.behaviors.combat.group import AMoveGroup, KeepGroupSafe, StutterGroupForward
 from ares.behaviors.combat.individual import (
     AMove,
     AttackTarget,
@@ -32,6 +32,7 @@ from sc2.units import Units
 from bot.builds.definition import _always
 from bot.consts import IGNORED_ENEMY_TYPES
 from bot.core.types import CombatRoutine, Gate, PointLocator
+from bot.intel import enemy_army
 from bot.routines import targeting
 
 if TYPE_CHECKING:
@@ -247,16 +248,76 @@ def _our_force_larger(ctx: "BotContext", ours, theirs) -> bool:
     return _combat_force_supply(ctx, theirs) < _combat_force_supply(ctx, ours)
 
 
+def _intel_army_near(ctx: "BotContext", point, distance: float) -> list:
+    """WORKER-filtered enemy combat units within `distance` — this frame only.
+
+    Consumes `bot.intel.enemy_army` so workers never pad force comparisons or
+    KeepGroupSafe's close-enemy list. Do not stash the returned Units.
+    """
+    radius_sq = distance * distance
+    return [
+        unit
+        for unit in enemy_army(ctx)
+        if cy_distance_to_squared(unit.position, point) <= radius_sq
+    ]
+
+
+def _squad_maneuver_with_influence_retreat(
+    group,
+    group_tags: set[int],
+    group_position,
+    target,
+    close_enemy,
+    grid,
+) -> CombatManeuver:
+    """Reusable ATTACKING-squad maneuver: leave bad ground influence first.
+
+    `KeepGroupSafe` runs before stutter/AMove so a squad standing in enemy
+    influence retreats (and may still shoot in-range) instead of parking.
+    CombatManeuver short-circuits on the first behavior that acts.
+    """
+    maneuver = CombatManeuver()
+    maneuver.add(
+        KeepGroupSafe(
+            group=list(group),
+            close_enemy=close_enemy or [],
+            grid=grid,
+            attack_in_range_enemy=True,
+        )
+    )
+    if close_enemy:
+        maneuver.add(
+            StutterGroupForward(
+                group=group,
+                group_tags=group_tags,
+                group_position=group_position,
+                target=target,
+                enemies=close_enemy,
+            )
+        )
+    maneuver.add(
+        AMoveGroup(group=group, group_tags=group_tags, target=target)
+    )
+    return maneuver
+
+
 def _kite_maneuver(
-    unit: Unit, enemies: Units | list[Unit], min_engage_range: float, target
+    unit: Unit,
+    enemies: Units | list[Unit],
+    min_engage_range: float,
+    target,
+    grid=None,
 ) -> CombatManeuver:
     """One unit's turn at `min_engage_range` kiting - see `attack_squads`.
 
+    Influence retreat (`KeepUnitSafe`) runs first when `grid` is provided.
     Backs straight away from the nearest enemy(s) closer than
     `min_engage_range`; otherwise shoots the lowest-health enemy already in
     weapon range (`ShootTargetInRange`); otherwise advances on `target`.
     """
     maneuver = CombatManeuver()
+    if grid is not None:
+        maneuver.add(KeepUnitSafe(unit=unit, grid=grid))
     in_range = cy_in_attack_range(unit, enemies)
     crowding = [
         e
@@ -333,19 +394,20 @@ def attack_squads(
     `targeting.attack_target`.
 
     A squad that isn't still forming up and finds a nearby enemy
-    (`SQUAD_ENGAGE_RANGE`) engages. `close_enemy` (from `_enemies_near`)
-    always favors enemy units over enemy structures - a structure only ever
-    shows up here when nothing else is in range - and never includes an Egg
-    or Larva at all (`IGNORED_ENEMY_TYPES`). How the squad fights depends on
-    local force size (supply of non-structure units) and `min_engage_range`:
+    (`SQUAD_ENGAGE_RANGE`) engages. Close army comes from
+    `bot.intel.enemy_army` (workers stripped); if that list is empty nearby,
+    `_enemies_near` still supplies structures to shoot. How the squad fights
+    depends on local force size (intel army supply) and `min_engage_range`:
 
+    - Unsafe ground influence: `KeepGroupSafe` / `KeepUnitSafe` run first so
+      the ball leaves bad tiles instead of parking (Zerg openings included).
     - Enemy force strictly smaller than ours: `StutterGroupForward` trades
       as one group toward the destination.
     - Enemy force equal or larger, and `min_engage_range` is set: each unit
       is driven individually via `_kite_maneuver` - backing away from
       anything closer than `min_engage_range`, otherwise shooting. Builds
-      that leave `min_engage_range` unset (Zerg openings today) keep
-      stuttering even when outnumbered.
+      that leave `min_engage_range` unset keep group stutter after influence
+      retreat rather than per-unit kite.
     """
 
     def routine(ctx: "BotContext") -> None:
@@ -356,6 +418,7 @@ def attack_squads(
             role=UnitRole.ATTACKING, squad_radius=squad_radius
         )
         rally = targeting.rally_point(ctx)
+        grid = ctx.mediator.get_ground_grid
         for squad in squads:
             position = squad.squad_position
             mustering = squad.tags & ctx.state.mustering_tags
@@ -367,38 +430,36 @@ def attack_squads(
                 ctx.state.mustering_tags -= mustering
                 mustering = set()
 
-            close_enemy = _enemies_near(ctx, position, SQUAD_ENGAGE_RANGE)
+            close_army = _intel_army_near(ctx, position, SQUAD_ENGAGE_RANGE)
+            close_enemy = close_army or _enemies_near(
+                ctx, position, SQUAD_ENGAGE_RANGE
+            )
 
             target = rally if mustering else targeting.squad_destination(ctx, position)
 
             if (
-                close_enemy
+                close_army
                 and min_engage_range is not None
-                and not _our_force_larger(ctx, squad.squad_units, close_enemy)
+                and not _our_force_larger(ctx, squad.squad_units, close_army)
             ):
                 for unit in squad.squad_units:
                     ctx.bot.register_behavior(
-                        _kite_maneuver(unit, close_enemy, min_engage_range, target)
+                        _kite_maneuver(
+                            unit, close_army, min_engage_range, target, grid=grid
+                        )
                     )
                 continue
 
-            maneuver = CombatManeuver()
-            if close_enemy:
-                maneuver.add(
-                    StutterGroupForward(
-                        group=squad.squad_units,
-                        group_tags=squad.tags,
-                        group_position=position,
-                        target=target,
-                        enemies=close_enemy,
-                    )
-                )
-            maneuver.add(
-                AMoveGroup(
-                    group=squad.squad_units, group_tags=squad.tags, target=target
+            ctx.bot.register_behavior(
+                _squad_maneuver_with_influence_retreat(
+                    group=squad.squad_units,
+                    group_tags=squad.tags,
+                    group_position=position,
+                    target=target,
+                    close_enemy=close_enemy,
+                    grid=grid,
                 )
             )
-            ctx.bot.register_behavior(maneuver)
 
     return routine
 

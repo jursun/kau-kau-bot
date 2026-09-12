@@ -17,7 +17,7 @@ from __future__ import annotations
 import sys
 from unittest.mock import MagicMock
 
-from ares.behaviors.combat.group import AMoveGroup, StutterGroupForward
+from ares.behaviors.combat.group import AMoveGroup, KeepGroupSafe, StutterGroupForward
 from ares.behaviors.combat.individual import (
     AMove,
     KeepUnitSafe,
@@ -57,6 +57,9 @@ def _ctx(wave1_min: int = 6, wave_growth: float = 1.25) -> BotContext:
     ctx.bot.supply_used = 100.0
     ctx.bot.already_pending.return_value = 0
     ctx.bot.calculate_supply_cost.return_value = 1.0
+    # Influence retreat reads these every attack_squads frame.
+    ctx.mediator.get_cached_enemy_army = []
+    ctx.mediator.get_ground_grid = object()
     return ctx
 
 
@@ -245,13 +248,20 @@ def test_squad_stutters_when_outnumbered_without_min_engage_range() -> None:
     try:
         ctx = _ctx()
         units = [_unit(1, Point2((10.0, 10.0)))]  # 1 unit
-        enemies = [_unit(90), _unit(91), _unit(92), _unit(93)]  # badly outnumbered
+        enemies = [
+            _unit(90, Point2((11.0, 10.0))),
+            _unit(91, Point2((11.0, 11.0))),
+            _unit(92, Point2((11.0, 12.0))),
+            _unit(93, Point2((11.0, 13.0))),
+        ]  # badly outnumbered
+        ctx.mediator.get_cached_enemy_army = enemies
         ctx.mediator.get_units_in_range.return_value = [enemies]
         ctx.mediator.get_squads.return_value = [_squad(units)]
 
         combat.attack_squads()(ctx)
 
         registered = ctx.bot.register_behavior.call_args.args[0]
+        assert isinstance(registered.micros[0], KeepGroupSafe)
         amoves = [b for b in registered.micros if isinstance(b, AMoveGroup)]
         assert amoves[0].target == attack
 
@@ -345,6 +355,7 @@ def test_attack_squads_kites_when_outnumbered_and_min_engage_range_is_set() -> N
             _unit(91, Point2((11.0, 11.0))),
             _unit(92, Point2((11.0, 12.0))),
         ]
+        ctx.mediator.get_cached_enemy_army = enemies
         ctx.mediator.get_units_in_range.return_value = [enemies]
         ctx.mediator.get_squads.return_value = [_squad(units)]
 
@@ -353,6 +364,7 @@ def test_attack_squads_kites_when_outnumbered_and_min_engage_range_is_set() -> N
         assert ctx.bot.register_behavior.call_count == 2, "one maneuver per unit"
         registered = [c.args[0] for c in ctx.bot.register_behavior.call_args_list]
         all_micros = [m for maneuver in registered for m in maneuver.micros]
+        assert all(isinstance(m.micros[0], KeepUnitSafe) for m in registered)
         assert not any(isinstance(m, StutterGroupForward) for m in all_micros)
         assert not any(isinstance(m, AMoveGroup) for m in all_micros)
         amoves = [m for m in all_micros if isinstance(m, AMove)]
@@ -377,12 +389,14 @@ def test_attack_squads_stutters_when_ahead_even_with_min_engage_range() -> None:
             _unit(3, Point2((11.0, 12.0))),
         ]
         enemies = [_unit(90, Point2((11.0, 10.0)))]
+        ctx.mediator.get_cached_enemy_army = enemies
         ctx.mediator.get_units_in_range.return_value = [enemies]
         ctx.mediator.get_squads.return_value = [_squad(units)]
 
         combat.attack_squads(min_engage_range=3.0)(ctx)
 
         registered = ctx.bot.register_behavior.call_args.args[0]
+        assert isinstance(registered.micros[0], KeepGroupSafe)
         stutters = [b for b in registered.micros if isinstance(b, StutterGroupForward)]
         assert len(stutters) == 1
         assert stutters[0].enemies == enemies
@@ -407,12 +421,16 @@ def test_structures_do_not_count_as_enemy_force_for_kite_vs_stutter() -> None:
         ctx.bot.calculate_supply_cost.side_effect = (
             lambda t: 10.0 if t == UnitTypeId.HATCHERY else 1.0
         )
+        # Structures are not in the intel army feed — force falls back to
+        # `_enemies_near` and must still stutter, not kite.
+        ctx.mediator.get_cached_enemy_army = []
         ctx.mediator.get_units_in_range.return_value = [[hatch]]
         ctx.mediator.get_squads.return_value = [_squad(units)]
 
         combat.attack_squads(min_engage_range=3.0)(ctx)
 
         registered = ctx.bot.register_behavior.call_args.args[0]
+        assert isinstance(registered.micros[0], KeepGroupSafe)
         assert any(isinstance(b, StutterGroupForward) for b in registered.micros)
     finally:
         _restore_targeting(original)
@@ -658,6 +676,65 @@ def main() -> int:
             print(f"  FAIL  {test.__name__}: {error}")
     print(f"\n{len(tests) - failures}/{len(tests)} passed.")
     return 1 if failures else 0
+
+
+
+
+def test_attack_squads_influence_retreat_runs_before_amove() -> None:
+    """KeepGroupSafe is first so unsafe ground influence wins over AMove."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original = _patch_targeting(rally, attack)
+    try:
+        ctx = _ctx()
+        units = [_unit(1, Point2((10.0, 10.0))), _unit(2, Point2((12.0, 10.0)))]
+        ctx.mediator.get_units_in_range.return_value = [[]]
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+
+        combat.attack_squads()(ctx)
+
+        registered = ctx.bot.register_behavior.call_args.args[0]
+        assert isinstance(registered.micros[0], KeepGroupSafe)
+        assert any(isinstance(b, AMoveGroup) for b in registered.micros)
+    finally:
+        _restore_targeting(original)
+
+
+def test_attack_squads_ignores_workers_in_intel_army_for_force() -> None:
+    """Workers in the cached army must not flip stutter into kite."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original = _patch_targeting(rally, attack)
+    try:
+        ctx = _ctx()
+        units = [
+            _unit(1, Point2((10.0, 10.0))),
+            _unit(2, Point2((12.0, 10.0))),
+            _unit(3, Point2((11.0, 12.0))),
+        ]
+        marine = _unit(90, Point2((11.0, 10.0)))
+        marine.type_id = UnitTypeId.MARINE
+        probes = [
+            _unit(91, Point2((11.0, 11.0))),
+            _unit(92, Point2((11.0, 12.0))),
+            _unit(93, Point2((11.0, 13.0))),
+            _unit(94, Point2((11.0, 14.0))),
+        ]
+        for p in probes:
+            p.type_id = UnitTypeId.PROBE
+        # Cached army includes workers; intel feed strips them → one Marine.
+        ctx.mediator.get_cached_enemy_army = [marine, *probes]
+        ctx.mediator.get_units_in_range.return_value = [[marine, *probes]]
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+
+        combat.attack_squads(min_engage_range=3.0)(ctx)
+
+        registered = ctx.bot.register_behavior.call_args.args[0]
+        assert isinstance(registered.micros[0], KeepGroupSafe)
+        assert any(isinstance(b, StutterGroupForward) for b in registered.micros)
+        assert ctx.bot.register_behavior.call_count == 1
+    finally:
+        _restore_targeting(original)
 
 
 if __name__ == "__main__":
