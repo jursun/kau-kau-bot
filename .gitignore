@@ -134,6 +134,9 @@ dmypy.json
 # Pycharm
 /.idea
 
+# Codebase Memory local index artifact
+.codebase-memory/
+
 # --- ares-sc2 / ladder packaging ---
 data/
 publish/

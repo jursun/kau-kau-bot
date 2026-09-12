@@ -1,9 +1,12 @@
 # KauKauBot config.
 # Check `ares-sc2/src/ares/config.yml` for every valid option; anything set
-# here is merged over those defaults. Build orders live in `zerg_builds.yml`.
+# here is merged over those defaults. Build orders live in
+# `<race>_builds.yml`, chosen by `MyBotRace` below.
 
 MyBotName: KauKauBot
-MyBotRace: Zerg
+# Which `<race>_builds.yml` ares reads (and which race the ladder zip is).
+# Flip to `Zerg` to ship the Zerg openings instead.
+MyBotRace: Terran
 
 # Auto-upload to https://aiarena.net/ on push to `main`.
 # Requires UPLOAD_API_TOKEN / UPLOAD_BOT_ID repo secrets — see README.
@@ -14,11 +17,12 @@ BotDataEnabled: True
 
 ########################
 # Local-only knobs. `Debug: True` makes ares use the `test_123` opponent id,
-# which is how you force a specific opening locally (see zerg_builds.yml).
-# MUST be False for a ladder zip — create_ladder_zip.py asserts on it.
-Debug: True
+# which is how you force a specific opening locally (see terran_builds.yml /
+# zerg_builds.yml). MUST be False for a ladder zip — create_ladder_zip.py
+# asserts on it.
+Debug: False
 
-UseData: False  # overwritten by `UseData:` in zerg_builds.yml
+UseData: False  # overwritten by `UseData:` in <race>_builds.yml
 GameStep: 2
 DebugGameStep: 2
 
@@ -34,7 +38,7 @@ DebugOptions:
     DebugSpawn: False
     ShowPathingCost: False
     ResourceDebug: False
-    ShowBuildingFormation: False
+    ShowBuildingFormation: True
 
 # Ares mines gas with 3 workers per extractor by default, which is what both
 # of our openings want.
@@ -50,9 +54,13 @@ LocalGame:
     # Full path to your SC2 Maps folder, or `null` to let python-sc2 find it.
     MapPath: "C:/Program Files (x86)/StarCraft II/Maps"
     MapPool:
+        - IncorporealAIE_v4
+        - LeyLinesAIE_v3
+        - MagannathaAIE_v2
         - PersephoneAIE_v4
         - PylonAIE_v4
         - TorchesAIE_v4
+        - UltraloveAIE_v2
     OpponentRace: Terran
     # VeryEasy .. VeryHard, plus CheatVision / CheatMoney / CheatInsane
     OpponentDifficulty: VeryHard

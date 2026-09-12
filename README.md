@@ -2,15 +2,17 @@
 
 **_you cook, we eat_**
 
-Zerg StarCraft II bot for [AI Arena](https://aiarena.net/), built on
-[ares-sc2](https://github.com/AresSC2/ares-sc2).
+StarCraft II bot for [AI Arena](https://aiarena.net/), built on
+[ares-sc2](https://github.com/AresSC2/ares-sc2). Ships as Terran
+(`MyBotRace` in `config.yml`); Zerg openings remain in-tree for a race flip.
 
 ## Status
 
 | Opening | Intent | State |
 |---------|--------|-------|
-| Speedling All-In | Overlord, pool, gas, metabolic boost, macro hatch, zergling flood into the enemy main | Ladder Ready |
-| Upgrade Rush | Zerging flood by maximizing upgrades with double evo | Ladder Ready |
+| Four Rax Proxy | Proxy Barracks Marine all-in at the enemy fourth | Ladder Ready |
+| Speedling All-In | Overlord, pool, gas, metabolic boost, macro hatch, zergling flood into the enemy main | Ready (set `MyBotRace: Zerg`) |
+| Upgrade Rush | Zergling flood by maximizing upgrades with double evo | Ready (set `MyBotRace: Zerg`) |
 
 ## Getting started
 
@@ -105,20 +107,22 @@ python -m tests.test_builds
 
 ### Force an opening locally
 
-Ares picks the opening (`BuildSelection: Cycle` in `zerg_builds.yml`) and keeps
-it while it wins, switching after a defeat — **by name**, not by cycle
-position. `DataManager._choose_opening_cycle` looks up the last opening in
-`data/<opponent_id>-<race>.json` and, if that opening is still in the cycle and
-won, repeats it no matter where it sits in the list.
+Ares picks the opening (`BuildSelection: Cycle` in the active
+`<race>_builds.yml`) and keeps it while it wins, switching after a defeat —
+**by name**, not by cycle position. `DataManager._choose_opening_cycle`
+looks up the last opening in `data/<opponent_id>-<race>.json` and, if that
+opening is still in the cycle and won, repeats it no matter where it sits
+in the list.
 
 To force a specific opening:
 
 1. Set `Debug: True` in `config.yml` so local games use the `test_123` cycle.
 2. Put the opening you want first under `BuildChoices.test_123.Cycle` in
-   `zerg_builds.yml` (YAML key for Upgrade Rush is still `UpgradeRush`).
-3. Clear the local data file for that opponent id (`data/None-zerg.json` for a
-   plain local game, or the whole `data/` folder). With no history, ares falls
-   back to cycle position 0.
+   `terran_builds.yml` or `zerg_builds.yml` (YAML key for Upgrade Rush is
+   still `UpgradeRush`).
+3. Clear the local data file for that opponent id (`data/None-terran.json` /
+   `data/None-zerg.json` for a plain local game, or the whole `data/`
+   folder). With no history, ares falls back to cycle position 0.
 
 This replaces the old `FORCE_BUILD` in `config.py`.
 
@@ -140,13 +144,15 @@ bot/
   builds/
     definition.py      # BuildDefinition / Economy / Army / Combat
     zerg/              # one module per build, each exporting BUILD
-    terran/ protoss/   # empty; Zerg is the near-term focus
+    terran/            # Four Rax Proxy
+    protoss/           # empty
   steps/               # macro step factories (common.py + one per race)
   routines/            # combat / scouting routines and reusable gates
   behaviors/zerg/      # custom ares Behaviors (inject, queens)
 ares-sc2/              # git submodule (framework + its python-sc2 fork)
-config.yml             # ares config + local play settings
-zerg_builds.yml        # openings run by the ares BuildOrderRunner
+config.yml             # ares config + local play settings (`MyBotRace`)
+terran_builds.yml      # Terran openings (live when MyBotRace: Terran)
+zerg_builds.yml        # Zerg openings (live when MyBotRace: Zerg)
 run.py / ladder.py     # local play and AI Arena entry points
 tests/test_builds.py   # registry <-> YAML consistency check
 ```
@@ -158,7 +164,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the full pattern and a template.
 
 ## How the bot is wired
 
-1. Ares' `BuildOrderRunner` runs the opening from `zerg_builds.yml`.
+1. Ares' `BuildOrderRunner` runs the opening from the active
+   `<race>_builds.yml` (`terran_builds.yml` when `MyBotRace: Terran`).
 2. `KauKauBot.on_start` looks up `build_order_runner.chosen_opening` in the
    registry and builds a `BotContext` around the matching `BuildDefinition`.
 3. `MacroEngine` registers `build.always` every frame, then — once the opening

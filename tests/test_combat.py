@@ -18,8 +18,16 @@ import sys
 from unittest.mock import MagicMock
 
 from ares.behaviors.combat.group import AMoveGroup, StutterGroupForward
-from ares.behaviors.combat.individual import KeepUnitSafe, MoveToSafeTarget
+from ares.behaviors.combat.individual import (
+    AMove,
+    KeepUnitSafe,
+    MoveToSafeTarget,
+    ShootTargetInRange,
+)
+from ares.consts import UnitRole
 from ares.managers.squad_manager import UnitSquad
+from cython_extensions import cy_distance_to
+from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
 
 from bot.core.context import BotContext
@@ -31,6 +39,7 @@ def _unit(tag: int, position: Point2 = Point2((0.0, 0.0))) -> MagicMock:
     unit = MagicMock()
     unit.tag = tag
     unit.position = position
+    unit.is_structure = False
     return unit
 
 
@@ -40,6 +49,7 @@ def _ctx(wave1_min: int = 6, wave_growth: float = 1.25) -> BotContext:
     build.combat.wave1_min = wave1_min
     build.combat.wave_growth = wave_growth
     build.combat.wave_gate = lambda _ctx: True
+    build.combat.attack_objective = None
     ctx = BotContext(bot=MagicMock(), build=build, state=RunState())
     # Comfortably under `MAX_SUPPLY` and nothing pending by default, so
     # `_maxed_and_ready` is False unless a test deliberately raises these -
@@ -106,7 +116,8 @@ def _squad(units: list[MagicMock]) -> UnitSquad:
 
 
 def _patch_targeting(rally: Point2, attack: Point2):
-    """attack_squads calls module-level targeting.rally_point/attack_target."""
+    """attack_squads calls targeting.rally_point / squad_destination
+    (which falls through to attack_target when attack_objective is None)."""
     original = (targeting.rally_point, targeting.attack_target)
     targeting.rally_point = lambda _ctx: rally
     targeting.attack_target = lambda _ctx, _pos: attack
@@ -169,13 +180,65 @@ def test_already_released_squad_ignores_rally_point() -> None:
         _restore_targeting(original)
 
 
-# ── Attack squads: no engagement ratio, no retreat ──────────────────────────
+# ── _enemies_near: enemy units outrank enemy structures ─────────────────────
 
 
-def test_squad_attacks_regardless_of_how_outnumbered_it_is() -> None:
-    """There is no supply-ratio check and no retreat: a squad fights whatever
-    is in `SQUAD_ENGAGE_RANGE` with `StutterGroupForward` even when badly
-    outnumbered, and still heads for the real attack target, never rally."""
+def test_enemies_near_prefers_units_over_structures() -> None:
+    ctx = _ctx()
+    structure = _unit(90)
+    structure.is_structure = True
+    unit = _unit(91)
+    ctx.mediator.get_units_in_range.return_value = [[structure, unit]]
+
+    result = combat._enemies_near(ctx, Point2((0.0, 0.0)), 10.0)
+
+    assert result == [unit], "a unit in range should crowd out a structure"
+
+
+def test_enemies_near_falls_back_to_a_structure_with_nothing_else_around() -> None:
+    ctx = _ctx()
+    structure = _unit(90)
+    structure.is_structure = True
+    ctx.mediator.get_units_in_range.return_value = [[structure]]
+
+    result = combat._enemies_near(ctx, Point2((0.0, 0.0)), 10.0)
+
+    assert result == [structure], "a structure is still a valid target alone"
+
+
+def test_enemies_near_ignores_eggs_and_larva() -> None:
+    """Zerg's production units are never worth attacking - not even as a
+    last resort with nothing else in range, unlike a structure."""
+    ctx = _ctx()
+    egg = _unit(90)
+    egg.type_id = UnitTypeId.EGG
+    larva = _unit(91)
+    larva.type_id = UnitTypeId.LARVA
+    ctx.mediator.get_units_in_range.return_value = [[egg, larva]]
+
+    result = combat._enemies_near(ctx, Point2((0.0, 0.0)), 10.0)
+
+    assert result == [], "no worthwhile target - should not fall back to Egg/Larva"
+
+
+def test_enemies_near_still_prefers_a_real_unit_over_an_egg() -> None:
+    ctx = _ctx()
+    egg = _unit(90)
+    egg.type_id = UnitTypeId.EGG
+    zergling = _unit(91)
+    ctx.mediator.get_units_in_range.return_value = [[egg, zergling]]
+
+    result = combat._enemies_near(ctx, Point2((0.0, 0.0)), 10.0)
+
+    assert result == [zergling]
+
+
+# ── Attack squads: stutter when ahead, kite when not ────────────────────────
+
+
+def test_squad_stutters_when_outnumbered_without_min_engage_range() -> None:
+    """Builds that leave `min_engage_range` unset (Zerg openings) keep
+    stuttering even when badly outnumbered - kiting is opt-in."""
     rally = Point2((50.0, 50.0))
     attack = Point2((999.0, 999.0))
     original = _patch_targeting(rally, attack)
@@ -195,6 +258,162 @@ def test_squad_attacks_regardless_of_how_outnumbered_it_is() -> None:
         stutters = [b for b in registered.micros if isinstance(b, StutterGroupForward)]
         assert len(stutters) == 1, "should stutter-forward and trade, not retreat"
         assert stutters[0].enemies == enemies
+    finally:
+        _restore_targeting(original)
+
+
+# ── min_engage_range kiting: _kite_maneuver and attack_squads' dispatch ─────
+
+
+def _patch_in_range(mapping: dict):
+    """`combat.cy_in_attack_range` needs real weapon-range game data - not
+    available on a MagicMock unit - so it's monkeypatched here the same way
+    `_patch_targeting` swaps out the module-level targeting functions.
+    `mapping` is unit tag -> the enemies that unit should read as in range.
+    """
+    original = combat.cy_in_attack_range
+    combat.cy_in_attack_range = lambda unit, enemies, *a, **k: mapping.get(unit.tag, [])
+    return original
+
+
+def _restore_in_range(original) -> None:
+    combat.cy_in_attack_range = original
+
+
+def test_kite_maneuver_retreats_from_an_enemy_inside_min_engage_range() -> None:
+    marine = _unit(1, Point2((100.0, 100.0)))
+    close_enemy = _unit(90, Point2((101.0, 100.0)))  # 1 tile away
+    original = _patch_in_range({1: [close_enemy]})
+    try:
+        maneuver = combat._kite_maneuver(
+            marine, [close_enemy], 3.0, Point2((999.0, 999.0))
+        )
+    finally:
+        _restore_in_range(original)
+
+    moves = [m for m in maneuver.micros if isinstance(m, combat._Move)]
+    assert len(moves) == 1, "should back away, not shoot or advance"
+    # Directly away from the enemy, ending exactly min_engage_range from it.
+    assert round(cy_distance_to(moves[0].target, close_enemy.position), 3) == 3.0
+
+
+def test_kite_maneuver_shoots_when_in_range_but_not_crowding() -> None:
+    marine = _unit(1, Point2((100.0, 100.0)))
+    far_enemy = _unit(90, Point2((104.0, 100.0)))  # in range, outside min_engage_range
+    original = _patch_in_range({1: [far_enemy]})
+    try:
+        maneuver = combat._kite_maneuver(
+            marine, [far_enemy], 3.0, Point2((999.0, 999.0))
+        )
+    finally:
+        _restore_in_range(original)
+
+    shoots = [m for m in maneuver.micros if isinstance(m, ShootTargetInRange)]
+    assert len(shoots) == 1, "in range and clear of the min-range buffer: shoot"
+    assert shoots[0].targets == [far_enemy]
+
+
+def test_kite_maneuver_advances_when_nothing_is_in_range() -> None:
+    marine = _unit(1, Point2((100.0, 100.0)))
+    distant_enemy = _unit(90, Point2((200.0, 200.0)))
+    original = _patch_in_range({1: []})
+    try:
+        maneuver = combat._kite_maneuver(
+            marine, [distant_enemy], 3.0, Point2((999.0, 999.0))
+        )
+    finally:
+        _restore_in_range(original)
+
+    amoves = [m for m in maneuver.micros if isinstance(m, AMove)]
+    assert len(amoves) == 1
+    assert amoves[0].target == Point2((999.0, 999.0))
+
+
+def test_attack_squads_kites_when_outnumbered_and_min_engage_range_is_set() -> None:
+    """With `min_engage_range` set, equal-or-larger enemy force switches off
+    group stutter and registers one `_kite_maneuver` per unit."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original_targeting = _patch_targeting(rally, attack)
+    original_in_range = _patch_in_range({})  # nothing in range for any unit
+    try:
+        ctx = _ctx()
+        units = [_unit(1, Point2((10.0, 10.0))), _unit(2, Point2((12.0, 10.0)))]
+        # Three enemies > two of ours (each unit costs 1 supply in the fake).
+        enemies = [
+            _unit(90, Point2((11.0, 10.0))),
+            _unit(91, Point2((11.0, 11.0))),
+            _unit(92, Point2((11.0, 12.0))),
+        ]
+        ctx.mediator.get_units_in_range.return_value = [enemies]
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+
+        combat.attack_squads(min_engage_range=3.0)(ctx)
+
+        assert ctx.bot.register_behavior.call_count == 2, "one maneuver per unit"
+        registered = [c.args[0] for c in ctx.bot.register_behavior.call_args_list]
+        all_micros = [m for maneuver in registered for m in maneuver.micros]
+        assert not any(isinstance(m, StutterGroupForward) for m in all_micros)
+        assert not any(isinstance(m, AMoveGroup) for m in all_micros)
+        amoves = [m for m in all_micros if isinstance(m, AMove)]
+        assert len(amoves) == 2
+        assert all(m.target == attack for m in amoves)
+    finally:
+        _restore_targeting(original_targeting)
+        _restore_in_range(original_in_range)
+
+
+def test_attack_squads_stutters_when_ahead_even_with_min_engage_range() -> None:
+    """Having a kite range configured must not kite a fight we are winning -
+    stutter-step is the aggressive path when our supply is larger."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original = _patch_targeting(rally, attack)
+    try:
+        ctx = _ctx()
+        units = [
+            _unit(1, Point2((10.0, 10.0))),
+            _unit(2, Point2((12.0, 10.0))),
+            _unit(3, Point2((11.0, 12.0))),
+        ]
+        enemies = [_unit(90, Point2((11.0, 10.0)))]
+        ctx.mediator.get_units_in_range.return_value = [enemies]
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+
+        combat.attack_squads(min_engage_range=3.0)(ctx)
+
+        registered = ctx.bot.register_behavior.call_args.args[0]
+        stutters = [b for b in registered.micros if isinstance(b, StutterGroupForward)]
+        assert len(stutters) == 1
+        assert stutters[0].enemies == enemies
+        assert ctx.bot.register_behavior.call_count == 1, "one group maneuver, not per-unit"
+    finally:
+        _restore_targeting(original)
+
+
+def test_structures_do_not_count_as_enemy_force_for_kite_vs_stutter() -> None:
+    """A lone Hatchery in range is not an army - Marines should stutter into
+    it, not kite off its supply cost."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original = _patch_targeting(rally, attack)
+    try:
+        ctx = _ctx()
+        units = [_unit(1, Point2((10.0, 10.0)))]
+        hatch = _unit(90, Point2((11.0, 10.0)))
+        hatch.is_structure = True
+        hatch.type_id = UnitTypeId.HATCHERY
+        # Expensive if counted - would flip the comparison wrongly.
+        ctx.bot.calculate_supply_cost.side_effect = (
+            lambda t: 10.0 if t == UnitTypeId.HATCHERY else 1.0
+        )
+        ctx.mediator.get_units_in_range.return_value = [[hatch]]
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+
+        combat.attack_squads(min_engage_range=3.0)(ctx)
+
+        registered = ctx.bot.register_behavior.call_args.args[0]
+        assert any(isinstance(b, StutterGroupForward) for b in registered.micros)
     finally:
         _restore_targeting(original)
 
@@ -236,7 +455,7 @@ def test_escort_overseers_targets_the_biggest_squads_destination() -> None:
     """Regression test: the first version AMoved straight at the squad's
     live `squad_position`, which recedes as the squad advances - a slower
     Overseer chasing that target never catches up. It should instead target
-    the same destination (`targeting.attack_target`) the squad itself is
+    the same destination (`targeting.squad_destination`) the squad itself is
     walking toward, computed from the squad's position, and approach it via
     ares' danger-aware `MoveToSafeTarget`/`KeepUnitSafe` rather than a bare
     `AMove`."""
@@ -300,6 +519,131 @@ def test_escort_overseers_does_nothing_without_an_attacking_squad() -> None:
     combat.escort_overseers()(ctx)
 
     ctx.bot.register_behavior.assert_not_called()
+
+
+# --- release_first_wave_then_stream ---------------------------------------
+
+
+def test_stream_waits_for_wave1_min_before_releasing() -> None:
+    ctx = _ctx(wave1_min=5)
+    routine = combat.release_first_wave_then_stream()
+
+    ctx.mediator.get_units_from_role.return_value = [_unit(i) for i in range(4)]
+    routine(ctx)
+
+    assert ctx.state.wave_number == 0
+    ctx.mediator.batch_assign_role.assert_not_called()
+
+
+def test_stream_respects_wave_gate_for_the_first_wave() -> None:
+    ctx = _ctx(wave1_min=5)
+    ctx.build.combat.wave_gate = lambda _ctx: False
+    routine = combat.release_first_wave_then_stream()
+
+    ctx.mediator.get_units_from_role.return_value = [_unit(i) for i in range(5)]
+    routine(ctx)
+
+    assert ctx.state.wave_number == 0
+    ctx.mediator.batch_assign_role.assert_not_called()
+
+
+def test_stream_releases_and_musters_the_first_wave() -> None:
+    ctx = _ctx(wave1_min=5)
+    routine = combat.release_first_wave_then_stream()
+    first_wave = [_unit(i) for i in range(5)]
+    ctx.mediator.get_units_from_role.return_value = first_wave
+
+    routine(ctx)
+
+    assert ctx.state.wave_number == 1
+    assert ctx.state.mustering_tags == {u.tag for u in first_wave}
+    ctx.mediator.batch_assign_role.assert_called_once_with(
+        tags={u.tag for u in first_wave}, role=UnitRole.ATTACKING
+    )
+
+
+def test_stream_does_not_wait_for_a_second_wave_size() -> None:
+    """Once wave 1 is out, a SINGLE new defender streams immediately - no
+    size floor, unlike `release_waves()`'s growth-based next threshold."""
+    ctx = _ctx(wave1_min=5)
+    routine = combat.release_first_wave_then_stream()
+    routine(_release_first_wave(ctx))
+
+    lone_reinforcement = [_unit(999)]
+    ctx.mediator.get_units_from_role.return_value = lone_reinforcement
+    ctx.mediator.batch_assign_role.reset_mock()
+
+    routine(ctx)
+
+    ctx.mediator.batch_assign_role.assert_called_once_with(
+        tags={999}, role=UnitRole.ATTACKING
+    )
+
+
+def test_stream_does_not_add_streamed_units_to_mustering_tags() -> None:
+    """The mechanism that makes streaming mean anything: a unit never added
+    to `mustering_tags` reads as already-formed to `attack_squads()`, so it
+    heads straight to the attack target instead of waiting at the rally."""
+    ctx = _ctx(wave1_min=5)
+    routine = combat.release_first_wave_then_stream()
+    routine(_release_first_wave(ctx))
+    before = set(ctx.state.mustering_tags)
+
+    ctx.mediator.get_units_from_role.return_value = [_unit(999)]
+    routine(ctx)
+
+    assert ctx.state.mustering_tags == before, "streamed unit must not muster"
+
+
+def test_stream_does_nothing_with_no_defenders() -> None:
+    ctx = _ctx(wave1_min=5)
+    ctx.mediator.get_units_from_role.return_value = []
+
+    combat.release_first_wave_then_stream()(ctx)
+
+    ctx.mediator.batch_assign_role.assert_not_called()
+
+
+def _release_first_wave(ctx: BotContext) -> BotContext:
+    """Run wave 1 through `release_first_wave_then_stream` and return ctx."""
+    routine = combat.release_first_wave_then_stream()
+    ctx.mediator.get_units_from_role.return_value = [
+        _unit(i) for i in range(ctx.build.combat.wave1_min)
+    ]
+    routine(ctx)
+    ctx.mediator.batch_assign_role.reset_mock()
+    return ctx
+
+
+def test_streamed_unit_is_not_held_at_rally_by_attack_squads() -> None:
+    """End-to-end across both routines: a unit released after wave 1 must
+    not sit at the rally point waiting - it should attack immediately."""
+    ctx = _ctx(wave1_min=5)
+    _release_first_wave(ctx)
+
+    stream_routine = combat.release_first_wave_then_stream()
+    ctx.mediator.get_units_from_role.return_value = [_unit(999)]
+    stream_routine(ctx)
+
+    squad = _squad([_unit(999)])
+    target = _amove_target(ctx, squad)
+    assert target == targeting.squad_destination(
+        ctx, squad.squad_position
+    ), "a streamed unit must head to the attack target, not the rally point"
+
+
+def test_attack_squads_honors_build_attack_objective() -> None:
+    """A build that pins `Combat.attack_objective` must send squads there
+    instead of through the default nearest-enemy `attack_target`."""
+    objective = Point2((123.0, 456.0))
+    ctx = _ctx()
+    ctx.build.combat.attack_objective = lambda _ctx: objective
+    units = [_unit(1, Point2((0.0, 0.0))), _unit(2, Point2((1.0, 0.0)))]
+    ctx.mediator.get_units_from_role.return_value = units
+
+    target = _amove_target(ctx, _squad(units))
+
+    assert target == objective
 
 
 def main() -> int:

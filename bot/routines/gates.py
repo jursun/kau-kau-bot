@@ -130,8 +130,38 @@ def has_structure(structure_id: UnitTypeId, count: int = 1) -> Gate:
     return gate
 
 
+def structure_started(structure_id: UnitTypeId, count: int = 1) -> Gate:
+    """Ready *or* under construction, unlike `has_structure` which wants ready.
+
+    Counted the way ares counts it itself (`BuildStructure._enough_existing`):
+    ready structures plus `structure_pending`. Note this is deliberately not
+    `structures(...).amount + already_pending(...)` - `structures()` already
+    includes the ones still building, so that pair double-counts every
+    structure in progress (see ARCHITECTURE.md gotcha 8, which cost the
+    validator a false FAIL for a whole game).
+    """
+
+    def gate(ctx: "BotContext") -> bool:
+        ready: int = ctx.bot.structures(structure_id).ready.amount
+        return ready + ctx.bot.structure_pending(structure_id) >= count
+
+    return gate
+
+
 def supply_at_least(supply: int) -> Gate:
     def gate(ctx: "BotContext") -> bool:
         return ctx.bot.supply_used >= supply
+
+    return gate
+
+
+def training_started(unit_type: UnitTypeId) -> Gate:
+    """True once at least one is queued or in production - not merely
+    unlocked. `already_pending` counts anything in a production queue, so
+    this reads "has begun training", e.g. gating a build's last Barracks on
+    its first Marine actually having started, not just on tech existing."""
+
+    def gate(ctx: "BotContext") -> bool:
+        return ctx.bot.already_pending(unit_type) > 0
 
     return gate

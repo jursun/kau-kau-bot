@@ -19,8 +19,8 @@ BuildChoices:
     test_123:
         BotName: LocalDebug
         Cycle:
-            - UpgradeRush
             - Speedling All-In
+            - UpgradeRush
 
     Terran:
         BotName: TerranRace

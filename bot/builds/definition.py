@@ -10,12 +10,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from ares.consts import UnitRole
 from sc2.data import Race
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 
-from bot.consts import FOCUS_MAIN
-from bot.core.types import CombatRoutine, Gate, MacroStep
+from bot.consts import FOCUS_MAIN, PROXY_CREW_ROLE
+from bot.core.types import CombatRoutine, Gate, MacroStep, PointLocator, UnitCreatedHook
 
 
 def _always(ctx) -> bool:
@@ -52,7 +53,8 @@ class Army:
     `steps/zerg.py`'s `evolution_chambers`); a build wanting more than one
     +1/+1 tier researching in parallel raises this. The single source of
     truth for that count — `steps.zerg.evolution_chambers()` and
-    `UpgradeRushValidator` both read it from here rather than each build
+    `tests.validators.base_validator.BaseValidator` (shared by every
+    build's own validator) both read it from here rather than each build
     passing its own literal around."""
     evolution_chamber_gate: Gate = _always
     """When to start wanting the *next* Evolution Chamber beyond the first
@@ -70,9 +72,107 @@ class Combat:
     wave1_min: int = 6
     wave_growth: float = 1.10
     rally_offset: float = 8.0
-    """How far in front of our natural defenders gather."""
+    """How far in front of our natural defenders gather. Ignored when
+    `rally` is set."""
+    rally: PointLocator | None = None
+    """Overrides where a wave musters and where defenders hold, for a build
+    whose army does not spawn at home. A proxy build's Marines pop out on the
+    far side of the map, so the default "in front of our own natural" rally
+    would walk every new Marine all the way home before it attacked. Setting
+    this also collapses `targeting.hold_positions` to just this point: a
+    build that pins its rally somewhere specific means it, and should not
+    also be sending half its defenders back to guard mineral lines."""
+    attack_objective: PointLocator | None = None
+    """Overrides where ATTACKING squads (and proxy workers / escorts that
+    follow them) advance when not mustering. `None` keeps the default
+    `targeting.attack_target` (nearest enemy structure / focus). A push that
+    wants a fixed choke — e.g. Four Rax stutter-stepping to the enemy ramp
+    bottom, then into the main once the natural is gone — sets this."""
     focus: tuple[str, ...] = (FOCUS_MAIN,)
     """Ordered places to walk to when no enemy structure is visible."""
+    wave_stage_label: str = "Attack Waves"
+    """Each build's own validator (`tests/validators/<build>_validator.py`)
+    titles its wave stage "Stage 4: {this}" - read straight from here so a
+    build's own report reflects what it actually is (e.g. `Four Rax Proxy`
+    sets this to "All-In Attack") without touching any other build's
+    report. Defaults to the original, generic title every build had before
+    that override existed."""
+
+
+@dataclass(frozen=True)
+class WorkerTask:
+    """One build order for one `ProxyCrewPlan` worker: put `structure_id`
+    down at `where`, once `gate` passes. See `steps.terran.proxy_crew` for
+    how a task list is actually worked."""
+
+    structure_id: UnitTypeId
+    where: PointLocator
+    gate: Gate = _always
+    label: str = ""
+    """Free-text name for logs and the validation report, e.g. "Barracks D".
+    Purely descriptive - never read for control flow. Defaults to
+    `structure_id`'s own name when blank."""
+    closest_to: PointLocator | None = None
+    """Optional bias for *which* precalculated spot at `where` gets picked -
+    forwarded to `mediator.request_building_placement`'s own `closest_to`.
+    `where` still supplies the base location (which expansion's formation to
+    draw from); this only orders the candidates within it. `None` leaves
+    ares' own placement choice alone."""
+    verify: Gate | None = None
+    """Extra check before this task is considered done, once the worker's
+    tag drops out of the building tracker - see `steps.terran.
+    _drive_crew_member`. `None` (every task but one, today) trusts tracker
+    departure alone, same as before this field existed. Set it when a task
+    has been seen to silently fail: a bad placement can make
+    `build_with_specific_worker` issue a command the game rejects, so the
+    worker never actually enters the tracker and "departure" reads true on
+    the very next frame with nothing built. A failed `verify` re-issues the
+    same task instead of advancing past a structure that was never built."""
+    near: PointLocator | None = None
+    """Bypass `where`'s base-formation placement lookup entirely and place
+    next to this point instead, via `routines.placement.near_point`'s ring
+    search - see that function's module docstring for why. Set this when
+    `where`'s precomputed formation has been seen to put `structure_id`'s
+    slot somewhere unusable (e.g. deep behind a mineral line at a proxy
+    site); `None` (every task but one, today) keeps using `request_building_
+    placement` as before. `where` still supplies the task's base location for
+    everything else (gating, `_claim_starting_pair`'s reference), only
+    placement itself is redirected. `closest_to` is ignored when this is
+    set - it only makes sense against a formation, which `near` deliberately
+    skips."""
+    reserve_early: bool = False
+    """Reserve a formation slot as soon as this task is active (X's opening
+    Barracks). Without it the worker paths to `where` first and only
+    reserves once close or affordable (Y's opening Barracks) - so X locks
+    the first proxy slot before Y asks for one. Ignored when `near` is set.
+    """
+
+
+@dataclass(frozen=True)
+class ProxyCrewPlan:
+    """Three SCVs a build hand-walks through their own construction tasks,
+    entirely outside the mining pool and outside ares' generic
+    `BuildStructure`/`select_worker` (which only ever draws from
+    `UnitRole.GATHERING` - see `steps.terran.proxy_barracks`'s docstring).
+
+    `x_tasks` and `y_tasks` run on two of the starting 12 workers - the two
+    closest to `x_tasks[0].where(ctx)` - claimed once, on the first frame of
+    the game. `z_tasks` run on whichever worker `BuildDefinition.
+    on_unit_created` hands off (see `steps.terran.claim_z_on_first_scv`,
+    which a build using this plan should set as that hook).
+
+    Read by both `steps.terran.proxy_crew` (to run it) and
+    `tests.validators.base_validator.BaseValidator._validate_crew` (to
+    report on it) - one declared plan, not two things to keep in sync by
+    hand.
+    """
+
+    x_tasks: tuple[WorkerTask, ...]
+    y_tasks: tuple[WorkerTask, ...]
+    z_tasks: tuple[WorkerTask, ...]
+    role: UnitRole = PROXY_CREW_ROLE
+    """What every crew worker is assigned to, from claim to hand-off. See
+    `bot.consts.PROXY_CREW_ROLE` for why the default is what it is."""
 
 
 @dataclass(frozen=True)
@@ -88,13 +188,22 @@ class BuildDefinition:
     """Priority-ordered. A `MacroPlan` stops at the first step that acts."""
     always: tuple[MacroStep, ...] = field(default_factory=tuple)
     """Registered every frame, including during the opening (mining, injects)."""
+    crew: ProxyCrewPlan | None = None
+    """Declares a build's proxy-crew choreography, if it has one. Only data -
+    `steps.terran.proxy_crew` (which a build using this must list in
+    `always`) is what actually runs it."""
+    on_unit_created: UnitCreatedHook | None = None
+    """Called from `roles.assign_on_created` after its generic role table,
+    for a build that needs to react to a specific freshly created unit (e.g.
+    `steps.terran.claim_z_on_first_scv`, for `crew.z_tasks` above)."""
     pool_deadline: float = 50.0
     """Latest acceptable Spawning Pool start time (game seconds), read by
-    `UpgradeRushValidator`'s "Pool Timing" check. Defaults to an immediate-pool
-    opening's expectation; a build whose `OpeningBuildOrder` deliberately
-    expands (or does anything else) before pool should raise this to match
-    its own opening rather than let the validator enforce a deadline
-    calibrated for a different build's timing."""
+    `tests.validators.base_validator.BaseValidator`'s "Pool Timing" check
+    (shared by every Zerg build's own validator). Defaults to an
+    immediate-pool opening's expectation; a build whose `OpeningBuildOrder`
+    deliberately expands (or does anything else) before pool should raise
+    this to match its own opening rather than let the validator enforce a
+    deadline calibrated for a different build's timing."""
 
     def __post_init__(self) -> None:
         total = sum(v["proportion"] for v in self.army.comp.values())

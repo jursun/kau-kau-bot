@@ -15,27 +15,46 @@ bot/
   main.py              hooks only; never edited to add a build
   core/
     context.py         BotContext - the one object steps/routines receive
-    state.py           RunState - anything that persists between frames
-    types.py           MacroStep / CombatRoutine / Gate aliases
+    state.py           RunState - anything that persists between frames,
+                       incl. ProxyCrewState (per-worker crew progress)
+    types.py           MacroStep / CombatRoutine / Gate / PointLocator /
+                       UnitCreatedHook aliases
     macro_engine.py    runs build.always + build.macro_steps
     combat_engine.py   runs build.combat.routines
     registry.py        auto-discovers builds/<race>/*.py
-    roles.py           per-race unit -> UnitRole tables
+    roles.py           per-race unit -> UnitRole tables, then
+                       build.on_unit_created(ctx, unit) if set
   builds/
-    definition.py      BuildDefinition, Economy, Army, Combat
+    definition.py      BuildDefinition, Economy, Army, Combat,
+                       WorkerTask, ProxyCrewPlan
     zerg/              one module per build, each exporting BUILD
-    terran/ protoss/   empty; Zerg is the near-term focus
+    terran/            four_rax_proxy
+    protoss/           empty
   steps/
     common.py          race-neutral macro steps
     zerg.py            queens, injects, hatcheries, evo chambers
-    terran.py protoss.py
+    terran.py          proxy_barracks, proxy_crew, claim_z_on_first_scv,
+                       continuous_main_depots
+    protoss.py         empty
   routines/
-    combat.py          release_waves, defend_home, attack_squads
+    combat.py          release_waves, defend_home, attack_squads,
+                       builder_workers_attack
     scouting.py        air_scout
-    targeting.py       attack_target, rally_point, hold_positions
-    gates.py           reusable conditions
+    targeting.py       attack_target, rally_point, hold_positions,
+                       enemy_third, enemy_fourth, enemy_main_fallen,
+                       hunt_remaining_bases
+    gates.py           reusable conditions, incl. training_started
   behaviors/zerg/      custom ares Behaviors (ares has no inject/queen behavior)
 ```
+
+## One bot, one race
+
+A bot is a single race: `MyBotRace` in `config.yml` decides which
+`<race>_builds.yml` ares reads and which builds can run at all.
+`create_ladder_zip.py` packages whatever race that key names. KauKauBot
+ships as Terran (`Four Rax Proxy`); set `MyBotRace: Zerg` to zip the Zerg
+openings instead. `terran_builds.yml` names the single Terran build in
+every `BuildChoices` cycle, so nothing breaks when `Debug` is False.
 
 ## Adding a build
 
@@ -136,7 +155,7 @@ regardless of what build is running.
   drone costs 1.0, so that raw comparison read army as "behind" for nearly
   the whole game regardless of actual zergling count, handing it first pick
   far more often than the "keep both roughly even" docstring intended (and
-  a likely contributor to `UpgradeRushValidator`'s "Workers Massed" FAIL and
+  a likely contributor to the validator's "Workers Massed" FAIL and
   large resource-blocked-frame counts on later upgrades — production
   competing hard for the same mineral bank). Fixed by comparing
   `ctx.bot.supply_workers` against `ctx.worker_target` instead — economy
@@ -197,7 +216,7 @@ regardless of what build is running.
   doesn't care never mentions them), not as arguments to
   `z.evolution_chambers()` itself — it takes none, and reads both off
   `ctx.build.army` at call time. That's what lets
-  `tests/upgrade_rush_validator.py` check the exact same target and gate
+  `tests/validators/base_validator.py` check the exact same target and gate
   the step is building toward instead of a second, separately-maintained
   copy of `2` and "once Speed is under way."
 - **`already_pending_upgrade` returns a 0.0-1.0 float**, not a count — how
@@ -254,27 +273,39 @@ regardless of what build is running.
   answers "could I build/morph this right now" without separately walking
   `ares.dicts.unit_tech_requirement.UNIT_TECH_REQUIREMENT`'s prerequisite
   chains by hand (Hive's, for instance, is `[SPAWNINGPOOL, LAIR,
-  INFESTATIONPIT, LAIR]`). `tests/upgrade_rush_validator.py` builds its
+  INFESTATIONPIT, LAIR]`). `tests/validators/base_validator.py` builds its
   entire Stage 2/3 milestone list this way, off `ctx.build.army.upgrades`,
   so it can't silently drift out of sync with the build it's validating.
-- **`UpgradeRushValidator` is one class shared by every registered build,
-  not a per-build subclass — it stays correct per-build because every
-  number and gate it checks is read off `ctx.build` (or off python-sc2/
-  ares' own tech tables) rather than hardcoded for UpgradeRush by name.**
-  Stage 1's worker/gas targets come from `ctx.build.economy`; Stage 3's
-  upgrade list and Stage 4's wave-size math come from `ctx.build.army` /
-  `ctx.build.combat`; Stage 2's tech-structure checklist is derived off
-  `ctx.build.army.upgrades` via `UPGRADE_RESEARCHED_FROM` (so it's simply
-  empty for a build with no Lair/Hive-gated upgrades — Speedling All-In's
-  report shows "No tech structures required by this build" instead of
-  failing four checks it could never pass); and the Evolution Chamber
-  target/gate come from `ctx.build.army.evolution_chambers` /
-  `.evolution_chamber_gate` (see above), the last piece that used to be a
-  module constant plus a hardcoded `LING_SPEED` check. A build that wants
-  genuinely different validation behavior — not just different numbers —
-  is still a case for a new validator class; a build that just has
-  different targets, a different upgrade list, or no tech structures at
-  all is already handled by this one, for free.
+- **One class shared by every registered build turned out to be the wrong
+  call for the Validation Report, even though every number and gate it
+  checked was already read off `ctx.build` rather than hardcoded by
+  name.** `UpgradeRushValidator` originally covered `Four Rax Proxy`,
+  `UpgradeRush` and `Speedling All-In` all at once — Stage 1's worker/gas
+  targets from `ctx.build.economy`, Stage 2/3 from `ctx.build.army`, the
+  Evolution Chamber target/gate from `ctx.build.army.evolution_chambers` /
+  `.evolution_chamber_gate`, all genuinely build-driven. The bug wasn't in
+  any of those numbers; it was that `validate()` — which stages a build's
+  report *shows at all*, and what Stage 4 is titled — was still one method
+  shared by all three builds. A change made "for" Four Rax Proxy's report
+  (adding Stage 1B, renaming Stage 4) silently changed UpgradeRush's and
+  Speedling All-In's reports too, since there was only one method to edit
+  and no way to scope an edit to one build without a runtime check
+  (`if self._crew_claims: ...`) that the next edit could just as easily get
+  wrong again. Split into `tests/validators/base_validator.py`
+  (`BaseValidator` — all the tracking and report-formatting machinery,
+  unchanged) plus one thin subclass per build (`FourRaxProxyValidator`,
+  `UpgradeRushValidator`, `SpeedlingAllInValidator`, ...), each overriding
+  only `validate()` to declare which stages its own report includes and
+  what Stage 4 is called. `tests/validators/registry.py` maps a build's
+  name to its validator class the same way `bot/core/registry.py` maps an
+  opening name to its `BuildDefinition` — auto-discovered by scanning the
+  package, one file per build, no registry edit, and `BaseValidator.
+  __init_subclass__` raises immediately if two files ever claim the same
+  build name. The generic, data-driven *tracking* logic (thresholds and
+  gates read off `ctx.build`, not hardcoded) was never the problem and
+  didn't need to change; only "which stages exist" needed to stop being
+  something a shared method decided at runtime and become something each
+  build's own file decides structurally.
 - **Danger-avoidance is a per-routine choice, not a blanket policy.**
   `scouting.air_scout()` used to wrap its `PathUnitToTarget` in a
   `KeepUnitSafe`-first `CombatManeuver` — the same shape `escort_overseers`
@@ -291,7 +322,7 @@ regardless of what build is running.
   a unit type's supply cost** — it corrects for morphs the same way ares'
   `enemy_army_value` corrects for cost (e.g. a Ravager's true supply comes
   from the Roach it morphed from, not a second charge on top), so it beats
-  hand-rolling a `{UnitTypeId: supply}` table. `UpgradeRushValidator`'s wave
+  hand-rolling a `{UnitTypeId: supply}` table. `BaseValidator`'s wave
   tracking uses it both ways: `ctx.units_in_role(UnitRole.ATTACKING)
   .tags_in(new_tags)` for our own released supply, and
   `mediator.get_cached_enemy_army` (ares' persisted-out-of-vision enemy
@@ -318,17 +349,18 @@ regardless of what build is running.
   call — this build always fights whatever a wave finds), but the framework
   fact stands on its own.
 - **A validator threshold calibrated for one build silently breaks for
-  another.** `UpgradeRushValidator`'s "Pool Timing" check used to compare
-  against a single hardcoded `POOL_DEADLINE = 50.0`, which fit
-  `Speedling All-In`'s immediate pool but not `UpgradeRush`'s deliberate
-  hatch-before-pool opening (expand at 15, pool at 16 — pool routinely lands
-  around 60s by design, not by lateness). Fixed by adding
-  `BuildDefinition.pool_deadline` (default 50.0) so each build states its
-  own expectation; `UpgradeRush` sets `pool_deadline=75.0`. `POOL_DEADLINE`
-  on the validator class is now only a fallback for when `ctx` isn't set
-  yet. Same lesson as the module's own stated philosophy elsewhere: a
-  number the validator enforces belongs on the build, not baked into the
-  validator.
+  another.** The validator's "Pool Timing" check used to compare against a
+  single hardcoded `POOL_DEADLINE = 50.0`, which fit `Speedling All-In`'s
+  immediate pool but not `UpgradeRush`'s deliberate hatch-before-pool
+  opening (expand at 15, pool at 16 — pool routinely lands around 60s by
+  design, not by lateness). Fixed by adding `BuildDefinition.pool_deadline`
+  (default 50.0) so each build states its own expectation; `UpgradeRush`
+  sets `pool_deadline=75.0`. Same lesson as the module's own stated
+  philosophy elsewhere: a number the validator enforces belongs on the
+  build, not baked into the validator. (`POOL_DEADLINE` on the validator
+  class — originally kept as a fallback for a window where `ctx` wasn't set
+  yet — was removed outright once the validator split moved construction to
+  after `ctx` exists; see the `BaseValidator`/per-build-file gotcha above.)
 - **`structure_pending` and `not_started_but_in_building_tracker` count the
   same structure type very differently — don't mix them across two
   behaviors expected to throttle each other.** `ExpansionController.max_pending`
@@ -354,3 +386,116 @@ regardless of what build is running.
   `structure_pending` gate (see the postscript on gotcha 10) — worth
   reaching for whenever two behaviors sharing a structure type are meant
   to take turns rather than compete.
+
+- **Terran and Protoss placements are precomputed at *every* expansion,
+  enemy ones included — which makes a proxy a one-liner for them and a
+  rewrite for Zerg.** `PlacementManager._solve_terran_building_formation`
+  loops over the whole of `ai.expansion_locations_list`, so
+  `mediator.request_building_placement(base_location=<the enemy's third>)`
+  returns a real, legal Terran placement over there exactly as happily as
+  at our own main. `steps.terran.proxy_barracks` is therefore just
+  `BuildStructure` pointed at somebody else's base — none of the
+  ring-sampling, `.5`-snapping, pathability-checking machinery
+  `behaviors/zerg/build_macro_hatch.py` needed. That machinery was never
+  about placement being hard in general; it was forced by
+  `_solve_zerg_building_formation` being an unimplemented stub (gotchas 1
+  and 10). Worth remembering before assuming a Zerg-side workaround has to
+  be repeated for another race: check whether that race's solver is
+  actually implemented first.
+- **An army that spawns away from home needs `combat.rally`, or every unit
+  it makes walks back across the map before it attacks.**
+  `targeting.rally_point` defaults to "in front of our own natural", which
+  is right for every build whose production is at home and exactly wrong
+  for a proxy: a Marine popping out of a Barracks at the enemy's third
+  would be mustered by `attack_squads` back at our natural first, arriving
+  at the fight roughly a minute after it was born. `BuildDefinition`'s
+  `Combat.rally` (a `PointLocator`) overrides that point, and setting it
+  also collapses `targeting.hold_positions` to just that one place —
+  otherwise `defend_home` would keep peeling defenders off to guard our own
+  mineral lines one at a time, which for a one-base all-in is a slow way of
+  feeding units to the enemy in ones.
+- **`select_worker` only ever considers `UnitRole.GATHERING`, so giving a
+  worker any other role removes it from every future `BuildStructure`.**
+  This is what makes `combat.builder_workers_attack`'s `claim_gate` a
+  correctness condition rather than a preference. The routine claims
+  workers stranded at the proxy into `UnitRole.PROXY_WORKER` so they join
+  the attack instead of walking home to mine — but claim one Barracks too
+  early and the builder standing *right next to* where the next Barracks
+  goes is no longer eligible to build it, and ares pulls a fresh SCV from
+  the mineral line for the whole walk instead. Hence the gate: claim only
+  once every Barracks the build wants is standing or under way. The same
+  role mechanic is what keeps claimed workers out of `Mining` (which also
+  only touches GATHERING), so no extra bookkeeping is needed to stop them
+  wandering back to a mineral patch.
+- **A validator check the build cannot possibly satisfy is noise, not a
+  finding.** `BaseValidator`'s Stage 1 checked Spawning Pool timing and
+  Extractor count unconditionally, which for a Terran build is four
+  guaranteed FAILs burying the checks that do apply (workers, supply, and
+  the whole of Stage 4). Those four are now gated on
+  `ctx.build.race == Race.Zerg`. Same lesson as gotchas 12 and 17, one
+  level up: those pushed *thresholds* onto the build, this pushes
+  *applicability* onto it.
+- **`UnitRole.BUILDING` and `UnitRole.PERSISTENT_BUILDER` both carry ares-
+  side side effects that make them wrong for a worker with a multi-step task
+  list of its own.** `BuildingManager._handle_construction_orders` reverts a
+  `BUILDING`-role worker straight to `GATHERING` the instant its tracked
+  structure hits `build_progress >= 1.0` — fine for a one-shot builder, fatal
+  for `Four Rax Proxy`'s crew, which flings the worker back into the mineral
+  line one frame after finishing Barracks A, before its own choreography
+  (`steps.terran.proxy_crew`) gets a chance to hand it Barracks D.
+  `PERSISTENT_BUILDER` looks like the fix (ares itself never auto-reassigns
+  it) until `BuildOrderRunner.set_build_completed()` sweeps every
+  `PERSISTENT_BUILDER`-role unit back to `GATHERING` in one shot the moment
+  the opening's own `OpeningBuildOrder` list is exhausted — which, for a
+  build that deliberately keeps that list short (see the next bullet), can
+  happen while the crew's work is barely started. The fix: call
+  `mediator.build_with_specific_worker(..., assign_role=False)` so ares never
+  touches the worker's role at all, and manage it entirely with a role ares
+  itself never reads or writes anywhere in its own source —
+  `bot.consts.PROXY_CREW_ROLE` picks `UnitRole.GATE_KEEPER` for exactly that
+  reason, the same "borrow an unused enum value for our own bookkeeping"
+  trick `UnitRole.SCOUTING`/`QUEEN_INJECT` already use.
+- **`build_with_specific_worker`'s `assign_role=False` still gets the walk-
+  and-build automation for free.** Its per-frame companion,
+  `BuildingManager._handle_construction_orders`, drives every tag in
+  `building_tracker` — pathing it to the target, then issuing the actual
+  build order once in range and affordable — purely off tracker membership,
+  regardless of that worker's current `UnitRole`. So `assign_role=False`
+  doesn't mean "do the placement/pathing yourself" — it only opts out of
+  ares' own role bookkeeping; `steps.terran.proxy_crew` still gets a fully
+  automatic walk-then-build for X, Y and Z's every task from one call, the
+  same as a normal `BuildStructure`-driven worker would.
+- **`get_building_tracker_dict` membership is the completion signal for a
+  hand-placed structure — structure counts are not, once two workers can be
+  building the same structure type at the same time.** X and Y both start
+  Barracks the instant the game does (Barracks A and B respectively), so
+  they finish within moments of each other; a step that inferred "my task is
+  done" from `structures(BARRACKS).ready.amount` increasing would have no
+  way to tell whose Barracks that count bump belonged to. Both
+  `steps.terran.proxy_crew` and `tests.validators.base_validator.
+  BaseValidator._track_crew` (surfaced as Stage 1B by
+  `FourRaxProxyValidator`, the only build that has one) track completion
+  the same way instead: a worker's own tag dropping back out of
+  `mediator.get_building_tracker_dict`, which ares removes it from the
+  instant *that* worker's structure completes and not a frame before.
+- **`request_building_placement`'s `reserve_placement=True` default makes
+  same-frame concurrent calls placement-safe.** X and Y each request a
+  Barracks placement at the same proxy base on literally the same frame (game
+  start); since Python runs one call fully before the next starts, the first
+  call reserves its spot before the second one asks, so the two placements
+  never collide — no extra locking needed on this codebase's side for two
+  crew workers targeting the same base at once.
+- **Whether `on_unit_created` fires for a game's starting units is not a
+  reliable guarantee — do not generalize the scout case past Zerg
+  Overlords.** `core/roles.py`'s scout assignment gets away with treating
+  "the first Overlord this hook sees" as "the second one" because it does,
+  empirically, skip the starting Overlord. `steps.terran.claim_z_on_first_scv`
+  originally copied that pattern for Terran's starting SCVs and was wrong: in
+  an actual game the event fired for one of the starting 12 as well, pulling
+  a third worker off the mineral line alongside X and Y instead of the
+  intended two. The fix doesn't lean on event-firing semantics at all — it
+  checks `len(ctx.bot.workers) >= 13` at the moment of the event, so only a
+  call that lands once a 13th SCV genuinely exists can claim one, regardless
+  of what fires the hook or when. Treat "does this event fire for starting
+  units" as unit-type-dependent and unverified until checked, not as a
+  cross-race guarantee.

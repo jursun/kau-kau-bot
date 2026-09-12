@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, TypeAlias
 
 if TYPE_CHECKING:
     from ares.behaviors.macro import MacroBehavior
+    from sc2.position import Point2
+    from sc2.unit import Unit
 
     from bot.core.context import BotContext
 
@@ -23,3 +25,14 @@ CombatRoutine: TypeAlias = "Callable[[BotContext], None]"
 
 # A yes/no condition evaluated fresh each frame.
 Gate: TypeAlias = "Callable[[BotContext], bool]"
+
+# Resolves a map position fresh each frame. Used where a build needs to name
+# a place rather than a number - a proxy site, an overridden rally point -
+# and the place is only knowable once the game (and the map) exists.
+PointLocator: TypeAlias = "Callable[[BotContext], Point2]"
+
+# Reacts to one freshly created unit; returns nothing. Called from
+# `roles.assign_on_created` after the generic role table, so a build can
+# react to a specific unit (see `steps.terran.claim_z_on_first_scv`) without
+# roles.py itself needing to know that build exists.
+UnitCreatedHook: TypeAlias = "Callable[[BotContext, Unit], None]"

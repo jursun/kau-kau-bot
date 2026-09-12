@@ -1,152 +1,22 @@
-"""Regression tests for `UpgradeRushValidator`.
+"""Regression tests for `BaseValidator`'s shared tracking/reporting
+machinery - the mechanics every build's own validator inherits. Per-build
+report shape is each concrete validator's own test file instead.
 
-Drives `on_step` across fake frames with a minimal duck-typed stand-in for
-the BotAI/BotContext surface it reads, then inspects the real `validate()`
-output. Covers both the Stage 1 counting bugs carried over from the old
-`ZergRushValidator` (pool double-counting, supply-block grace period) and
-the new build-specific logic: the extractor cap this session's earlier fix
-introduced, resource-block detection gated on real tech eligibility (not
-just "hasn't happened yet"), and per-wave size/timing tracking.
-
-Runs under pytest, or standalone with no test dependency:
-
-    python -m tests.test_upgrade_rush_validator
+Drives `on_step` against the duck-typed fakes in `_fakes.py`, then inspects
+the tracking output. Most tests construct `BaseValidator` directly; a few
+needing a Stage 2/3/4 key use `UpgradeRushValidator` as a convenient
+four-stage concrete class.
 """
 
 from __future__ import annotations
 
-import asyncio
-import sys
-from types import SimpleNamespace
-
+from sc2.data import Race
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 
-from tests.upgrade_rush_validator import StepResult, UpgradeRushValidator
-
-
-class _Counted:
-    """Stands in for a `Units` collection: `.amount`, `.ready`, truthiness."""
-
-    def __init__(self, amount: int = 0, ready_amount: int | None = None):
-        self.amount = amount
-        self.ready = self if ready_amount is None else _Counted(ready_amount)
-
-    def __bool__(self) -> bool:
-        return self.amount > 0
-
-    def __iter__(self):
-        return iter(())
-
-
-class _FakeUnit:
-    def __init__(self, tag: int, type_id=UnitTypeId.ZERGLING):
-        self.tag = tag
-        self.type_id = type_id
-
-
-class _FakeUnits(list):
-    """Stands in for python-sc2's `Units`: just the `.tags_in` the validator
-    needs to pick the newly-released wave's actual unit objects back out of
-    the current ATTACKING group."""
-
-    def tags_in(self, tags) -> "_FakeUnits":
-        return _FakeUnits(u for u in self if u.tag in tags)
-
-
-class _FakeCtx:
-    """Duck-typed `BotContext`: just what the validator reads."""
-
-    def __init__(
-        self,
-        upgrades: tuple = (),
-        max_gas: int = 2,
-        wave1_min: int = 20,
-        wave_growth: float = 1.25,
-        evolution_chambers: int = 1,
-        evolution_chamber_gate=lambda ctx: True,
-        pool_deadline: float = 50.0,
-    ):
-        self.build = SimpleNamespace(
-            army=SimpleNamespace(
-                upgrades=upgrades,
-                evolution_chambers=evolution_chambers,
-                evolution_chamber_gate=evolution_chamber_gate,
-            ),
-            economy=SimpleNamespace(worker_target=60, max_gas=max_gas),
-            combat=SimpleNamespace(wave1_min=wave1_min, wave_growth=wave_growth),
-            pool_deadline=pool_deadline,
-        )
-        self.state = SimpleNamespace(wave_number=0)
-        self.attacking: list = []
-
-    def units_in_role(self, role) -> _FakeUnits:
-        return _FakeUnits(self.attacking)
-
-
-class FakeAI(UpgradeRushValidator):
-    """Just enough of the BotAI surface for `UpgradeRushValidator.on_step`."""
-
-    def __init__(
-        self,
-        upgrades: tuple = (),
-        max_gas: int = 2,
-        evolution_chambers: int = 1,
-        evolution_chamber_gate=lambda ctx: True,
-        pool_deadline: float = 50.0,
-    ):
-        self.time = 0.0
-        self.supply_left = 10
-        self.supply_used = 14
-        self.workers = _Counted(12)
-        self.gas_buildings = _Counted(0)
-        # `.get_cached_enemy_army` is a plain attribute here (a test sets it
-        # directly), standing in for ares' real `ManagerMediator` property.
-        self.mediator = SimpleNamespace(get_cached_enemy_army=[])
-        self.ctx = _FakeCtx(
-            upgrades,
-            max_gas=max_gas,
-            evolution_chambers=evolution_chambers,
-            evolution_chamber_gate=evolution_chamber_gate,
-            pool_deadline=pool_deadline,
-        )
-        self._structure_counts: dict = {}
-        self._structure_ready_counts: dict = {}
-        self._pending_counts: dict = {}
-        self._pending_upgrades: set = set()
-        self._affordable: set = set()
-
-    def structures(self, unit_type) -> _Counted:
-        amount = self._structure_counts.get(unit_type, 0)
-        ready = self._structure_ready_counts.get(unit_type, amount)
-        return _Counted(amount, ready)
-
-    def already_pending(self, unit_type) -> int:
-        return self._pending_counts.get(unit_type, 0)
-
-    def already_pending_upgrade(self, upgrade) -> float:
-        return 1.0 if upgrade in self._pending_upgrades else 0.0
-
-    def pending_or_complete_upgrade(self, upgrade) -> bool:
-        return upgrade in self._pending_upgrades
-
-    def can_afford(self, item) -> bool:
-        return item in self._affordable
-
-    def tech_requirement_progress(self, structure_type) -> float:
-        return 1.0
-
-    # Real per-unit supply costs, just for the couple of types these tests
-    # use - not a general `sc2.BotAI.calculate_supply_cost` stand-in.
-    _SUPPLY_COSTS = {UnitTypeId.ZERGLING: 0.5, UnitTypeId.ROACH: 2.0}
-
-    def calculate_supply_cost(self, unit_type) -> float:
-        return self._SUPPLY_COSTS.get(unit_type, 1.0)
-
-
-def _step(ai: FakeAI) -> None:
-    asyncio.run(ai.on_step(0))
-
+from tests.validators._fakes import FakeAI, _Counted, _FakeUnit
+from tests.validators.base_validator import BaseValidator
+from tests.validators.upgrade_rush_validator import UpgradeRushValidator
 
 # ── Stage 1: carried over from ZergRushValidator ────────────────────────────
 
@@ -158,10 +28,11 @@ def test_pool_under_construction_is_not_double_counted() -> None:
     ai = FakeAI()
     ai._structure_counts[UnitTypeId.SPAWNINGPOOL] = 1
     ai._pending_counts[UnitTypeId.SPAWNINGPOOL] = 1
+    validator = BaseValidator(ai)
     for _ in range(5):
-        _step(ai)
+        validator.on_step(0)
 
-    result = ai.validate()
+    result = validator.validate()
     only_one_pool = next(
         r for r in result["Stage 1: Opening Economy"] if r.name == "Only One Pool"
     )
@@ -171,21 +42,23 @@ def test_pool_under_construction_is_not_double_counted() -> None:
 def test_supply_block_within_grace_period_is_ignored() -> None:
     ai = FakeAI()
     ai.supply_left = 0
+    validator = BaseValidator(ai)
     for frame in range(200):
         ai.time = frame * 0.1  # up to 20.0s, well under the grace period
-        _step(ai)
+        validator.on_step(0)
 
-    assert ai._supply_blocked_frames == 0
+    assert validator._supply_blocked_frames == 0
 
 
 def test_supply_block_after_grace_period_still_counts() -> None:
     ai = FakeAI()
     ai.supply_left = 0
+    validator = BaseValidator(ai)
     for frame in range(1000):
         ai.time = 60.0 + frame * 0.1  # starts exactly at the grace period
-        _step(ai)
+        validator.on_step(0)
 
-    assert ai._supply_blocked_frames == 1000
+    assert validator._supply_blocked_frames == 1000
 
 
 # ── Stage 1: pool deadline comes from the build ─────────────────────────────
@@ -194,43 +67,73 @@ def test_supply_block_after_grace_period_still_counts() -> None:
 def test_pool_timing_deadline_comes_from_the_build_not_a_shared_constant() -> None:
     """A hatch-before-pool build (e.g. `UpgradeRush`, `pool_deadline=75.0`)
     pools later than an immediate-pool one by design - the check must use
-    that build's own `ctx.build.pool_deadline`, not `POOL_DEADLINE` (a
-    fallback for when `ctx` isn't set yet, calibrated for an immediate-pool
-    opening)."""
+    that build's own `ctx.build.pool_deadline`."""
     ai = FakeAI(pool_deadline=75.0)
-    ai.time = 63.0  # past the class-level POOL_DEADLINE (50.0), within 75.0
+    ai.time = 63.0  # past an immediate-pool deadline (50.0), within 75.0
     ai._structure_counts[UnitTypeId.SPAWNINGPOOL] = 1
-    _step(ai)
+    validator = BaseValidator(ai)
+    validator.on_step(0)
 
-    result = ai.validate()
+    result = validator.validate()
     pool_check = next(
         r for r in result["Stage 1: Opening Economy"] if r.name == "Pool Timing"
     )
     assert pool_check.passed, pool_check.detail
 
 
+def test_a_non_zerg_build_gets_no_pool_or_extractor_checks() -> None:
+    """A Terran build can never have a Spawning Pool or Extractor, so
+    reporting FAILs for them would bury checks that do apply."""
+    ai = FakeAI(race=Race.Terran)
+    ai.time = 120.0
+    validator = BaseValidator(ai)
+    validator.on_step(0)
+
+    names = [r.name for r in validator.validate()["Stage 1: Opening Economy"]]
+    assert "Pool Timing" not in names, names
+    assert "Workers Before Pool" not in names, names
+    assert "Only One Pool" not in names, names
+    assert "Extractor Built" not in names, names
+    # The race-neutral checks are still there.
+    assert "Workers Massed" in names, names
+    assert "Supply Management" in names, names
+
+
+def test_a_zerg_build_still_gets_the_pool_checks() -> None:
+    ai = FakeAI()  # defaults to Race.Zerg
+    ai.time = 120.0
+    validator = BaseValidator(ai)
+    validator.on_step(0)
+
+    names = [r.name for r in validator.validate()["Stage 1: Opening Economy"]]
+    assert "Pool Timing" in names, names
+    assert "Extractor Built" in names, names
+
+
 def test_pool_timing_still_fails_past_the_builds_own_deadline() -> None:
     ai = FakeAI(pool_deadline=75.0)
     ai.time = 80.0
     ai._structure_counts[UnitTypeId.SPAWNINGPOOL] = 1
-    _step(ai)
+    validator = BaseValidator(ai)
+    validator.on_step(0)
 
-    result = ai.validate()
+    result = validator.validate()
     pool_check = next(
         r for r in result["Stage 1: Opening Economy"] if r.name == "Pool Timing"
     )
     assert not pool_check.passed
 
 
-# ── Stage 1: extractor cap (this session's earlier fix) ─────────────────────
+# ── Stage 1: extractor cap ───────────────────────────────────────────────────
 
 
 def test_extractor_cap_respected_when_within_cap() -> None:
     ai = FakeAI(max_gas=2)
     ai.gas_buildings = _Counted(2)
-    _step(ai)
+    validator = BaseValidator(ai)
+    validator.on_step(0)
 
-    result = ai.validate()
+    result = validator.validate()
     cap_check = next(
         r
         for r in result["Stage 1: Opening Economy"]
@@ -244,9 +147,10 @@ def test_extractor_cap_respected_flags_when_exceeded() -> None:
     (see ARCHITECTURE.md) that could pile extra extractors past the cap."""
     ai = FakeAI(max_gas=2)
     ai.gas_buildings = _Counted(3)
-    _step(ai)
+    validator = BaseValidator(ai)
+    validator.on_step(0)
 
-    result = ai.validate()
+    result = validator.validate()
     cap_check = next(
         r
         for r in result["Stage 1: Opening Economy"]
@@ -264,11 +168,12 @@ def test_upgrade_not_yet_eligible_never_counts_as_resource_blocked() -> None:
     built yet, it isn't eligible - being unable to afford it shouldn't
     count as a resource block, since money was never the blocker."""
     ai = FakeAI(upgrades=(UpgradeId.ZERGMELEEWEAPONSLEVEL1,))
+    validator = BaseValidator(ai)
     # No Evolution Chamber, and never affordable either.
     for _ in range(50):
-        _step(ai)
+        validator.on_step(0)
 
-    tracker = ai._upgrades[0]
+    tracker = validator._upgrades[0]
     assert not tracker.started
     assert tracker.blocked_frames == 0
 
@@ -277,17 +182,18 @@ def test_upgrade_eligible_but_unaffordable_counts_as_resource_blocked() -> None:
     ai = FakeAI(upgrades=(UpgradeId.ZERGMELEEWEAPONSLEVEL1,))
     ai._structure_counts[UnitTypeId.EVOLUTIONCHAMBER] = 1
     ai._structure_ready_counts[UnitTypeId.EVOLUTIONCHAMBER] = 1
+    validator = BaseValidator(ai)
     for _ in range(30):
-        _step(ai)
+        validator.on_step(0)
 
-    tracker = ai._upgrades[0]
+    tracker = validator._upgrades[0]
     assert not tracker.started
     assert tracker.blocked_frames == 30
 
     # Once affordable, it starts and stops accumulating blocked frames.
     ai._affordable.add(UpgradeId.ZERGMELEEWEAPONSLEVEL1)
     ai._pending_upgrades.add(UpgradeId.ZERGMELEEWEAPONSLEVEL1)  # research fires
-    _step(ai)
+    validator.on_step(0)
     assert tracker.started
     assert tracker.blocked_frames == 30
 
@@ -303,43 +209,43 @@ def test_upgrade_requiring_lair_waits_on_the_earlier_upgrade_in_list() -> None:
     ai._structure_ready_counts[UnitTypeId.EVOLUTIONCHAMBER] = 1
     ai._structure_counts[UnitTypeId.LAIR] = 1
     ai._structure_ready_counts[UnitTypeId.LAIR] = 1
+    validator = BaseValidator(ai)
     for _ in range(20):
-        _step(ai)
+        validator.on_step(0)
 
-    melee2 = ai._upgrades[1]
+    melee2 = validator._upgrades[1]
     assert melee2.blocked_frames == 0
 
     # Now Melee +1 is under way - Melee +2 becomes genuinely eligible.
     ai._pending_upgrades.add(UpgradeId.ZERGMELEEWEAPONSLEVEL1)
     for _ in range(15):
-        _step(ai)
+        validator.on_step(0)
 
     assert melee2.blocked_frames == 15
 
 
-# ── Stage 2/3: the report is build-driven, not UpgradeRush-specific ─────────
+# ── Stage 2/3: the report shape is generic, not one build's coincidence ─────
 
 
 def test_a_build_with_no_tech_upgrades_gets_no_tech_structure_checks() -> None:
-    """`Speedling All-In` only ever researches Metabolic Boost - it has no
-    Evolution Chamber, Lair or Hive in its upgrade list at all. The report
-    should say so plainly instead of failing checks for milestones that
-    build was never going to reach."""
+    """A build whose upgrades touch no tech structure (e.g. Metabolic Boost
+    alone) should say so plainly instead of failing checks it could never
+    pass. `_validate_structures` is the shared mechanic every build's own
+    validator uses; per-build report shape belongs in each build's own test
+    file, not here."""
     ai = FakeAI(upgrades=(UpgradeId.ZERGLINGMOVEMENTSPEED,))
-    _step(ai)
+    validator = BaseValidator(ai)
+    validator.on_step(0)
 
-    assert ai._structures == []
-    result = ai.validate()
-    assert result["Stage 2: Tech Structures"] == [
-        StepResult("No tech structures required by this build", True)
-    ]
+    assert validator._structures == []
+    result = validator._validate_structures()
+    assert [r.name for r in result] == ["No tech structures required by this build"]
 
 
 def test_evolution_chamber_target_and_gate_come_from_the_build_not_a_constant() -> None:
-    """A second Evolution Chamber must never count as resource-blocked while
-    this build's own gate hasn't opened - and must start counting the
-    instant it does - with nothing UpgradeRush-specific (no reference to
-    Metabolic Boost or any other hardcoded upgrade) making that decision."""
+    """A second Evolution Chamber must not count as resource-blocked until
+    this build's own gate opens, with nothing build-specific hardcoding
+    that decision."""
     gate_open = False
     ai = FakeAI(
         upgrades=(UpgradeId.ZERGMELEEWEAPONSLEVEL1,),
@@ -348,16 +254,19 @@ def test_evolution_chamber_target_and_gate_come_from_the_build_not_a_constant() 
     )
     ai._structure_counts[UnitTypeId.EVOLUTIONCHAMBER] = 1
     ai._structure_ready_counts[UnitTypeId.EVOLUTIONCHAMBER] = 1
+    validator = BaseValidator(ai)
     for _ in range(25):
-        _step(ai)
+        validator.on_step(0)
 
-    evo = next(s for s in ai._structures if s.structure == UnitTypeId.EVOLUTIONCHAMBER)
+    evo = next(
+        s for s in validator._structures if s.structure == UnitTypeId.EVOLUTIONCHAMBER
+    )
     assert not evo.started  # only 1 of this build's target of 2
     assert evo.blocked_frames == 0  # gate closed - never eligible yet
 
     gate_open = True
     for _ in range(10):
-        _step(ai)
+        validator.on_step(0)
     assert evo.blocked_frames == 10  # gate open, still unaffordable
 
 
@@ -368,15 +277,16 @@ def test_wave_release_records_size_time_and_next_expected_minimum() -> None:
     ai = FakeAI(upgrades=())
     ai.ctx.build.combat.wave1_min = 20
     ai.ctx.build.combat.wave_growth = 1.25
+    validator = UpgradeRushValidator(ai)
 
     wave1_units = [_FakeUnit(i) for i in range(21)]
     ai.time = 300.0
     ai.ctx.state.wave_number = 1
     ai.ctx.attacking = wave1_units
-    _step(ai)
+    validator.on_step(0)
 
-    assert len(ai._waves) == 1
-    wave1 = ai._waves[0]
+    assert len(validator._waves) == 1
+    wave1 = validator._waves[0]
     assert wave1.number == 1
     assert wave1.time == 300.0
     assert wave1.size == 21
@@ -385,31 +295,29 @@ def test_wave_release_records_size_time_and_next_expected_minimum() -> None:
     assert wave1.our_supply == 10.5  # 21 zerglings * 0.5 supply each
 
     # ceil(21 * 1.25) == 27 is what the *next* wave should be measured against.
-    assert ai._next_wave_expected_min == 27
+    assert validator._next_wave_expected_min == 27
 
     wave2_units = wave1_units + [_FakeUnit(100 + i) for i in range(27)]
     ai.time = 420.0
     ai.ctx.state.wave_number = 2
     ai.ctx.attacking = wave2_units
-    _step(ai)
+    validator.on_step(0)
 
-    assert len(ai._waves) == 2
-    wave2 = ai._waves[1]
+    assert len(validator._waves) == 2
+    wave2 = validator._waves[1]
     assert wave2.size == 27
     assert wave2.expected_min == 27
     assert wave2.gap == 120.0
 
-    result = ai.validate()
+    result = validator.validate()
     wave_results = {r.name: r for r in result["Stage 4: Attack Waves"]}
     assert wave_results["Wave 1"].passed
     assert wave_results["Wave 2"].passed
 
 
 def test_wave_records_our_supply_against_enemy_army_supply() -> None:
-    """Each wave should capture what it's actually walking into: our
-    released supply next to the enemy's known army supply at that instant -
-    not just our own size, and not the enemy's unit *count* either, since a
-    handful of Roaches outweighs the same number of Zerglings."""
+    """Each wave captures our released supply against the enemy's known army
+    supply - not unit count, since a few Roaches outweigh many Zerglings."""
     ai = FakeAI(upgrades=())
     ai.mediator.get_cached_enemy_army = [
         _FakeUnit(900 + i, type_id=UnitTypeId.ROACH) for i in range(4)
@@ -418,18 +326,19 @@ def test_wave_records_our_supply_against_enemy_army_supply() -> None:
     # these out itself - see `_enemy_army_supply`'s docstring) must not
     # count as army supply.
     ai.mediator.get_cached_enemy_army.append(_FakeUnit(950, type_id=UnitTypeId.DRONE))
+    validator = UpgradeRushValidator(ai)
 
     wave1_units = [_FakeUnit(i, type_id=UnitTypeId.ZERGLING) for i in range(20)]
     ai.time = 300.0
     ai.ctx.state.wave_number = 1
     ai.ctx.attacking = wave1_units
-    _step(ai)
+    validator.on_step(0)
 
-    wave1 = ai._waves[0]
+    wave1 = validator._waves[0]
     assert wave1.our_supply == 10.0  # 20 zerglings * 0.5
     assert wave1.enemy_supply == 8.0  # 4 roaches * 2.0, drone excluded
 
-    result = ai.validate()
+    result = validator.validate()
     wave1_result = next(
         r for r in result["Stage 4: Attack Waves"] if r.name == "Wave 1"
     )
@@ -438,27 +347,10 @@ def test_wave_records_our_supply_against_enemy_army_supply() -> None:
 
 def test_no_wave_ever_released_fails_stage_4() -> None:
     ai = FakeAI(upgrades=())
-    _step(ai)
+    validator = UpgradeRushValidator(ai)
+    validator.on_step(0)
 
-    result = ai.validate()
+    result = validator.validate()
     assert result["Stage 4: Attack Waves"] == [
         r for r in result["Stage 4: Attack Waves"] if not r.passed
     ]
-
-
-def main() -> int:
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failures = 0
-    for test in tests:
-        try:
-            test()
-            print(f"  PASS  {test.__name__}")
-        except Exception as error:  # noqa: BLE001 - report, don't stop
-            failures += 1
-            print(f"  FAIL  {test.__name__}: {error}")
-    print(f"\n{len(tests) - failures}/{len(tests)} passed.")
-    return 1 if failures else 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

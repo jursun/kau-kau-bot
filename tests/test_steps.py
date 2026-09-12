@@ -160,9 +160,9 @@ def test_overflow_hatcheries_prefers_expansion_targeting_one_more_than_current()
 
 def test_evolution_chambers_reads_count_and_gate_from_the_build() -> None:
     """Regression test: `evolution_chambers()` used to take `count`/`gate`
-    as its own params, duplicating the same numbers `UpgradeRushValidator`
-    needed to know separately. Both now come from `ctx.build.army` — the
-    single source of truth for a per-build target count and gate."""
+    as its own params, duplicating the same numbers the validator needed to
+    know separately. Both now come from `ctx.build.army` — the single
+    source of truth for a per-build target count and gate."""
     ctx = _ctx()
     ctx.build.army.evolution_chambers = 2
     ctx.build.army.evolution_chamber_gate = lambda _ctx: True
@@ -207,7 +207,7 @@ def test_spore_crawlers_skips_bases_that_already_have_enough() -> None:
     ctx.bot.owned_expansions = {covered: MagicMock(), uncovered: MagicMock()}
     ctx.bot.structures.return_value.amount = 1
     ctx.bot.structures.return_value.closer_than.side_effect = (
-        lambda _radius, location: [MagicMock()] if location == covered else []
+        lambda _radius, location: ([MagicMock()] if location == covered else [])
     )
 
     plan = z.spore_crawlers(per_base=1, gate=lambda _ctx: True)(ctx)
@@ -318,6 +318,35 @@ def test_overseers_returns_none_before_gate() -> None:
     ctx = _ctx()
     ctx.state.wave_number = 2
     assert z.overseers(per_wave=1, maximum=3, gate=lambda _ctx: False)(ctx) is None
+
+
+# --- common.build_workers --------------------------------------------------
+
+
+def test_build_workers_trains_up_to_the_worker_target_by_default() -> None:
+    ctx = _ctx()
+    behavior = c.build_workers()(ctx)
+
+    assert isinstance(behavior, BuildWorkers)
+    assert behavior.to_count == ctx.worker_target
+
+
+def test_build_workers_returns_none_before_its_gate() -> None:
+    ctx = _ctx()
+    assert c.build_workers(gate=lambda _ctx: False)(ctx) is None
+
+
+def test_build_workers_honors_an_explicit_to_count() -> None:
+    ctx = _ctx()
+    behavior = c.build_workers(to_count=22)(ctx)
+
+    assert isinstance(behavior, BuildWorkers)
+    assert behavior.to_count == 22
+
+
+def test_auto_supply_returns_none_before_its_gate() -> None:
+    ctx = _ctx()
+    assert c.auto_supply(gate=lambda _ctx: False)(ctx) is None
 
 
 def main() -> int:
