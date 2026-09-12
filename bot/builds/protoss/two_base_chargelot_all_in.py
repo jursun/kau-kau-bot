@@ -101,7 +101,8 @@ BUILD = BuildDefinition(
     ),
     macro_steps=(
         # Gates before Robo so the 8-Gate commit is never waiting on gas units.
-        # Gates 2-4 wall the natural (exit path left); rest in main.
+        # Gates 2-4 at the natural choke (closest_to gatekeeper/enemy; not ares
+        # wall=True — that is main-ramp-only). Exit path left by formation.
         # Opening already placed Gateway 1; wall_natural covers the next 3.
         p.gateways(
             GATEWAY_COUNT,
