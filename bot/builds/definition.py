@@ -38,6 +38,22 @@ class Economy:
     long_distance_mine: bool = False
 
 
+
+@dataclass(frozen=True)
+class GasTiming:
+    """Jason-facing gas staffing after the YAML opening. Draft — MacroEngine/steps not wired yet."""
+    pull_off: Gate | None = None  # when true, staff pull_off_workers per gas
+    pull_off_workers: int = 0     # Speedling: vespene≥100 or speed started → 0
+    # Until pull_off, Economy.workers_per_gas applies (via existing c.gas_workers)
+
+
+@dataclass(frozen=True)
+class ExpandTrigger:
+    """Jason-facing expand / surplus-hatch lever. Draft — not wired yet."""
+    gate: Gate = _always           # when the next hatch/expand is wanted
+    mineral_overflow: int | None = None  # maps later to overflow_hatcheries threshold
+
+
 @dataclass(frozen=True)
 class Army:
     """What this build makes, and what counts as 'army' for roles and waves."""
@@ -184,6 +200,10 @@ class BuildDefinition:
     economy: Economy
     army: Army
     combat: Combat
+    expand_trigger: ExpandTrigger | None = None
+    """Jason-facing expand/surplus-hatch lever. Draft — unwired this bite."""
+    gas_timing: GasTiming | None = None
+    """Jason-facing post-opening gas staffing lever. Draft — unwired this bite."""
     macro_steps: tuple[MacroStep, ...] = ()
     """Priority-ordered. A `MacroPlan` stops at the first step that acts."""
     always: tuple[MacroStep, ...] = field(default_factory=tuple)

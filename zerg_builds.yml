@@ -1,8 +1,8 @@
 # KauKauBot openings, run by the ares BuildOrderRunner.
 #
 # Openings are deliberately short: they cover the parts of the game where
-# exact timings matter, then hand off to the dynamic macro plan in
-# `bot/managers/macro.py` once `build_order_runner.build_completed` is True.
+# exact timings matter, then hand off to `bot/core/macro_engine.py` /
+# `BuildDefinition.macro_steps` once `build_order_runner.build_completed` is True.
 #
 # Forcing an opening locally: set `Debug: True` in config.yml (ares then uses
 # the `test_123` opponent id) and put the opening you want first in the
