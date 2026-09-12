@@ -64,6 +64,8 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from ares.consts import WORKER_TYPES, UnitRole
+
+from bot.intel import qa as intel_qa
 from sc2.data import Race
 from sc2.dicts.unit_research_abilities import RESEARCH_INFO
 from sc2.dicts.upgrade_researched_from import UPGRADE_RESEARCHED_FROM
@@ -244,6 +246,9 @@ class BaseValidator:
         self._max_gas_buildings: int = 0
         self._gas_cap_exceeded: bool = False
         self._supply_blocked_frames: int = 0
+        # Combat QA (idle production + influence parking)
+        self._idle_townhall_frames: int = 0
+        self._influence_parking_frames: int = 0
         # Stage 1B
         self._crew_claims: List[_CrewClaimTracker] = []
         self._crew_tasks: List[_CrewTaskTracker] = []
@@ -400,6 +405,7 @@ class BaseValidator:
             self._track_structures()
 
         # ── Stage 4 tracking ─────────────────────────────────────────
+        self._track_combat_qa()
         self._track_waves()
 
     def on_end(self) -> None:
@@ -569,6 +575,40 @@ class BaseValidator:
 
     # ── Validation logic ─────────────────────────────────────────────────
 
+    def _track_combat_qa(self) -> None:
+        """Idle ready townhalls + ATTACKING units parked in unsafe influence.
+
+        Same grace window as supply blocks so the opening does not FAIL for
+        expected early idling. Influence parking uses `is_position_safe` on
+        the ground grid — the predicate KeepUnitSafe consults.
+        """
+        if self.time < self.SUPPLY_BLOCK_GRACE_PERIOD:
+            return
+        if intel_qa.idle_ready_townhalls(self.ai):
+            self._idle_townhall_frames += 1
+        if intel_qa.units_parked_in_influence(self.ai):
+            self._influence_parking_frames += 1
+
+    def _validate_combat_qa(self) -> List[StepResult]:
+        """Ship-gate checks for supply-adjacent production + influence parking.
+
+        Supply Management stays in Stage 1; this stage covers idle townhalls
+        and army parking in bad ground influence after influence retreat.
+        """
+        return [
+            StepResult(
+                "Idle Townhalls",
+                self._idle_townhall_frames < 50,
+                f"idle-townhall frames: {self._idle_townhall_frames}",
+            ),
+            StepResult(
+                "Influence Parking",
+                self._influence_parking_frames < 50,
+                f"influence-parking frames: {self._influence_parking_frames}",
+            ),
+        ]
+
+
     def validate(self) -> Dict[str, List[StepResult]]:
         """Evaluate this build's own milestones and return results grouped
         by stage.
@@ -588,6 +628,7 @@ class BaseValidator:
         }
         wave_label = self.ctx.build.combat.wave_stage_label
         stages[f"Stage 4: {wave_label}"] = self._validate_waves()
+        stages["Stage 5: Combat QA"] = self._validate_combat_qa()
         return stages
 
     def _validate_economy(self) -> List[StepResult]:
