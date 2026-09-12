@@ -328,21 +328,22 @@ def continuous_main_depots(gate: Gate = _always) -> MacroStep:
     `assign_role=False`, waiting on tracker membership between Depots.
     Stops issuing new Depots once supply is capped at 200.
 
+    `gate` only gates the *claim*. Once a builder is tagged, this step
+    keeps driving it even if the gate later fails (e.g. minerals dip back
+    under 500) - otherwise a spent Depot would park the SCV forever.
     Deliberately not `AutoSupply`: that races the opening crew for the
-    first Depot and scales past a fixed structure count. This only ever
-    runs after an explicit gate (Four Rax: `targeting.enemy_main_fallen`)
-    and only ever with the one worker it claimed.
+    first Depot. Four Rax opens this on `minerals_at_least(500)`.
     """
 
     def step(ctx: "BotContext"):
-        if not gate(ctx):
-            return None
         if ctx.bot.supply_cap >= 200:
             return None
 
         tag = ctx.state.cleanup_depot_builder_tag
         worker = ctx.bot.unit_tag_dict.get(tag) if tag is not None else None
         if worker is None:
+            if not gate(ctx):
+                return None
             worker = ctx.mediator.select_worker(
                 target_position=ctx.production_location, force_close=True
             )

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from sc2.position import Point2
+
 from bot.common.log import LogOnce
 
 
@@ -50,8 +52,8 @@ class RunState:
     `bot.routines.combat.attack_squads`)."""
     proxy_crew: ProxyCrewState = field(default_factory=ProxyCrewState)
     cleanup_depot_builder_tag: int | None = None
-    """SCV claimed by `steps.terran.continuous_main_depots` once the enemy
-    main has fallen - stays off the mineral line laying Depots."""
+    """SCV claimed by `steps.terran.continuous_main_depots` - stays off the
+    mineral line laying Depots once its gate opens."""
     enemy_main_townhall_seen: bool = False
     """Latches True the first time a townhall is visible near the enemy
     start - see `targeting.enemy_main_fallen`. Without this, fog of war
@@ -59,4 +61,14 @@ class RunState:
     cleanup_depot_queued: bool = False
     """True while the cleanup Depot builder is in ares' building tracker
     for its current Depot - same meaning as `CrewMember.queued`."""
+    hunt_objective: Point2 | None = None
+    """Single army-wide scout/cleanup destination while hunting remaining
+    bases after the enemy main falls - see `targeting.hunt_remaining_bases`.
+    Pinned until the spot is checked (expansions) or nothing remains near
+    it (leftover structures), so split squads do not each chase a different
+    closest building."""
+    scouted_expansions: set[Point2] = field(default_factory=set)
+    """Expansions already checked during a post-main hunt. Latched on
+    vision or army arrival so fog of war after leaving a base cannot send
+    the army back there (the natural ↔ third oscillation)."""
     log_once: LogOnce = field(default_factory=LogOnce)

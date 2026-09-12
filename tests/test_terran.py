@@ -748,6 +748,7 @@ def test_proxy_crew_gives_up_on_a_dead_worker() -> None:
 
 def test_continuous_main_depots_does_nothing_before_gate() -> None:
     ctx = _ctx()
+    ctx.bot.supply_cap = 23
     assert t.continuous_main_depots(gate=lambda _c: False)(ctx) is None
     assert ctx.state.cleanup_depot_builder_tag is None
     ctx.mediator.select_worker.assert_not_called()
@@ -804,6 +805,23 @@ def test_continuous_main_depots_stops_at_supply_cap() -> None:
 
     assert t.continuous_main_depots(gate=lambda _c: True)(ctx) is None
     ctx.mediator.select_worker.assert_not_called()
+
+
+def test_continuous_main_depots_keeps_driving_after_gate_closes() -> None:
+    """Gate only claims; a later mineral dip must not park the builder."""
+    ctx = _ctx()
+    ctx.bot.start_location = HOME
+    ctx.bot.supply_cap = 31
+    worker = _worker(7, HOME)
+    ctx.bot.unit_tag_dict = {7: worker}
+    ctx.state.cleanup_depot_builder_tag = 7
+    ctx.state.cleanup_depot_queued = False
+    ctx.mediator.request_building_placement.return_value = Point2((22.0, 22.0))
+    ctx.mediator.build_with_specific_worker.return_value = True
+
+    assert t.continuous_main_depots(gate=lambda _c: False)(ctx) is None
+    ctx.mediator.build_with_specific_worker.assert_called_once()
+    assert ctx.state.cleanup_depot_queued is True
 
 
 def main() -> int:

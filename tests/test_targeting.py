@@ -139,8 +139,65 @@ def test_hunt_remaining_bases_ignores_leftover_main_structures_to_scout() -> Non
     ctx.mediator.get_enemy_expansions = [(hidden, 30.0)]
     ctx.bot.is_visible.side_effect = lambda p: p != hidden
     ctx.bot.enemy_start_locations = [Point2((70.0, 70.0))]
+    ctx.state.hunt_objective = None
+    ctx.state.scouted_expansions = set()
 
     assert targeting.hunt_remaining_bases(ctx, FROM_POS) == hidden
+    assert ctx.state.hunt_objective == hidden
+
+
+def test_hunt_remaining_bases_keeps_a_pinned_expansion_for_the_whole_army() -> None:
+    """A pinned scout point must not flip when another expansion is also dark."""
+    first = Point2((200.0, 50.0))
+    second = Point2((220.0, 80.0))
+    ctx = _ctx(structures=[])
+    ctx.bot.start_location = Point2((10.0, 10.0))
+    ctx.mediator.get_own_nat = Point2((20.0, 10.0))
+    ctx.mediator.get_enemy_expansions = [(second, 20.0), (first, 30.0)]
+    ctx.bot.is_visible.return_value = False
+    ctx.bot.enemy_start_locations = [Point2((70.0, 70.0))]
+    ctx.state.hunt_objective = first
+    ctx.state.scouted_expansions = set()
+
+    assert targeting.hunt_remaining_bases(ctx, FROM_POS) == first
+
+
+def test_hunt_remaining_bases_does_not_revisit_an_explored_expansion() -> None:
+    """Fog after leaving the natural must not bounce the army back from the third."""
+    natural = Point2((100.0, 50.0))
+    third = Point2((200.0, 50.0))
+    ctx = _ctx(structures=[])
+    ctx.bot.start_location = Point2((10.0, 10.0))
+    ctx.mediator.get_own_nat = Point2((20.0, 10.0))
+    ctx.mediator.get_enemy_expansions = [(natural, 10.0), (third, 20.0)]
+    # Natural was checked then fogged; third not yet.
+    ctx.bot.is_visible.return_value = False
+    ctx.bot.enemy_start_locations = [Point2((70.0, 70.0))]
+    ctx.state.hunt_objective = natural
+    ctx.state.scouted_expansions = {natural}
+
+    assert targeting.hunt_remaining_bases(ctx, FROM_POS) == third
+    assert ctx.state.hunt_objective == third
+
+    # Still fogged — must stay on third, not bounce to natural.
+    assert targeting.hunt_remaining_bases(ctx, FROM_POS) == third
+
+
+def test_hunt_remaining_bases_marks_checked_on_arrival() -> None:
+    """Arriving at the pin (even without lasting vision) advances the sweep."""
+    natural = Point2((100.0, 50.0))
+    third = Point2((200.0, 50.0))
+    ctx = _ctx(structures=[])
+    ctx.bot.start_location = Point2((10.0, 10.0))
+    ctx.mediator.get_own_nat = Point2((20.0, 10.0))
+    ctx.mediator.get_enemy_expansions = [(natural, 10.0), (third, 20.0)]
+    ctx.bot.is_visible.return_value = False
+    ctx.bot.enemy_start_locations = [Point2((70.0, 70.0))]
+    ctx.state.hunt_objective = natural
+    ctx.state.scouted_expansions = set()
+
+    assert targeting.hunt_remaining_bases(ctx, natural) == third
+    assert natural in ctx.state.scouted_expansions
 
 
 def test_hunt_remaining_bases_prefers_a_visible_townhall_over_scouting() -> None:
@@ -151,8 +208,11 @@ def test_hunt_remaining_bases_prefers_a_visible_townhall_over_scouting() -> None
     ctx.mediator.get_own_nat = Point2((20.0, 10.0))
     ctx.mediator.get_enemy_expansions = [(hidden, 30.0)]
     ctx.bot.is_visible.return_value = False
+    ctx.state.hunt_objective = hidden
+    ctx.state.scouted_expansions = set()
 
     assert targeting.hunt_remaining_bases(ctx, FROM_POS) == HATCHERY
+    assert ctx.state.hunt_objective is None
 
 
 def test_hunt_remaining_bases_skips_our_own_expansions() -> None:
@@ -165,6 +225,8 @@ def test_hunt_remaining_bases_skips_our_own_expansions() -> None:
     ctx.bot.is_visible.return_value = False
     ctx.bot.enemy_start_locations = [Point2((70.0, 70.0))]
     ctx.build.combat.focus = ()
+    ctx.state.hunt_objective = None
+    ctx.state.scouted_expansions = set()
 
     assert targeting.hunt_remaining_bases(ctx, FROM_POS) == hidden
 
@@ -178,8 +240,27 @@ def test_hunt_remaining_bases_cleans_up_structures_after_expansions_checked() ->
     ctx.mediator.get_enemy_expansions = [(visible_exp, 30.0)]
     ctx.bot.is_visible.return_value = True
     ctx.bot.enemy_start_locations = [Point2((70.0, 70.0))]
+    ctx.state.hunt_objective = None
+    ctx.state.scouted_expansions = set()
 
     assert targeting.hunt_remaining_bases(ctx, FROM_POS) == pylon.position
+    assert ctx.state.hunt_objective == pylon.position
+    assert visible_exp in ctx.state.scouted_expansions
+
+
+def test_hunt_remaining_bases_sticks_to_a_pinned_cleanup_structure() -> None:
+    near = _structure(FROM_POS, type_id=UnitTypeId.PYLON)
+    far = _structure(Point2((150.0, 150.0)), type_id=UnitTypeId.PYLON)
+    ctx = _ctx(structures=[near, far])
+    ctx.bot.start_location = Point2((10.0, 10.0))
+    ctx.mediator.get_own_nat = Point2((20.0, 10.0))
+    ctx.mediator.get_enemy_expansions = []
+    ctx.bot.is_visible.return_value = True
+    ctx.bot.enemy_start_locations = [Point2((70.0, 70.0))]
+    ctx.state.hunt_objective = far.position
+    ctx.state.scouted_expansions = set()
+
+    assert targeting.hunt_remaining_bases(ctx, FROM_POS) == far.position
 
 
 # --- targeting locators --------------------------------------------------

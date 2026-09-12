@@ -42,13 +42,15 @@ not - see `combat.attack_squads`. Crew SCVs that finish their tasks join the
 push (see `combat.builder_workers_attack`'s docstring).
 
 Fallback once the enemy main's townhall has been seen and destroyed
-(`targeting.enemy_main_fallen`): pull one mining SCV to keep laying Depots
-at home (`steps.terran.continuous_main_depots`) so Marines are not supply-
-blocked while hunting, and point the push at
-`targeting.hunt_remaining_bases` so squads walk unscouted expansions for
-hidden townhalls instead of camping leftover buildings in a dead main.
-Opening supply stays crew Depots only — no `AutoSupply`, which races Z
-for the first Depot.
+(`targeting.enemy_main_fallen`): point the push at
+`targeting.hunt_remaining_bases` so the whole army walks one pinned
+unscouted expansion at a time for hidden townhalls instead of camping
+leftover buildings or splitting toward different closest targets.
+Separately, once minerals bank past `DEPOT_MINERAL_TRIGGER`, peel one
+mining SCV onto continuous home Depots (`steps.terran.continuous_main_
+depots`) so Marines are not supply-blocked - opening supply stays crew
+Depots only until then (no `AutoSupply`, which races Z for the first
+Depot).
 
 Not yet validated in-game.
 """
@@ -98,6 +100,11 @@ FIRST_WAVE = 5
 # micro path; when our local supply is larger, that routine stutter-steps
 # instead. See `attack_squads`' docstring for the force check.
 MARINE_MIN_ENGAGE_RANGE = 3
+
+# Once the bank hits this, peel one miner onto continuous home Depots so
+# Marine production is not supply-blocked mid-push. High enough that Z's
+# opening Depot and the first Barracks are already paid for.
+DEPOT_MINERAL_TRIGGER = 500
 
 
 def proxy_location(ctx) -> Point2:
@@ -149,9 +156,9 @@ def attack_objective(ctx) -> Point2:
     the enemy start location, which takes them up the ramp into the main.
     Once the main's townhall has been seen and destroyed
     (`targeting.enemy_main_fallen`), fall through to
-    `targeting.hunt_remaining_bases` — visible townhalls first, then
-    unscouted expansions — so leftover pylons in a dead main cannot keep
-    the army from searching for a hidden base.
+    `targeting.hunt_remaining_bases` — visible townhalls first, then one
+    pinned unscouted expansion for the whole army — so leftover pylons
+    and split squads cannot each chase a different closest target.
 
     Order matters: check the natural before the main. A townhall still at
     the natural means the ramp fight is not over. Use `enemy_main_fallen`
@@ -296,9 +303,10 @@ BUILD = BuildDefinition(
         # this same step. See `steps.terran.proxy_crew`'s docstring for why
         # this has to run every frame rather than as a gated macro step.
         t.proxy_crew(),
-        # After the enemy main falls: one miner becomes a dedicated Depot
-        # builder at home. Not AutoSupply — that races the opening crew.
-        t.continuous_main_depots(gate=targeting.enemy_main_fallen),
+        # Once minerals bank past DEPOT_MINERAL_TRIGGER, one miner becomes a
+        # dedicated Depot builder at home. Not AutoSupply — that races the
+        # opening crew — and not gated on the enemy main falling.
+        t.continuous_main_depots(gate=gates.minerals_at_least(DEPOT_MINERAL_TRIGGER)),
     ),
     macro_steps=(
         # No `c.auto_supply()` here, deliberately. `PROXY_CREW` already

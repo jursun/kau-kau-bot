@@ -32,6 +32,10 @@ MAIN_CLEAR_RADIUS: float = 15.0
 """How close to the enemy start an enemy townhall must be to still count
 the main as standing - see `enemy_main_cleared`."""
 
+SCOUT_ARRIVAL_RADIUS: float = 8.0
+"""How close the army must get to a pinned expansion before we treat it
+as checked and move on - see `_expansion_checked`."""
+
 
 def focus_points(ctx: "BotContext") -> list[Point2]:
     """Resolve the build's focus keywords to map positions."""
@@ -100,34 +104,86 @@ def _is_our_expansion(ctx: "BotContext", location: Point2) -> bool:
     return cy_distance_to_squared(location, ctx.mediator.get_own_nat) <= radius_sq
 
 
+def _mark_expansion_scouted(ctx: "BotContext", location: Point2) -> None:
+    ctx.state.scouted_expansions.add(location)
+
+
+def _expansion_checked(
+    ctx: "BotContext", location: Point2, from_pos: Point2
+) -> bool:
+    """True once this expansion has been checked and should not be re-queued.
+
+    Our burnysc2 fork has `is_visible` but no `is_explored`. Current vision
+    alone is not enough: leaving a base puts it back in fog and would
+    re-queue the natural the moment the army walked toward the third.
+    So we latch into `scouted_expansions` the first time the spot is
+    visible or the army arrives within `SCOUT_ARRIVAL_RADIUS`.
+    """
+    if location in ctx.state.scouted_expansions:
+        return True
+    arrived = (
+        cy_distance_to_squared(from_pos, location) <= SCOUT_ARRIVAL_RADIUS**2
+    )
+    if arrived or ctx.bot.is_visible(location):
+        _mark_expansion_scouted(ctx, location)
+        return True
+    return False
+
+
 def hunt_remaining_bases(ctx: "BotContext", from_pos: Point2) -> Point2:
     """Find a hidden enemy base after the main townhall is gone.
 
     Unlike `attack_target`, leftover non-townhall structures (pylons,
     depots, production in a dead main) do **not** pin the army in place:
-    visible townhalls win, then the next expansion that currently has no
-    vision. Only once every expansion has been checked do remaining
-    structures get cleaned up. Skips our own main/natural so a one-base
-    all-in does not "scout" home.
+    visible townhalls win, then one shared unscouted expansion at a time.
+    The expansion (or cleanup structure) is stored on
+    `ctx.state.hunt_objective` until that expansion is checked / nothing
+    remains near a cleanup pin, so every squad walks the same point.
+    Checked expansions are latched in `scouted_expansions` so fog after
+    leaving cannot pull the army back (natural ↔ third oscillation).
+
+    Skips our own main/natural so a one-base all-in does not "scout" home.
     """
     townhalls = ctx.bot.enemy_structures.of_type(ALL_TOWNHALL_TYPES)
     if townhalls:
+        ctx.state.hunt_objective = None
         target = cy_closest_to(position=from_pos, units=townhalls)
         return _nearest_defender(ctx, target.position) or target.position
+
+    expansion_locations = {loc for loc, _ in ctx.mediator.get_enemy_expansions}
+    pinned = ctx.state.hunt_objective
+
+    if pinned is not None and pinned in expansion_locations:
+        if not _expansion_checked(ctx, pinned, from_pos):
+            return pinned
+        ctx.state.hunt_objective = None
+        pinned = None
 
     for location, _distance in ctx.mediator.get_enemy_expansions:
         if _is_our_expansion(ctx, location):
             continue
-        if not ctx.bot.is_visible(location):
-            return location
+        if _expansion_checked(ctx, location, from_pos):
+            continue
+        ctx.state.hunt_objective = location
+        return location
 
     structures = ctx.bot.enemy_structures
     if structures:
+        if pinned is not None and pinned not in expansion_locations:
+            still_there = [
+                s
+                for s in structures
+                if cy_distance_to_squared(s.position, pinned) <= MAIN_CLEAR_RADIUS**2
+            ]
+            if still_there:
+                return pinned
         target = cy_closest_to(position=from_pos, units=structures)
+        ctx.state.hunt_objective = target.position
         return target.position
 
+    ctx.state.hunt_objective = None
     for point in focus_points(ctx):
-        if not ctx.bot.is_visible(point):
+        if not _expansion_checked(ctx, point, from_pos):
             return point
 
     return ctx.bot.enemy_start_locations[0]
