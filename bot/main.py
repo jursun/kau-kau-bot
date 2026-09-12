@@ -23,9 +23,11 @@ from bot.common.log import log_event
 from bot.core import BotContext, CombatEngine, MacroEngine, RunState, roles
 from bot.core.registry import UnknownBuild, default_build, get_build
 
-# Team policy (Jason via CoS): local + validate auto-leave at 7:00 game
-# time. Ladder must leave `local_game_time_limit` unset. Extending past
-# 7:00 needs explicit Jason confirmation via CoS — never silently.
+# Team policy (Jason via CoS): local + validate end at 7:00 game time via
+# `run_game(..., game_time_limit=...)`. Ladder never passes the limit.
+# Extending past 7:00 needs explicit Jason confirmation via CoS — never silently.
+# Do NOT call `client.leave()` mid-step — ares `_after_step` then hits
+# ProtocolError: Not in a game.
 LOCAL_GAME_TIME_LIMIT_SECONDS: float = 7 * 60
 
 # Structures worth a line in the timeline log.
@@ -103,10 +105,6 @@ class KauKauBot(AresBot):
         """Structure tags already logged by `on_building_construction_complete`
         - see that hook's docstring for why a tag can otherwise log twice
         (or more) in realtime mode."""
-        # Seconds of game time; None disables (ladder / production). Set by
-        # `run.build_bot_ai` for local and --validate only.
-        self.local_game_time_limit: float | None = None
-        self._local_leave_requested: bool = False
 
     # --- lifecycle -------------------------------------------------------
 
@@ -137,21 +135,6 @@ class KauKauBot(AresBot):
 
         self.macro.execute(self.ctx)
         self.combat.execute(self.ctx)
-        await self._maybe_leave_at_local_time_limit()
-
-    async def _maybe_leave_at_local_time_limit(self) -> None:
-        """End local/validate games at the team 7:00 policy; no-op on ladder."""
-        limit = self.local_game_time_limit
-        if limit is None or self._local_leave_requested:
-            return
-        if self.time < limit:
-            return
-        self._local_leave_requested = True
-        log_event(
-            self,
-            f"LEAVE local_time_limit={limit:.0f}s (7:00 team policy)",
-        )
-        await self.client.leave()
 
     async def on_end(self, game_result: Result) -> None:
         await super(KauKauBot, self).on_end(game_result)
