@@ -198,12 +198,12 @@ class BuildDefinition:
     label: str
     race: Race
     economy: Economy
+    army: Army
+    combat: Combat
     expand_trigger: ExpandTrigger | None = None
     """Jason-facing expand/surplus-hatch lever. Draft — unwired this bite."""
     gas_timing: GasTiming | None = None
     """Jason-facing post-opening gas staffing lever. Draft — unwired this bite."""
-    army: Army
-    combat: Combat
     macro_steps: tuple[MacroStep, ...] = ()
     """Priority-ordered. A `MacroPlan` stops at the first step that acts."""
     always: tuple[MacroStep, ...] = field(default_factory=tuple)
