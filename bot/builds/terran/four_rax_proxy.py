@@ -85,7 +85,7 @@ FIRST_WAVE = 5
 # than trading in melee. Passed to `combat.attack_squads` as the outnumbered
 # micro path; when our local supply is larger, that routine stutter-steps
 # instead. See `attack_squads`' docstring for the force check.
-MARINE_MIN_ENGAGE_RANGE = 2
+MARINE_MIN_ENGAGE_RANGE = 3
 
 
 def proxy_location(ctx) -> Point2:

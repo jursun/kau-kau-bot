@@ -61,7 +61,7 @@ LocalGame:
         - PylonAIE_v4
         - TorchesAIE_v4
         - UltraloveAIE_v2
-    OpponentRace: Zerg
+    OpponentRace: Protoss
     # VeryEasy .. VeryHard, plus CheatVision / CheatMoney / CheatInsane
-    OpponentDifficulty: VeryHard
+    OpponentDifficulty: Medium
     Realtime: False
