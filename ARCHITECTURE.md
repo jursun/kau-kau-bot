@@ -28,19 +28,21 @@ bot/
     definition.py      BuildDefinition, Economy, Army, Combat,
                        WorkerTask, ProxyCrewPlan
     zerg/              one module per build, each exporting BUILD
-    terran/            four_rax_proxy (local only - see below)
+    terran/            four_rax_proxy
     protoss/           empty
   steps/
     common.py          race-neutral macro steps
     zerg.py            queens, injects, hatcheries, evo chambers
-    terran.py          proxy_barracks, proxy_crew, claim_z_on_first_scv
+    terran.py          proxy_barracks, proxy_crew, claim_z_on_first_scv,
+                       continuous_main_depots
     protoss.py         empty
   routines/
     combat.py          release_waves, defend_home, attack_squads,
                        builder_workers_attack
     scouting.py        air_scout
     targeting.py       attack_target, rally_point, hold_positions,
-                       enemy_third, enemy_fourth
+                       enemy_third, enemy_fourth, enemy_main_fallen,
+                       hunt_remaining_bases
     gates.py           reusable conditions, incl. training_started
   behaviors/zerg/      custom ares Behaviors (ares has no inject/queen behavior)
 ```
@@ -48,11 +50,11 @@ bot/
 ## One bot, one race
 
 A bot is a single race: `MyBotRace` in `config.yml` decides which
-`<race>_builds.yml` ares reads and which builds can run at all. `Four Rax
-Proxy` is a local experiment, so `MyBotRace` currently says `Terran` and has
-to go back to `Zerg` before a Zerg ladder zip is built (`create_ladder_zip.py`
-reads the same key). `terran_builds.yml` names the single Terran build in
-every `BuildChoices` cycle, so nothing breaks if `Debug` is flipped off.
+`<race>_builds.yml` ares reads and which builds can run at all.
+`create_ladder_zip.py` packages whatever race that key names. KauKauBot
+ships as Terran (`Four Rax Proxy`); set `MyBotRace: Zerg` to zip the Zerg
+openings instead. `terran_builds.yml` names the single Terran build in
+every `BuildChoices` cycle, so nothing breaks when `Debug` is False.
 
 ## Adding a build
 

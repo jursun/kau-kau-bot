@@ -4,9 +4,8 @@
 # `<race>_builds.yml`, chosen by `MyBotRace` below.
 
 MyBotName: KauKauBot
-# LOCAL EXPERIMENT: Terran while `Four Rax Proxy` is being tested. This picks
-# which `<race>_builds.yml` ares reads, and `create_ladder_zip.py` reads it
-# too — set it back to `Zerg` before building a ladder zip.
+# Which `<race>_builds.yml` ares reads (and which race the ladder zip is).
+# Flip to `Zerg` to ship the Zerg openings instead.
 MyBotRace: Terran
 
 # Auto-upload to https://aiarena.net/ on push to `main`.
@@ -18,9 +17,10 @@ BotDataEnabled: True
 
 ########################
 # Local-only knobs. `Debug: True` makes ares use the `test_123` opponent id,
-# which is how you force a specific opening locally (see zerg_builds.yml).
-# MUST be False for a ladder zip — create_ladder_zip.py asserts on it.
-Debug: True
+# which is how you force a specific opening locally (see terran_builds.yml /
+# zerg_builds.yml). MUST be False for a ladder zip — create_ladder_zip.py
+# asserts on it.
+Debug: False
 
 UseData: False  # overwritten by `UseData:` in <race>_builds.yml
 GameStep: 2
@@ -61,7 +61,7 @@ LocalGame:
         - PylonAIE_v4
         - TorchesAIE_v4
         - UltraloveAIE_v2
-    OpponentRace: Protoss
+    OpponentRace: Terran
     # VeryEasy .. VeryHard, plus CheatVision / CheatMoney / CheatInsane
-    OpponentDifficulty: Medium
+    OpponentDifficulty: VeryHard
     Realtime: False

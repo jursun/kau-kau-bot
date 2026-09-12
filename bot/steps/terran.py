@@ -429,9 +429,11 @@ def continuous_main_depots(gate: Gate = _always) -> MacroStep:
 
     `gate` only gates the *claim*. Once a builder is tagged, this step
     keeps driving it even if the gate later fails (e.g. minerals dip back
-    under 500) - otherwise a spent Depot would park the SCV forever.
-    Deliberately not `AutoSupply`: that races the opening crew for the
-    first Depot. Four Rax opens this on `minerals_at_least(500)`.
+    under the gate threshold) - otherwise a spent Depot would park the
+    SCV forever. Deliberately not `AutoSupply`: that races the opening
+    crew for the first Depot. Four Rax opens this on
+    `minerals_at_least(DEPOT_MINERAL_TRIGGER)` (see
+    `bot.builds.terran.four_rax_proxy`).
     """
 
     def step(ctx: "BotContext"):

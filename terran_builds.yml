@@ -1,9 +1,8 @@
 # KauKauBot Terran openings, run by the ares BuildOrderRunner.
 #
 # Ares looks for `<race>_builds.yml` in the repo root, lowercase, and reads
-# whichever one matches `MyBotRace` in config.yml. Terran is currently a
-# local experiment: `MyBotRace` has to be `Terran` for anything in this file
-# to run at all, and it must go back to `Zerg` before a Zerg ladder zip.
+# whichever one matches `MyBotRace` in config.yml. With `MyBotRace: Terran`,
+# this file is the live ladder opening list (currently just Four Rax Proxy).
 #
 # Forcing an opening locally: set `Debug: True` in config.yml (ares then uses
 # the `test_123` opponent id) and put the opening you want first in the

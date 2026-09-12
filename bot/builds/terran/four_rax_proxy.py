@@ -51,8 +51,6 @@ mining SCV onto continuous home Depots (`steps.terran.continuous_main_
 depots`) so Marines are not supply-blocked - opening supply stays crew
 Depots only until then (no `AutoSupply`, which races Z for the first
 Depot).
-
-Not yet validated in-game.
 """
 
 from __future__ import annotations
