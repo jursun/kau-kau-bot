@@ -233,13 +233,12 @@ def test_enemies_near_still_prefers_a_real_unit_over_an_egg() -> None:
     assert result == [zergling]
 
 
-# ── Attack squads: no engagement ratio, no retreat ──────────────────────────
+# ── Attack squads: stutter when ahead, kite when not ────────────────────────
 
 
-def test_squad_attacks_regardless_of_how_outnumbered_it_is() -> None:
-    """There is no supply-ratio check and no retreat: a squad fights whatever
-    is in `SQUAD_ENGAGE_RANGE` with `StutterGroupForward` even when badly
-    outnumbered, and still heads for the real attack target, never rally."""
+def test_squad_stutters_when_outnumbered_without_min_engage_range() -> None:
+    """Builds that leave `min_engage_range` unset (Zerg openings) keep
+    stuttering even when badly outnumbered - kiting is opt-in."""
     rally = Point2((50.0, 50.0))
     attack = Point2((999.0, 999.0))
     original = _patch_targeting(rally, attack)
@@ -330,13 +329,9 @@ def test_kite_maneuver_advances_when_nothing_is_in_range() -> None:
     assert amoves[0].target == Point2((999.0, 999.0))
 
 
-def test_attack_squads_dispatches_per_unit_kiting_when_min_engage_range_is_set() -> (
-    None
-):
-    """`min_engage_range` replaces the group `StutterGroupForward` trade
-    with one `_kite_maneuver` registered per unit - Four Rax Proxy's
-    Marines; every other build leaves it unset and is unaffected (see the
-    test above, which still gets `StutterGroupForward`)."""
+def test_attack_squads_kites_when_outnumbered_and_min_engage_range_is_set() -> None:
+    """With `min_engage_range` set, equal-or-larger enemy force switches off
+    group stutter and registers one `_kite_maneuver` per unit."""
     rally = Point2((50.0, 50.0))
     attack = Point2((999.0, 999.0))
     original_targeting = _patch_targeting(rally, attack)
@@ -344,7 +339,12 @@ def test_attack_squads_dispatches_per_unit_kiting_when_min_engage_range_is_set()
     try:
         ctx = _ctx()
         units = [_unit(1, Point2((10.0, 10.0))), _unit(2, Point2((12.0, 10.0)))]
-        enemies = [_unit(90, Point2((11.0, 10.0)))]
+        # Three enemies > two of ours (each unit costs 1 supply in the fake).
+        enemies = [
+            _unit(90, Point2((11.0, 10.0))),
+            _unit(91, Point2((11.0, 11.0))),
+            _unit(92, Point2((11.0, 12.0))),
+        ]
         ctx.mediator.get_units_in_range.return_value = [enemies]
         ctx.mediator.get_squads.return_value = [_squad(units)]
 
@@ -355,14 +355,67 @@ def test_attack_squads_dispatches_per_unit_kiting_when_min_engage_range_is_set()
         all_micros = [m for maneuver in registered for m in maneuver.micros]
         assert not any(isinstance(m, StutterGroupForward) for m in all_micros)
         assert not any(isinstance(m, AMoveGroup) for m in all_micros)
-        # Nothing in range for either unit (see `_patch_in_range` above), so
-        # each one's own maneuver just advances on the attack target.
         amoves = [m for m in all_micros if isinstance(m, AMove)]
         assert len(amoves) == 2
         assert all(m.target == attack for m in amoves)
     finally:
         _restore_targeting(original_targeting)
         _restore_in_range(original_in_range)
+
+
+def test_attack_squads_stutters_when_ahead_even_with_min_engage_range() -> None:
+    """Having a kite range configured must not kite a fight we are winning -
+    stutter-step is the aggressive path when our supply is larger."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original = _patch_targeting(rally, attack)
+    try:
+        ctx = _ctx()
+        units = [
+            _unit(1, Point2((10.0, 10.0))),
+            _unit(2, Point2((12.0, 10.0))),
+            _unit(3, Point2((11.0, 12.0))),
+        ]
+        enemies = [_unit(90, Point2((11.0, 10.0)))]
+        ctx.mediator.get_units_in_range.return_value = [enemies]
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+
+        combat.attack_squads(min_engage_range=3.0)(ctx)
+
+        registered = ctx.bot.register_behavior.call_args.args[0]
+        stutters = [b for b in registered.micros if isinstance(b, StutterGroupForward)]
+        assert len(stutters) == 1
+        assert stutters[0].enemies == enemies
+        assert ctx.bot.register_behavior.call_count == 1, "one group maneuver, not per-unit"
+    finally:
+        _restore_targeting(original)
+
+
+def test_structures_do_not_count_as_enemy_force_for_kite_vs_stutter() -> None:
+    """A lone Hatchery in range is not an army - Marines should stutter into
+    it, not kite off its supply cost."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original = _patch_targeting(rally, attack)
+    try:
+        ctx = _ctx()
+        units = [_unit(1, Point2((10.0, 10.0)))]
+        hatch = _unit(90, Point2((11.0, 10.0)))
+        hatch.is_structure = True
+        hatch.type_id = UnitTypeId.HATCHERY
+        # Expensive if counted - would flip the comparison wrongly.
+        ctx.bot.calculate_supply_cost.side_effect = (
+            lambda t: 10.0 if t == UnitTypeId.HATCHERY else 1.0
+        )
+        ctx.mediator.get_units_in_range.return_value = [[hatch]]
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+
+        combat.attack_squads(min_engage_range=3.0)(ctx)
+
+        registered = ctx.bot.register_behavior.call_args.args[0]
+        assert any(isinstance(b, StutterGroupForward) for b in registered.micros)
+    finally:
+        _restore_targeting(original)
 
 
 def test_maxed_and_fully_trained_bypasses_the_wave_gate_and_size() -> None:

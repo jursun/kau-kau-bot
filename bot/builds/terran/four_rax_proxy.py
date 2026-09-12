@@ -34,14 +34,12 @@ leave together with whichever crew SCVs have finished their tasks by then;
 every Marine after that streams to the front individually the moment it's
 trained — one wait, then none.
 
-Combat micro, once a wave is out: Marines stutter-step as a group toward
-the enemy ramp bottom (`attack_objective`), fighting whatever is in range
-on the way; once the natural's townhall is gone they push up the ramp into
-the main. Crew SCVs that finish their tasks join the push (see `combat.
-builder_workers_attack`'s docstring). Every attacking unit favors enemy
-units over enemy structures when picking a local fight target (`combat.
-_prioritize_enemies`), and a squad's move target is the build's attack
-objective rather than parking on a structure (`targeting.squad_destination`).
+Combat micro, once a wave is out: Marines advance toward the enemy ramp
+bottom (`attack_objective`), then up into the main once the natural's
+townhall is gone. Local fights pick stutter-step when our supply outweighs
+the enemy's, and per-Marine kiting (`MARINE_MIN_ENGAGE_RANGE`) when it does
+not - see `combat.attack_squads`. Crew SCVs that finish their tasks join the
+push (see `combat.builder_workers_attack`'s docstring).
 
 Not yet validated in-game.
 """
@@ -82,6 +80,12 @@ WORKER_TARGET = 14
 # sends them together, and every Marine after that streams to the front
 # individually, with no further waiting and no wave-growth math.
 FIRST_WAVE = 5
+
+# Marine weapon range is 5 - kiting at this distance keeps a buffer rather
+# than trading in melee. Passed to `combat.attack_squads` as the outnumbered
+# micro path; when our local supply is larger, that routine stutter-steps
+# instead. See `attack_squads`' docstring for the force check.
+MARINE_MIN_ENGAGE_RANGE = 2
 
 
 def proxy_location(ctx) -> Point2:
@@ -229,9 +233,10 @@ BUILD = BuildDefinition(
             # omitting `RunState.mustering_tags` after wave 1 is what makes
             # that happen: `attack_squads()` below reads it directly.
             combat.release_first_wave_then_stream(),
-            # Stutter-step as a group toward `attack_objective` (ramp bottom,
-            # then main once the natural is cleared) - no per-Marine kite.
-            combat.attack_squads(),
+            # Stutter when we outnumber the local fight; kite at
+            # MARINE_MIN_ENGAGE_RANGE when we do not. Destination is still
+            # `attack_objective` (ramp bottom → main).
+            combat.attack_squads(min_engage_range=MARINE_MIN_ENGAGE_RANGE),
             # Every crew worker that has worked through its own task list
             # joins the push once all four Barracks are accounted for.
             # `builder_workers_attack` also refuses to claim any crew slot

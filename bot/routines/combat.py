@@ -233,6 +233,24 @@ class _Move:
         return True
 
 
+def _combat_force_supply(ctx: "BotContext", units) -> float:
+    """Supply cost of the fighting units in `units`, ignoring structures.
+
+    Used by `attack_squads` to decide stutter vs kite: a Hatchery in range is
+    something to shoot, not an army that outnumbers five Marines.
+    """
+    return sum(
+        ctx.bot.calculate_supply_cost(u.type_id)
+        for u in units
+        if not getattr(u, "is_structure", False)
+    )
+
+
+def _our_force_larger(ctx: "BotContext", ours, theirs) -> bool:
+    """True when `theirs` is strictly smaller than `ours` by supply."""
+    return _combat_force_supply(ctx, theirs) < _combat_force_supply(ctx, ours)
+
+
 def _kite_maneuver(
     unit: Unit, enemies: Units | list[Unit], min_engage_range: float, target
 ) -> CombatManeuver:
@@ -319,21 +337,19 @@ def attack_squads(
     `targeting.attack_target`.
 
     A squad that isn't still forming up and finds a nearby enemy
-    (`SQUAD_ENGAGE_RANGE`) fights with no supply-ratio check and no retreat -
-    this build attacks with everything a wave has. `close_enemy` (from
-    `_enemies_near`) always favors enemy units over enemy structures - a
-    structure only ever shows up here when nothing else is in range - and
-    never includes an Egg or Larva at all (`IGNORED_ENEMY_TYPES`), Zerg's
-    two production units and not real targets. How the squad fights depends
-    on `min_engage_range`:
+    (`SQUAD_ENGAGE_RANGE`) engages. `close_enemy` (from `_enemies_near`)
+    always favors enemy units over enemy structures - a structure only ever
+    shows up here when nothing else is in range - and never includes an Egg
+    or Larva at all (`IGNORED_ENEMY_TYPES`). How the squad fights depends on
+    local force size (supply of non-structure units) and `min_engage_range`:
 
-    - Left `None` (default): `StutterGroupForward` trades as one group -
-      stutter-steps toward the destination and fights rather than
-      disengaging.
-    - Set to a distance: each unit is driven individually via
-      `_kite_maneuver` instead - backing away from anything closer than
-      `min_engage_range`, otherwise shooting the lowest-health enemy already
-      in its own weapon range.
+    - Enemy force strictly smaller than ours: `StutterGroupForward` trades
+      as one group toward the destination.
+    - Enemy force equal or larger, and `min_engage_range` is set: each unit
+      is driven individually via `_kite_maneuver` - backing away from
+      anything closer than `min_engage_range`, otherwise shooting. Builds
+      that leave `min_engage_range` unset (Zerg openings today) keep
+      stuttering even when outnumbered.
     """
 
     def routine(ctx: "BotContext") -> None:
@@ -359,7 +375,11 @@ def attack_squads(
 
             target = rally if mustering else targeting.squad_destination(ctx, position)
 
-            if close_enemy and min_engage_range is not None:
+            if (
+                close_enemy
+                and min_engage_range is not None
+                and not _our_force_larger(ctx, squad.squad_units, close_enemy)
+            ):
                 for unit in squad.squad_units:
                     ctx.bot.register_behavior(
                         _kite_maneuver(unit, close_enemy, min_engage_range, target)
