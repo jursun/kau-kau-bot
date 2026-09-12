@@ -211,6 +211,8 @@ def _enemy_building_workers(ctx: "BotContext"):
 
 
 def _claim_scout_probe(ctx: "BotContext") -> None:
+    if ctx.state.scout_probe_done:
+        return
     if ctx.state.scout_tags:
         return
     if ctx.bot.time >= SCOUT_PROBE_HOME_TIME:
@@ -266,8 +268,14 @@ def scout_probe_harass():
                 if u.tag in ctx.state.scout_tags
             ]
         if not scouts:
-            ctx.state.scout_tags.clear()
+            # One-frame (or short) miss: keep tags so we don't re-claim.
+            ctx.state.scout_probe_miss_frames += 1
+            if ctx.state.scout_probe_miss_frames >= 16:
+                ctx.state.scout_tags.clear()
+                ctx.state.scout_probe_miss_frames = 0
             return
+
+        ctx.state.scout_probe_miss_frames = 0
 
         if ctx.bot.time >= SCOUT_PROBE_HOME_TIME:
             home_minerals = ctx.bot.mineral_field.closer_than(
@@ -286,7 +294,9 @@ def scout_probe_harass():
                         AMove(unit=scout, target=ctx.bot.start_location)
                     )
                 ctx.log("SCOUT probe returning home @2:00")
+            ctx.state.scout_probe_done = True
             ctx.state.scout_tags.clear()
+            ctx.state.scout_probe_miss_frames = 0
             return
 
         enemy_main = ctx.bot.enemy_start_locations[0]
