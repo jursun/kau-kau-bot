@@ -369,7 +369,9 @@ def test_enemy_fourth_reads_the_mediator_value() -> None:
 
 def _crew_plan(role: UnitRole = UnitRole.GATE_KEEPER) -> ProxyCrewPlan:
     return ProxyCrewPlan(
-        x_tasks=(WorkerTask(UnitTypeId.BARRACKS, _proxy),),
+        x_tasks=(
+            WorkerTask(UnitTypeId.BARRACKS, _proxy, reserve_early=True),
+        ),
         y_tasks=(WorkerTask(UnitTypeId.BARRACKS, _proxy),),
         z_tasks=(WorkerTask(UnitTypeId.SUPPLYDEPOT, _proxy),),
         role=role,
@@ -508,7 +510,8 @@ def test_proxy_crew_issues_the_current_task_for_a_claimed_worker() -> None:
     plan = _crew_plan()
     ctx.build.crew = plan
     ctx.state.proxy_crew.x.tag = 5
-    worker = _worker(5, HOME)
+    # Must be inside BUILD_ISSUE_RADIUS of the placement to hand off / build.
+    worker = _worker(5, PROXY)
     ctx.bot.unit_tag_dict = {5: worker}
     ctx.mediator.request_building_placement.return_value = PROXY
     ctx.mediator.build_with_specific_worker.return_value = True
@@ -522,7 +525,81 @@ def test_proxy_crew_issues_the_current_task_for_a_claimed_worker() -> None:
         "assign_role": False,
     }
     assert ctx.state.proxy_crew.x.queued is True
+    worker.build.assert_called_once_with(UnitTypeId.BARRACKS, PROXY)
     assert "closest_to" not in ctx.mediator.request_building_placement.call_args.kwargs
+
+
+def test_proxy_crew_paths_when_ready_but_still_walking() -> None:
+    """Money+tech alone must not enter the tracker - BM would move-cancel."""
+    ctx = _ctx()
+    ctx.build.crew = _crew_plan()
+    ctx.state.proxy_crew.x.tag = 5
+    worker = _worker(5, HOME)
+    ctx.bot.unit_tag_dict = {5: worker}
+    ctx.bot.minerals = 150
+    reserved = Point2((101.0, 101.0))
+    ctx.mediator.request_building_placement.return_value = reserved
+
+    t.proxy_crew()(ctx)
+
+    ctx.mediator.build_with_specific_worker.assert_not_called()
+    worker.build.assert_not_called()
+    assert ctx.state.proxy_crew.x.queued is False
+    assert ctx.state.proxy_crew.x.reserved_placement == reserved
+    worker.move.assert_called_once_with(reserved)
+
+
+def test_proxy_crew_holds_still_on_site_while_waiting() -> None:
+    """Inside HOLD_RADIUS with no money: do not move-spam."""
+    ctx = _ctx()
+    ctx.build.crew = _crew_plan()
+    ctx.state.proxy_crew.x.tag = 5
+    reserved = Point2((101.0, 101.0))
+    worker = _worker(5, Point2((102.0, 101.0)))  # ~1 tile away
+    ctx.bot.unit_tag_dict = {5: worker}
+    ctx.bot.minerals = 50
+    ctx.state.proxy_crew.x.reserved_placement = reserved
+
+    t.proxy_crew()(ctx)
+
+    worker.move.assert_not_called()
+    ctx.mediator.build_with_specific_worker.assert_not_called()
+
+
+def test_proxy_crew_builds_immediately_when_on_site_and_ready() -> None:
+    """Inside BUILD_ISSUE_RADIUS with money+tech → tracker + build same frame."""
+    ctx = _ctx()
+    ctx.build.crew = _crew_plan()
+    ctx.state.proxy_crew.x.tag = 5
+    reserved = Point2((101.0, 101.0))
+    worker = _worker(5, Point2((101.5, 101.0)))  # 0.5 <= 1.0
+    ctx.bot.unit_tag_dict = {5: worker}
+    ctx.bot.minerals = 150
+    ctx.state.proxy_crew.x.reserved_placement = reserved
+    ctx.mediator.build_with_specific_worker.return_value = True
+
+    t.proxy_crew()(ctx)
+
+    assert ctx.state.proxy_crew.x.queued is True
+    worker.build.assert_called_once_with(UnitTypeId.BARRACKS, reserved)
+
+
+def test_proxy_crew_closes_into_issue_radius_before_building() -> None:
+    """Ready but 2 tiles out: keep pathing; do not hand off yet."""
+    ctx = _ctx()
+    ctx.build.crew = _crew_plan()
+    ctx.state.proxy_crew.x.tag = 5
+    reserved = Point2((101.0, 101.0))
+    worker = _worker(5, Point2((103.0, 101.0)))  # 2.0 > BUILD_ISSUE_RADIUS
+    ctx.bot.unit_tag_dict = {5: worker}
+    ctx.bot.minerals = 150
+    ctx.state.proxy_crew.x.reserved_placement = reserved
+
+    t.proxy_crew()(ctx)
+
+    ctx.mediator.build_with_specific_worker.assert_not_called()
+    worker.build.assert_not_called()
+    worker.move.assert_called_once_with(reserved)
 
 
 def test_proxy_crew_forwards_closest_to_when_a_task_sets_it() -> None:
@@ -560,7 +637,8 @@ def test_proxy_crew_uses_near_search_when_a_task_sets_near() -> None:
     ctx = _ctx()
     ctx.build.crew = plan
     ctx.state.proxy_crew.x.tag = 5
-    ctx.bot.unit_tag_dict = {5: _worker(5, HOME)}
+    # Already on the `near` anchor so we hand off this frame.
+    ctx.bot.unit_tag_dict = {5: _worker(5, target)}
     ctx.bot.mineral_field = []
     ctx.bot.vespene_geyser = []
     ctx.bot.in_pathing_grid.return_value = True
@@ -679,7 +757,7 @@ def test_proxy_crew_only_queues_one_barracks_when_minerals_cover_one() -> None:
     ctx.state.proxy_crew.x.tag = 1
     ctx.state.proxy_crew.y.tag = 2
     x_worker = _worker(1, PROXY)
-    y_worker = _worker(2, PROXY)
+    y_worker = _worker(2, HOME)  # still walking - must not queue
     ctx.bot.unit_tag_dict = {1: x_worker, 2: y_worker}
     ctx.bot.minerals = 150
     ctx.mediator.request_building_placement.return_value = PROXY
@@ -692,43 +770,62 @@ def test_proxy_crew_only_queues_one_barracks_when_minerals_cover_one() -> None:
     assert ctx.state.proxy_crew.x.queued is True
     assert ctx.state.proxy_crew.y.queued is False
     assert ctx.bot.minerals == 0
+    x_worker.build.assert_called_once_with(UnitTypeId.BARRACKS, PROXY)
     y_worker.move.assert_called()
-
-
-def test_proxy_crew_paths_while_waiting_on_minerals() -> None:
-    """While unaffordable, path to `task.where` and do not ask ares for a
-    building slot - every reserved miss eventually spills onto our own
-    expansions via `find_alternative`."""
-    ctx = _ctx()
-    ctx.build.crew = _crew_plan()
-    ctx.state.proxy_crew.x.tag = 5
-    worker = _worker(5, HOME)
-    ctx.bot.unit_tag_dict = {5: worker}
-    ctx.bot.minerals = 50
-
-    t.proxy_crew()(ctx)
-
-    ctx.mediator.build_with_specific_worker.assert_not_called()
-    ctx.mediator.request_building_placement.assert_not_called()
-    assert ctx.state.proxy_crew.x.queued is False
-    worker.move.assert_called_once_with(PROXY)
 
 
 def test_proxy_crew_paths_while_waiting_on_tech() -> None:
     ctx = _ctx()
     ctx.build.crew = _crew_plan()
     ctx.state.proxy_crew.x.tag = 5
-    worker = _worker(5, PROXY)
+    # Far from the reserved tile so we still path while tech finishes.
+    worker = _worker(5, HOME)
     ctx.bot.unit_tag_dict = {5: worker}
     ctx.bot.minerals = 150
     ctx.bot.tech_requirement_progress.return_value = 0.5  # Depot still building
+    reserved = Point2((101.0, 101.0))
+    ctx.mediator.request_building_placement.return_value = reserved
 
     t.proxy_crew()(ctx)
 
     ctx.mediator.build_with_specific_worker.assert_not_called()
-    ctx.mediator.request_building_placement.assert_not_called()
+    assert ctx.state.proxy_crew.x.reserved_placement == reserved
     assert ctx.state.proxy_crew.x.queued is False
+    worker.move.assert_called_once_with(reserved)
+
+
+def test_proxy_crew_y_paths_without_reserving_until_close() -> None:
+    """Y must walk toward the proxy first - no slot lock from home."""
+    ctx = _ctx()
+    ctx.build.crew = _crew_plan()
+    ctx.state.proxy_crew.y.tag = 6
+    worker = _worker(6, HOME)  # far from PROXY
+    ctx.bot.unit_tag_dict = {6: worker}
+    ctx.bot.minerals = 50
+
+    t.proxy_crew()(ctx)
+
+    ctx.mediator.request_building_placement.assert_not_called()
+    assert ctx.state.proxy_crew.y.reserved_placement is None
     worker.move.assert_called_once_with(PROXY)
+
+
+def test_proxy_crew_y_reserves_once_close_to_the_proxy() -> None:
+    ctx = _ctx()
+    ctx.build.crew = _crew_plan()
+    ctx.state.proxy_crew.y.tag = 6
+    # Close enough to reserve, far enough to still path toward the slot.
+    worker = _worker(6, Point2((110.0, 100.0)))
+    ctx.bot.unit_tag_dict = {6: worker}
+    ctx.bot.minerals = 50
+    reserved = Point2((102.0, 100.0))
+    ctx.mediator.request_building_placement.return_value = reserved
+
+    t.proxy_crew()(ctx)
+
+    ctx.mediator.request_building_placement.assert_called_once()
+    assert ctx.state.proxy_crew.y.reserved_placement == reserved
+    worker.move.assert_called_once_with(reserved)
 
 
 def test_proxy_crew_gives_up_on_a_dead_worker() -> None:

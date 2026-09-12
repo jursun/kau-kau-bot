@@ -104,7 +104,7 @@ MARINE_MIN_ENGAGE_RANGE = 3
 # Once the bank hits this, peel one miner onto continuous home Depots so
 # Marine production is not supply-blocked mid-push. High enough that Z's
 # opening Depot and the first Barracks are already paid for.
-DEPOT_MINERAL_TRIGGER = 500
+DEPOT_MINERAL_TRIGGER = 400
 
 
 def proxy_location(ctx) -> Point2:
@@ -203,7 +203,13 @@ def _third_barracks_started(ctx) -> bool:
 # truth both the build and the validator read.
 PROXY_CREW = ProxyCrewPlan(
     x_tasks=(
-        WorkerTask(UnitTypeId.BARRACKS, proxy_location, label="Barracks A"),
+        WorkerTask(
+            UnitTypeId.BARRACKS,
+            proxy_location,
+            label="Barracks A",
+            # Lock the first proxy Barracks slot before Y asks for one.
+            reserve_early=True,
+        ),
         WorkerTask(
             UnitTypeId.BARRACKS,
             proxy_location,

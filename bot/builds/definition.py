@@ -140,6 +140,12 @@ class WorkerTask:
     placement itself is redirected. `closest_to` is ignored when this is
     set - it only makes sense against a formation, which `near` deliberately
     skips."""
+    reserve_early: bool = False
+    """Reserve a formation slot as soon as this task is active (X's opening
+    Barracks). Without it the worker paths to `where` first and only
+    reserves once close or affordable (Y's opening Barracks) - so X locks
+    the first proxy slot before Y asks for one. Ignored when `near` is set.
+    """
 
 
 @dataclass(frozen=True)

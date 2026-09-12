@@ -42,6 +42,14 @@ def test_barracks_c_task_places_on_the_enemy_fourth_townhall_tile() -> None:
     assert barracks_c.near is proxy_location
 
 
+def test_barracks_a_reserves_early_while_b_does_not() -> None:
+    """X locks a formation slot immediately; Y paths in before reserving."""
+    assert PROXY_CREW.x_tasks[0].label == "Barracks A"
+    assert PROXY_CREW.x_tasks[0].reserve_early is True
+    assert PROXY_CREW.y_tasks[0].label == "Barracks B"
+    assert PROXY_CREW.y_tasks[0].reserve_early is False
+
+
 def test_proxy_depot_uses_ares_formation_at_the_enemy_fourth() -> None:
     depot = PROXY_CREW.y_tasks[1]
 

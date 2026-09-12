@@ -27,6 +27,10 @@ class CrewMember:
     tag: int | None = None
     task_index: int = 0
     queued: bool = False
+    reserved_placement: Point2 | None = None
+    """Formation slot held for the current task via
+    `request_building_placement` - set early for X's opening Barracks so Y
+    cannot take the same spot, cleared when the task advances."""
 
 
 @dataclass

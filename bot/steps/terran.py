@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ares.behaviors.macro import BuildStructure
-from cython_extensions import cy_distance_to_squared
+from cython_extensions import cy_distance_to, cy_distance_to_squared
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
 
@@ -22,6 +22,7 @@ from bot.routines.placement import near_point
 if TYPE_CHECKING:
     from sc2.unit import Unit
 
+    from bot.builds.definition import WorkerTask
     from bot.core.context import BotContext
     from bot.core.state import CrewMember
 
@@ -135,11 +136,10 @@ def _claim_starting_pair(ctx: "BotContext") -> None:
 def _path_worker_toward(ctx: "BotContext", worker: "Unit", target: Point2) -> None:
     """Walk a crew SCV toward `target` without entering the building tracker.
 
-    `target` must be the task's base / `near` anchor (`task.where` /
-    `task.near`), never a point from `request_building_placement`: that
-    call reserves slots by default, and asking every wait-frame is what
-    sent X and Y toward our own fourth once the proxy base's spots were
-    exhausted. See `_drive_crew_member`.
+    Prefer a already-reserved placement when one exists; otherwise the
+    task's base / `near` anchor. Never call `request_building_placement`
+    from here - that reserves by default, and asking every wait-frame is
+    what exhausted the proxy base's slots. See `_drive_crew_member`.
     """
     point = ctx.mediator.find_path_next_point(
         start=worker.position,
@@ -149,19 +149,106 @@ def _path_worker_toward(ctx: "BotContext", worker: "Unit", target: Point2) -> No
     worker.move(point)
 
 
+# How close Y (and any non-`reserve_early` task) must get to `task.where`
+# before locking a formation slot while still waiting on minerals/tech.
+# Wide enough to count as "arrived at the proxy", tight enough that the
+# walk from home does not reserve on frame one alongside X.
+RESERVE_APPROACH_RADIUS: float = 15.0
+
+# While waiting on minerals/tech, stop move-spamming once this close to
+# the reserved tile. Wider than BuildingManager's issue range on purpose:
+# pathing often parks an SCV a tile or two off-centre, and fidgeting there
+# is what kept X from settling.
+HOLD_RADIUS: float = 3.0
+
+# Must stay <= BuildingManager's non-gas build distance (1.0). Entering the
+# tracker any farther lets BM `worker.move` every frame and cancel the
+# `worker.build` we fire on arrival - X then sits on the tile with money
+# until something luckily lands inside 1.0.
+BUILD_ISSUE_RADIUS: float = 1.0
+
+
+def _request_formation_placement(
+    ctx: "BotContext", task: "WorkerTask"
+) -> Point2 | None:
+    """Ask ares for one formation slot at `task.where`, reserving it.
+
+    `find_alternative=False` keeps a miss from spilling onto our own
+    expansions - early-reserve callers especially must not wander.
+    """
+    placement_kwargs = {
+        "base_location": task.where(ctx),
+        "structure_type": task.structure_id,
+        "find_alternative": False,
+        "reserve_placement": True,
+    }
+    if task.closest_to is not None:
+        placement_kwargs["closest_to"] = task.closest_to(ctx)
+    return ctx.mediator.request_building_placement(**placement_kwargs)
+
+
+def _ensure_reserved_placement(
+    ctx: "BotContext",
+    member: "CrewMember",
+    task: "WorkerTask",
+    worker: "Unit",
+    can_pay: bool,
+) -> None:
+    """Lock a formation slot onto `member.reserved_placement` when allowed.
+
+    X (`reserve_early`): first frame the task is active.
+    Y (default): once close to the proxy, or once affordable so a late
+    mineral spike still builds without waiting on the approach radius.
+    """
+    if member.reserved_placement is not None or task.near is not None:
+        return
+    if task.reserve_early:
+        should = True
+    elif can_pay:
+        should = True
+    else:
+        should = (
+            cy_distance_to_squared(worker.position, task.where(ctx))
+            <= RESERVE_APPROACH_RADIUS**2
+        )
+    if not should:
+        return
+    placement = _request_formation_placement(ctx, task)
+    if placement is not None:
+        member.reserved_placement = placement
+
+
+def _within(worker: "Unit", target: Point2, radius: float) -> bool:
+    return cy_distance_to(worker.position, target) <= radius
+
+
 def _drive_crew_member(ctx: "BotContext", member: "CrewMember", tasks: "tuple") -> None:
     """Work one crew member through its task list by one step.
 
-    A task enters ares' building tracker once - `request_building_placement`
-    then `build_with_specific_worker(..., assign_role=False)` - and only when
-    we can already afford it and its tech requirement is met. Until then the
-    worker is path'd toward the placement by hand. That matters for X and Y's
-    opening Barracks: putting both in the tracker on frame one left
+    A task enters ares' building tracker once - placement then
+    `build_with_specific_worker(..., assign_role=False)` - and only when
+    we can already afford it, its tech requirement is met, *and* the
+    worker is inside `BUILD_ISSUE_RADIUS`. Until then the worker is path'd
+    toward the placement by hand. That matters for X and Y's opening
+    Barracks: putting both in the tracker on frame one left
     BuildingManager to issue both builds the same frame minerals hit 300,
     so neither started at 150. Reserving the cost on the bot's mineral
     count when we queue (mirroring `Unit.build`'s own subtract) means a
     second crew member driven later this same frame sees the remainder and
     keeps pathing instead of also queueing.
+
+    Formation slots are reserved separately from the building tracker:
+    `WorkerTask.reserve_early` (Barracks A) locks a slot immediately so Y
+    cannot take it; Y paths to the proxy first and only then reserves
+    (see `_ensure_reserved_placement`). Reusing `member.reserved_placement`
+    at build time avoids a second `request_building_placement` that would
+    abandon the first reserved slot.
+
+    Waiting on minerals/tech: hold still inside `HOLD_RADIUS`, otherwise
+    path. Ready to pay: keep pathing ourselves until inside
+    `BUILD_ISSUE_RADIUS`, then enter the tracker and fire `worker.build`
+    the same frame. Handing off to BuildingManager any earlier lets its
+    move-to-1.0 loop cancel the build order every frame.
 
     Once queued, the worker is left alone until its tag drops out of
     `mediator.get_building_tracker_dict`, which ares itself removes it from
@@ -180,19 +267,14 @@ def _drive_crew_member(ctx: "BotContext", member: "CrewMember", tasks: "tuple") 
     placement` as-is - it only orders the precalculated spots `where`
     already resolved to, e.g. biasing a home Depot toward the main ramp.
 
-    A task's `near`, when set, skips `request_building_placement`/`where`
-    entirely in favor of `routines.placement.near_point` searching outward
-    from `near(ctx)` - see `WorkerTask.near` for why a task would want that
-    instead.
+    A task's `near`, when set, skips `where`'s formation lookup in favor of
+    `routines.placement.near_point` - see `WorkerTask.near`.
 
     A task's optional `verify` runs once tracker departure would otherwise
     mark it done, and must pass before `task_index` actually advances - see
     `WorkerTask.verify`'s own docstring for why. A failed `verify` clears
     `queued` and leaves `task_index` alone, so the very next call re-issues
-    the identical task: fresh `request_building_placement` call, fresh
-    `build_with_specific_worker` call. No separate retry counter or backoff
-    needed - a task that keeps failing just keeps retrying every frame,
-    exactly like a task stuck on `placement is None` already does below.
+    the identical task.
     """
     if member.tag is None or member.task_index >= len(tasks):
         return
@@ -202,6 +284,7 @@ def _drive_crew_member(ctx: "BotContext", member: "CrewMember", tasks: "tuple") 
         # Dead. Nothing left to build with it - stop waiting on this slot
         # rather than stalling the rest of the crew's logging/bookkeeping.
         member.task_index = len(tasks)
+        member.reserved_placement = None
         return
 
     if member.queued:
@@ -210,6 +293,7 @@ def _drive_crew_member(ctx: "BotContext", member: "CrewMember", tasks: "tuple") 
             task = tasks[member.task_index]
             if task.verify is None or task.verify(ctx):
                 member.task_index += 1
+                member.reserved_placement = None
             else:
                 ctx.log(
                     f"PROXY CREW: {task.label or task.structure_id.name.title()} "
@@ -224,38 +308,49 @@ def _drive_crew_member(ctx: "BotContext", member: "CrewMember", tasks: "tuple") 
     cost = ctx.bot.calculate_cost(task.structure_id)
     tech_ready = ctx.bot.tech_requirement_progress(task.structure_id) >= 1.0
     can_pay = ctx.bot.minerals >= cost.minerals and ctx.bot.vespene >= cost.vespene
-    if not tech_ready or not can_pay:
-        # Path to the task's base (or `near` anchor), NOT a reserved building
-        # slot. `request_building_placement` defaults to `reserve_placement=
-        # True`, and calling it every wait-frame exhausts the proxy base's
-        # spots then spills via `find_alternative` onto other expansions —
-        # including our own fourth. Only ask for a slot once we're ready to
-        # hand the worker to the tracker below.
-        walk_target = (
-            task.near(ctx) if task.near is not None else task.where(ctx)
-        )
-        _path_worker_toward(ctx, worker, walk_target)
-        return
+
+    _ensure_reserved_placement(ctx, member, task, worker, can_pay)
 
     if task.near is not None:
         placement = near_point(
             ctx, reference=task.near(ctx), structure_type=task.structure_id
         )
+    elif member.reserved_placement is not None:
+        placement = member.reserved_placement
     else:
-        placement_kwargs = {
-            "base_location": task.where(ctx),
-            "structure_type": task.structure_id,
-        }
-        if task.closest_to is not None:
-            placement_kwargs["closest_to"] = task.closest_to(ctx)
-        placement = ctx.mediator.request_building_placement(**placement_kwargs)
+        # Ready to pay with no slot yet (e.g. late Y) - reserve now so we
+        # have a concrete tile to close on before handing off to BM.
+        if tech_ready and can_pay:
+            placement = _request_formation_placement(ctx, task)
+            if placement is not None:
+                member.reserved_placement = placement
+        else:
+            placement = None
+
+    walk_target = (
+        placement
+        if placement is not None
+        else (task.near(ctx) if task.near is not None else task.where(ctx))
+    )
+
+    if not tech_ready or not can_pay:
+        # Waiting: hold still once close enough; do not enter the tracker.
+        if not _within(worker, walk_target, HOLD_RADIUS):
+            _path_worker_toward(ctx, worker, walk_target)
+        return
+
     if placement is None:
         return  # try again next frame
 
-    # Affordable and tech-ready: hand off to the tracker even while still
-    # walking. BuildingManager paths with its own grid and issues the build
-    # once in range. Reserving the cost below stops a later crew member this
-    # same frame from also queueing on the same minerals.
+    # Ready, but still outside BuildingManager's issue range: path ourselves.
+    # Entering the tracker here is what made BM move-cancel our build.
+    if not _within(worker, placement, BUILD_ISSUE_RADIUS):
+        _path_worker_toward(ctx, worker, placement)
+        return
+
+    # On the tile with money+tech: hand off and fire the build this frame.
+    # Reserving the cost stops a later crew member this same frame from
+    # also queueing on the same minerals.
     if ctx.mediator.build_with_specific_worker(
         worker=worker,
         structure_type=task.structure_id,
@@ -265,6 +360,7 @@ def _drive_crew_member(ctx: "BotContext", member: "CrewMember", tasks: "tuple") 
         ctx.bot.minerals -= cost.minerals
         ctx.bot.vespene -= cost.vespene
         member.queued = True
+        worker.build(task.structure_id, placement)
         ctx.log(f"PROXY CREW: {task.label or task.structure_id.name.title()} started")
 
 
@@ -290,12 +386,15 @@ def proxy_crew() -> MacroStep:
     previous task finished, for as long as the gate fails, with nothing else
     for it to do since it was never in `UnitRole.GATHERING` to begin with.
 
-    Affordability and tech are checked before a task enters the building
-    tracker: until both pass, the worker is path'd toward the placement by
-    hand. That keeps X and Y from both sitting in the tracker as pending
-    Barracks that BuildingManager only issues together once 300 minerals
-    are banked - with 150, the first crew member driven this frame queues
-    and reserves the cost, and the second keeps walking.
+    Affordability, tech, and proximity are checked before a task enters
+    the building tracker: until all three pass, the worker is path'd by
+    hand (holding still only while waiting on money/tech inside
+    `HOLD_RADIUS`). That keeps X and Y from both sitting in the tracker
+    as pending Barracks that BuildingManager only issues together once
+    300 minerals are banked - and keeps BM from move-cancelling a build
+    issued outside its 1.0 radius. With 150 minerals, the first crew
+    member driven this frame that is already on its tile queues and
+    reserves the cost; the second keeps walking.
 
     Once a slot's task list is exhausted this step stops touching it -
     `combat.builder_workers_attack`'s proximity-based claiming (identity-
