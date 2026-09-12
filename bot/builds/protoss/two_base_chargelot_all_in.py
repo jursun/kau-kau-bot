@@ -39,6 +39,7 @@ WORKER_TARGET = 26
 FIRST_WAVE = 12
 
 CHARGE = UpgradeId.CHARGE
+WARPGATE = UpgradeId.WARPGATERESEARCH
 
 
 BUILD = BuildDefinition(
@@ -65,7 +66,9 @@ BUILD = BuildDefinition(
                 UnitTypeId.OBSERVER,
             }
         ),
-        upgrades=(CHARGE,),
+        # Warp Gate is started in the opening; keep it here so macro still
+        # finishes it if the opening handed off early.
+        upgrades=(WARPGATE, CHARGE),
     ),
     combat=Combat(
         routines=(
@@ -87,9 +90,11 @@ BUILD = BuildDefinition(
             pull_off=gates.upgrade_started(CHARGE),
             when_pulled=1,
         ),
+        # Outside MacroPlan so 8-Gate warpins cannot starve pylon placement.
+        c.auto_supply(gate=lambda ctx: ctx.build_completed),
+        p.pylon_buffer(min_left=32, max_pending=4, gate=lambda ctx: ctx.build_completed),
     ),
     macro_steps=(
-        c.auto_supply(),
         # Gates before Robo so the 8-Gate commit is never waiting on gas units.
         p.gateways(
             GATEWAY_COUNT,

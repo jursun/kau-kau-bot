@@ -49,6 +49,8 @@ Builds:
     # for 8 gates, Robo, Warp Prism, and mass Chargelots. Timings from the
     # wshadows 2-base Chargelot guide.
     2base Chargelot All-In:
+        # 23: high enough that AutoSupply does not race Cyber (at ~20-22
+        # it was stealing the 150 minerals and delaying Core ~6s).
         ConstantWorkerProductionTill: 26
         AutoSupplyAtSupply: 23
         OpeningBuildOrder:
@@ -59,6 +61,7 @@ Builds:
             - 17 gas
             - 20 expand
             - 20 core @ ramp
+            - 20 chrono @ nexus
             - 21 gas
             - 22 pylon @ nat
             - 22 adept
@@ -68,4 +71,8 @@ Builds:
             - 26 charge
             - 26 chrono @ twilightcouncil
             - 26 stalker
-            - 32 stalker
+            # Stop here — do NOT wait on a second Stalker. Once Warp Gate
+            # finishes, ares refuses to train from an idle Gateway until it
+            # morphs, so a later Stalker step can stall the opening forever
+            # and block macro (8 gates / Chargelots). Extra Stalkers come
+            # from spawn_army after the opening completes.

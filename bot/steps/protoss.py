@@ -35,13 +35,50 @@ def gateways(count: int, gate: Gate = _always) -> MacroStep:
         ready_gates = ctx.bot.structures(UnitTypeId.GATEWAY).ready.amount
         pending_gates = ctx.bot.structure_pending(UnitTypeId.GATEWAY)
         warpgates = ctx.bot.structures(UnitTypeId.WARPGATE).amount
-        if ready_gates + pending_gates + warpgates >= count:
+        total = ready_gates + pending_gates + warpgates
+        if total >= count:
             return None
+
+        ctx.log_once(
+            "macro_gateways",
+            f"MACRO gateways: building toward {count} "
+            f"(now gates={ready_gates}+{pending_gates} warpgates={warpgates})",
+        )
 
         return BuildStructure(
             base_location=ctx.production_location,
             structure_id=UnitTypeId.GATEWAY,
             to_count=max(0, count - warpgates),
+        )
+
+    return step
+
+
+def pylon_buffer(
+    min_left: int = 20,
+    max_pending: int = 3,
+    gate: Gate = _always,
+) -> MacroStep:
+    """Keep a larger supply cushion than stock `AutoSupply`.
+
+    Eight Warp Gates can dump 16 supply in one volley; ares' AutoSupply
+    threshold scales with production but still loses races mid-warp. This
+    starts the next Pylon once `supply_left` drops below `min_left`, up to
+    `max_pending` concurrent Pylons.
+    """
+
+    def step(ctx: "BotContext"):
+        if not gate(ctx):
+            return None
+        if ctx.bot.supply_cap >= 200:
+            return None
+        if ctx.bot.supply_left >= min_left:
+            return None
+        if ctx.bot.structure_pending(UnitTypeId.PYLON) >= max_pending:
+            return None
+        return BuildStructure(
+            base_location=ctx.production_location,
+            structure_id=UnitTypeId.PYLON,
         )
 
     return step

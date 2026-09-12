@@ -38,6 +38,26 @@ LOGGED_STRUCTURES: frozenset[UnitTypeId] = frozenset(
         UnitTypeId.COMMANDCENTER,
         UnitTypeId.SUPPLYDEPOT,
         UnitTypeId.BARRACKS,
+        UnitTypeId.NEXUS,
+        UnitTypeId.PYLON,
+        UnitTypeId.GATEWAY,
+        UnitTypeId.WARPGATE,
+        UnitTypeId.ASSIMILATOR,
+        UnitTypeId.CYBERNETICSCORE,
+        UnitTypeId.TWILIGHTCOUNCIL,
+        UnitTypeId.ROBOTICSFACILITY,
+        UnitTypeId.SHIELDBATTERY,
+    }
+)
+
+# Army / tech units worth a timeline line (Chargelot timing checks, etc.).
+LOGGED_UNITS: frozenset[UnitTypeId] = frozenset(
+    {
+        UnitTypeId.ADEPT,
+        UnitTypeId.STALKER,
+        UnitTypeId.ZEALOT,
+        UnitTypeId.WARPPRISM,
+        UnitTypeId.OBSERVER,
     }
 )
 
@@ -53,6 +73,15 @@ def _completion_message(logged: set[int], unit: Unit, count: int) -> str | None:
         return None
     logged.add(unit.tag)
     return f"COMPLETE {unit.type_id.name.lower()} ({count})"
+
+
+def _structure_log_count(bot: "KauKauBot", unit_type: UnitTypeId) -> int:
+    """Ready count for timeline logs. Gateways include Warp Gates so the
+    running total does not drop when ares morphs them."""
+    count = bot.structures(unit_type).amount
+    if unit_type == UnitTypeId.GATEWAY:
+        count += bot.structures(UnitTypeId.WARPGATE).amount
+    return count
 
 
 class KauKauBot(AresBot):
@@ -109,6 +138,9 @@ class KauKauBot(AresBot):
     async def on_unit_created(self, unit: Unit) -> None:
         await super(KauKauBot, self).on_unit_created(unit)
         roles.assign_on_created(self.ctx, unit)
+        if unit.type_id in LOGGED_UNITS:
+            count = self.units(unit.type_id).amount
+            log_event(self, f"TRAINED {unit.type_id.name.lower()} ({count})")
 
     async def on_unit_destroyed(self, unit_tag: int) -> None:
         await super(KauKauBot, self).on_unit_destroyed(unit_tag)
@@ -121,7 +153,9 @@ class KauKauBot(AresBot):
         await super(KauKauBot, self).on_building_construction_complete(unit)
 
         message = _completion_message(
-            self._logged_completions, unit, self.structures(unit.type_id).amount
+            self._logged_completions,
+            unit,
+            _structure_log_count(self, unit.type_id),
         )
         if message is not None:
             log_event(self, message)

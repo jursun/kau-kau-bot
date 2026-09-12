@@ -32,13 +32,14 @@ MASS_MARINE_COMP: dict[UnitTypeId, dict[str, float | int]] = {
     UnitTypeId.MARINE: {"proportion": 1.0, "priority": 0},
 }
 
-# 2-base Chargelot: Zealot flood with a Stalker spine, plus Robo support.
-# Proportions sum to 1.0; lower priority int = SpawnController builds first.
+# 2-base Chargelot: Zealot flood with a Stalker spine, plus one Robo support
+# unit of each type. Keep Prism/Obs proportions tiny so SpawnController does
+# not casually roll a second Warp Prism.
 CHARGELOT_COMP: dict[UnitTypeId, dict[str, float | int]] = {
-    UnitTypeId.ZEALOT: {"proportion": 0.70, "priority": 1},
-    UnitTypeId.STALKER: {"proportion": 0.20, "priority": 0},
-    UnitTypeId.WARPPRISM: {"proportion": 0.05, "priority": 0},
-    UnitTypeId.OBSERVER: {"proportion": 0.05, "priority": 0},
+    UnitTypeId.ZEALOT: {"proportion": 0.78, "priority": 1},
+    UnitTypeId.STALKER: {"proportion": 0.18, "priority": 0},
+    UnitTypeId.WARPPRISM: {"proportion": 0.02, "priority": 0},
+    UnitTypeId.OBSERVER: {"proportion": 0.02, "priority": 0},
 }
 
 # Ordered upgrade path. `UpgradeController` walks this list in order and
