@@ -153,7 +153,7 @@ class ProxyCrewPlan:
     """Three SCVs a build hand-walks through their own construction tasks,
     entirely outside the mining pool and outside ares' generic
     `BuildStructure`/`select_worker` (which only ever draws from
-    `UnitRole.GATHERING` - see `steps.terran.proxy_barracks`'s docstring).
+    `UnitRole.GATHERING`). Driven by `steps.terran.proxy_crew`.
 
     `x_tasks` and `y_tasks` run on two of the starting 12 workers - the two
     closest to `x_tasks[0].where(ctx)` - claimed once, on the first frame of

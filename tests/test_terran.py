@@ -7,12 +7,11 @@ Five things here are easy to get wrong and impossible to eyeball:
   every structure under construction (ARCHITECTURE.md gotcha 8).
 * `combat.builder_workers_attack` must not claim a worker that ares has
   already dispatched to build something. A claimed worker leaves
-  `UnitRole.GATHERING`, and `select_worker` only ever looks at GATHERING —
-  so a wrong claim silently removes a builder from the pool that
-  `proxy_barracks` draws from. It must also leave `ProxyCrewPlan` workers
-  alone until their own task list is exhausted: claiming Y while it still
-  owes the proxy Depot puts `proxy_crew` path/build orders and
-  `PROXY_WORKER` attack/`AMove` on the same SCV every frame.
+  `UnitRole.GATHERING`, and `select_worker` only ever looks at GATHERING.
+  It must also leave `ProxyCrewPlan` workers alone until their own task
+  list is exhausted: claiming Y while it still owes the proxy Depot puts
+  `proxy_crew` path/build orders and `PROXY_WORKER` attack/`AMove` on the
+  same SCV every frame.
 * A build that sets `combat.rally` must actually get that point back out of
   `targeting.rally_point`, and must not also be handed mineral-line hold
   positions on the other side of the map.
@@ -39,7 +38,6 @@ from unittest.mock import MagicMock
 
 from ares.behaviors.combat import CombatManeuver
 from ares.behaviors.combat.individual import AMove, ShootTargetInRange
-from ares.behaviors.macro import BuildStructure
 from ares.consts import UnitRole
 from cython_extensions import cy_distance_to_squared
 from sc2.ids.unit_typeid import UnitTypeId
@@ -108,24 +106,6 @@ def _ctx(rally=None) -> BotContext:
 
 def _proxy(_ctx_unused) -> Point2:
     return PROXY
-
-
-# --- steps.terran.proxy_barracks -----------------------------------------
-
-
-def test_proxy_barracks_returns_none_before_its_gate() -> None:
-    ctx = _ctx()
-    assert t.proxy_barracks(3, _proxy, gate=lambda _c: False)(ctx) is None
-
-
-def test_proxy_barracks_builds_barracks_at_the_proxy() -> None:
-    ctx = _ctx()
-    behavior = t.proxy_barracks(4, _proxy)(ctx)
-
-    assert isinstance(behavior, BuildStructure)
-    assert behavior.structure_id == UnitTypeId.BARRACKS
-    assert behavior.base_location == PROXY, "must build at the proxy, not at home"
-    assert behavior.to_count == 4
 
 
 # --- gates.structure_started ---------------------------------------------
@@ -847,7 +827,7 @@ def test_continuous_main_depots_does_nothing_before_gate() -> None:
     ctx = _ctx()
     ctx.bot.supply_cap = 23
     assert t.continuous_main_depots(gate=lambda _c: False)(ctx) is None
-    assert ctx.state.cleanup_depot_builder_tag is None
+    assert ctx.state.supply_depot_builder_tag is None
     ctx.mediator.select_worker.assert_not_called()
 
 
@@ -865,8 +845,8 @@ def test_continuous_main_depots_claims_one_miner_and_starts_a_depot() -> None:
 
     ctx.mediator.select_worker.assert_called_once()
     ctx.mediator.assign_role.assert_called_once()
-    assert ctx.state.cleanup_depot_builder_tag == 7
-    assert ctx.state.cleanup_depot_queued is True
+    assert ctx.state.supply_depot_builder_tag == 7
+    assert ctx.state.supply_depot_queued is True
     ctx.mediator.build_with_specific_worker.assert_called_once()
     assert ctx.mediator.build_with_specific_worker.call_args.kwargs["assign_role"] is False
     assert ctx.bot.minerals == 900  # 1000 - 100 Depot
@@ -878,13 +858,13 @@ def test_continuous_main_depots_waits_while_queued_then_builds_again() -> None:
     ctx.bot.supply_cap = 31
     worker = _worker(7, HOME)
     ctx.bot.unit_tag_dict = {7: worker}
-    ctx.state.cleanup_depot_builder_tag = 7
-    ctx.state.cleanup_depot_queued = True
+    ctx.state.supply_depot_builder_tag = 7
+    ctx.state.supply_depot_queued = True
     ctx.mediator.get_building_tracker_dict = {7: {}}
 
     t.continuous_main_depots(gate=lambda _c: True)(ctx)
     ctx.mediator.build_with_specific_worker.assert_not_called()
-    assert ctx.state.cleanup_depot_queued is True
+    assert ctx.state.supply_depot_queued is True
 
     ctx.mediator.get_building_tracker_dict = {}
     ctx.mediator.request_building_placement.return_value = Point2((22.0, 22.0))
@@ -892,7 +872,7 @@ def test_continuous_main_depots_waits_while_queued_then_builds_again() -> None:
 
     t.continuous_main_depots(gate=lambda _c: True)(ctx)
     ctx.mediator.build_with_specific_worker.assert_called_once()
-    assert ctx.state.cleanup_depot_queued is True
+    assert ctx.state.supply_depot_queued is True
 
 
 def test_continuous_main_depots_stops_at_supply_cap() -> None:
@@ -911,14 +891,14 @@ def test_continuous_main_depots_keeps_driving_after_gate_closes() -> None:
     ctx.bot.supply_cap = 31
     worker = _worker(7, HOME)
     ctx.bot.unit_tag_dict = {7: worker}
-    ctx.state.cleanup_depot_builder_tag = 7
-    ctx.state.cleanup_depot_queued = False
+    ctx.state.supply_depot_builder_tag = 7
+    ctx.state.supply_depot_queued = False
     ctx.mediator.request_building_placement.return_value = Point2((22.0, 22.0))
     ctx.mediator.build_with_specific_worker.return_value = True
 
     assert t.continuous_main_depots(gate=lambda _c: False)(ctx) is None
     ctx.mediator.build_with_specific_worker.assert_called_once()
-    assert ctx.state.cleanup_depot_queued is True
+    assert ctx.state.supply_depot_queued is True
 
 
 def main() -> int:

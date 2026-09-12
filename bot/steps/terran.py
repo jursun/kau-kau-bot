@@ -9,14 +9,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ares.behaviors.macro import BuildStructure
 from cython_extensions import cy_distance_to, cy_distance_to_squared
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
 
 from bot.builds.definition import _always
 from bot.consts import SUPPLY_BUILDER_ROLE
-from bot.core.types import Gate, MacroStep, PointLocator, UnitCreatedHook
+from bot.core.types import Gate, MacroStep, UnitCreatedHook
 from bot.routines.placement import near_point
 
 if TYPE_CHECKING:
@@ -25,55 +24,6 @@ if TYPE_CHECKING:
     from bot.builds.definition import WorkerTask
     from bot.core.context import BotContext
     from bot.core.state import CrewMember
-
-
-def proxy_barracks(
-    to_count: int,
-    where: PointLocator,
-    gate: Gate = _always,
-    max_on_route: int = 1,
-) -> MacroStep:
-    """Keep `to_count` Barracks standing at `where`, once `gate` passes.
-
-    This is a plain `BuildStructure` pointed at somebody else's base location
-    rather than our own, and that is the whole trick: ares'
-    `_solve_terran_building_formation` walks **every** entry in
-    `ai.expansion_locations_list` when it precomputes placements, enemy
-    expansions included, so `request_building_placement` solves a real,
-    legal Terran placement at an enemy expansion exactly as happily as at our
-    own main. None of the roll-your-own placement search that
-    `behaviors/zerg/build_macro_hatch.py` needed applies here - that was
-    forced by `_solve_zerg_building_formation` being an unimplemented stub
-    (ARCHITECTURE.md gotchas 1 and 10), which is a Zerg-only problem.
-
-    Which SCV goes is left to ares, and that is deliberate rather than lazy:
-    `BuildStructure` selects via `mediator.select_worker(force_close=True)`,
-    the closest *gathering* worker to the placement. Early on every worker is
-    at home, so that means "pull one off the mineral line"; once a builder is
-    standing at the proxy having just finished a Barracks, it is by a wide
-    margin the closest gathering worker to the next one, so the follow-up
-    Barracks falls to it with no tag bookkeeping at all. Pinning specific
-    SCVs by tag would encode the same outcome more brittlely - a dead builder
-    would strand the step, where "closest worker" simply picks someone else.
-
-    Attributes:
-        to_count: Total Barracks to have standing (ready or building).
-        where: Resolves the proxy base location, fresh each frame.
-        gate: Extra condition; the caller stages the count with it.
-        max_on_route: Workers allowed to be walking there at once.
-    """
-
-    def step(ctx: "BotContext"):
-        if not gate(ctx):
-            return None
-        return BuildStructure(
-            base_location=where(ctx),
-            structure_id=UnitTypeId.BARRACKS,
-            to_count=to_count,
-            max_on_route=max_on_route,
-        )
-
-    return step
 
 
 def claim_z_on_first_scv() -> UnitCreatedHook:
@@ -355,7 +305,7 @@ def continuous_main_depots(gate: Gate = _always) -> MacroStep:
         if ctx.bot.supply_cap >= 200:
             return None
 
-        tag = ctx.state.cleanup_depot_builder_tag
+        tag = ctx.state.supply_depot_builder_tag
         worker = ctx.bot.unit_tag_dict.get(tag) if tag is not None else None
         if worker is None:
             if not gate(ctx):
@@ -366,14 +316,14 @@ def continuous_main_depots(gate: Gate = _always) -> MacroStep:
             if worker is None:
                 return None
             ctx.mediator.assign_role(tag=worker.tag, role=SUPPLY_BUILDER_ROLE)
-            ctx.state.cleanup_depot_builder_tag = worker.tag
-            ctx.state.cleanup_depot_queued = False
+            ctx.state.supply_depot_builder_tag = worker.tag
+            ctx.state.supply_depot_queued = False
             ctx.log("DEPOTS: SCV claimed for continuous Depots")
 
-        if ctx.state.cleanup_depot_queued:
+        if ctx.state.supply_depot_queued:
             if worker.tag in ctx.mediator.get_building_tracker_dict:
                 return None
-            ctx.state.cleanup_depot_queued = False
+            ctx.state.supply_depot_queued = False
 
         cost = ctx.bot.calculate_cost(UnitTypeId.SUPPLYDEPOT)
         if ctx.bot.minerals < cost.minerals:
@@ -393,7 +343,7 @@ def continuous_main_depots(gate: Gate = _always) -> MacroStep:
             assign_role=False,
         ):
             ctx.bot.minerals -= cost.minerals
-            ctx.state.cleanup_depot_queued = True
+            ctx.state.supply_depot_queued = True
             ctx.log("DEPOTS: Supply Depot started")
         return None
 

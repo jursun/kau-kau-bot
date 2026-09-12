@@ -33,7 +33,7 @@ bot/
   steps/
     common.py          race-neutral macro steps
     zerg.py            queens, injects, hatcheries, evo chambers
-    terran.py          proxy_crew, claim_z_on_first_scv, proxy_barracks,
+    terran.py          proxy_crew, claim_z_on_first_scv,
                        continuous_main_depots
     protoss.py         empty
   routines/
