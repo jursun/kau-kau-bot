@@ -33,7 +33,7 @@ bot/
   steps/
     common.py          race-neutral macro steps
     zerg.py            queens, injects, hatcheries, evo chambers
-    terran.py          proxy_barracks, proxy_crew, claim_z_on_first_scv,
+    terran.py          proxy_crew, claim_z_on_first_scv, proxy_barracks,
                        continuous_main_depots
     protoss.py         empty
   routines/
@@ -41,7 +41,7 @@ bot/
                        builder_workers_attack
     scouting.py        air_scout
     targeting.py       attack_target, rally_point, hold_positions,
-                       enemy_third, enemy_fourth, enemy_main_fallen,
+                       enemy_fourth, enemy_main_fallen,
                        hunt_remaining_bases
     gates.py           reusable conditions, incl. training_started
   behaviors/zerg/      custom ares Behaviors (ares has no inject/queen behavior)
@@ -276,36 +276,11 @@ regardless of what build is running.
   INFESTATIONPIT, LAIR]`). `tests/validators/base_validator.py` builds its
   entire Stage 2/3 milestone list this way, off `ctx.build.army.upgrades`,
   so it can't silently drift out of sync with the build it's validating.
-- **One class shared by every registered build turned out to be the wrong
-  call for the Validation Report, even though every number and gate it
-  checked was already read off `ctx.build` rather than hardcoded by
-  name.** `UpgradeRushValidator` originally covered `Four Rax Proxy`,
-  `UpgradeRush` and `Speedling All-In` all at once — Stage 1's worker/gas
-  targets from `ctx.build.economy`, Stage 2/3 from `ctx.build.army`, the
-  Evolution Chamber target/gate from `ctx.build.army.evolution_chambers` /
-  `.evolution_chamber_gate`, all genuinely build-driven. The bug wasn't in
-  any of those numbers; it was that `validate()` — which stages a build's
-  report *shows at all*, and what Stage 4 is titled — was still one method
-  shared by all three builds. A change made "for" Four Rax Proxy's report
-  (adding Stage 1B, renaming Stage 4) silently changed UpgradeRush's and
-  Speedling All-In's reports too, since there was only one method to edit
-  and no way to scope an edit to one build without a runtime check
-  (`if self._crew_claims: ...`) that the next edit could just as easily get
-  wrong again. Split into `tests/validators/base_validator.py`
-  (`BaseValidator` — all the tracking and report-formatting machinery,
-  unchanged) plus one thin subclass per build (`FourRaxProxyValidator`,
-  `UpgradeRushValidator`, `SpeedlingAllInValidator`, ...), each overriding
-  only `validate()` to declare which stages its own report includes and
-  what Stage 4 is called. `tests/validators/registry.py` maps a build's
-  name to its validator class the same way `bot/core/registry.py` maps an
-  opening name to its `BuildDefinition` — auto-discovered by scanning the
-  package, one file per build, no registry edit, and `BaseValidator.
-  __init_subclass__` raises immediately if two files ever claim the same
-  build name. The generic, data-driven *tracking* logic (thresholds and
-  gates read off `ctx.build`, not hardcoded) was never the problem and
-  didn't need to change; only "which stages exist" needed to stop being
-  something a shared method decided at runtime and become something each
-  build's own file decides structurally.
+- **One validator subclass per build for the Validation Report.** Tracking
+  (thresholds/gates from `ctx.build`) stays in `BaseValidator`; each build
+  overrides only `validate()` for which stages appear and what Stage 4 is
+  called. `tests/validators/registry.py` maps opening name → class the same
+  way `bot/core/registry.py` maps openings to `BuildDefinition`.
 - **Danger-avoidance is a per-routine choice, not a blanket policy.**
   `scouting.air_scout()` used to wrap its `PathUnitToTarget` in a
   `KeepUnitSafe`-first `CombatManeuver` — the same shape `escort_overseers`
@@ -387,33 +362,19 @@ regardless of what build is running.
   reaching for whenever two behaviors sharing a structure type are meant
   to take turns rather than compete.
 
-- **Terran and Protoss placements are precomputed at *every* expansion,
-  enemy ones included — which makes a proxy a one-liner for them and a
-  rewrite for Zerg.** `PlacementManager._solve_terran_building_formation`
-  loops over the whole of `ai.expansion_locations_list`, so
-  `mediator.request_building_placement(base_location=<the enemy's third>)`
-  returns a real, legal Terran placement over there exactly as happily as
-  at our own main. `steps.terran.proxy_barracks` is therefore just
-  `BuildStructure` pointed at somebody else's base — none of the
-  ring-sampling, `.5`-snapping, pathability-checking machinery
-  `behaviors/zerg/build_macro_hatch.py` needed. That machinery was never
-  about placement being hard in general; it was forced by
-  `_solve_zerg_building_formation` being an unimplemented stub (gotchas 1
-  and 10). Worth remembering before assuming a Zerg-side workaround has to
-  be repeated for another race: check whether that race's solver is
-  actually implemented first.
+- **Terran/Protoss placements are precomputed at every expansion, including
+  enemy ones — so a formation proxy is a `request_building_placement` call,
+  while Zerg still needs ring-search workarounds** (`_solve_zerg_building_
+  formation` is a stub; see gotchas 1 and 10). Four Rax's `proxy_crew` uses
+  that for Barracks A/B/D and the proxy Depot; Barracks C uses
+  `routines.placement.near_point` on the fourth's townhall tile instead so
+  it does not compete for formation slots.
 - **An army that spawns away from home needs `combat.rally`, or every unit
   it makes walks back across the map before it attacks.**
   `targeting.rally_point` defaults to "in front of our own natural", which
-  is right for every build whose production is at home and exactly wrong
-  for a proxy: a Marine popping out of a Barracks at the enemy's third
-  would be mustered by `attack_squads` back at our natural first, arriving
-  at the fight roughly a minute after it was born. `BuildDefinition`'s
-  `Combat.rally` (a `PointLocator`) overrides that point, and setting it
-  also collapses `targeting.hold_positions` to just that one place —
-  otherwise `defend_home` would keep peeling defenders off to guard our own
-  mineral lines one at a time, which for a one-base all-in is a slow way of
-  feeding units to the enemy in ones.
+  is right for home production and wrong for a proxy: a Marine at the enemy
+  fourth would muster at our natural first. `Combat.rally` overrides that
+  and collapses `hold_positions` to that one place for one-base all-ins.
 - **`select_worker` only ever considers `UnitRole.GATHERING`, so giving a
   worker any other role removes it from every future `BuildStructure`.**
   This is what makes `combat.builder_workers_attack`'s `claim_gate` a

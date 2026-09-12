@@ -5,7 +5,7 @@
 with real defenders standing near it (drones on the mineral line behind a
 Hatchery, say) sends everyone at the defenders instead of the building.
 These exercise that decision, plus the plain locator functions
-(`enemy_third`/`enemy_fourth`/`map_center`), against a `MagicMock` bot and
+(`enemy_fourth` and related locators), against a `MagicMock` bot and
 mediator rather than a real game.
 
 Runs under pytest, or standalone with no test dependency:
@@ -266,22 +266,10 @@ def test_hunt_remaining_bases_sticks_to_a_pinned_cleanup_structure() -> None:
 # --- targeting locators --------------------------------------------------
 
 
-def test_enemy_third_reads_the_mediator_value() -> None:
-    ctx = MagicMock()
-    ctx.mediator.get_enemy_third = HATCHERY
-    assert targeting.enemy_third(ctx) == HATCHERY
-
-
 def test_enemy_fourth_reads_the_mediator_value() -> None:
     ctx = MagicMock()
     ctx.mediator.get_enemy_fourth = HATCHERY
     assert targeting.enemy_fourth(ctx) == HATCHERY
-
-
-def test_map_center_reads_the_game_info_value() -> None:
-    ctx = MagicMock()
-    ctx.bot.game_info.map_center = HATCHERY
-    assert targeting.map_center(ctx) == HATCHERY
 
 
 def test_enemy_ramp_bottom_reads_the_ramp() -> None:

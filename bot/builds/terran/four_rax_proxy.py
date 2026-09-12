@@ -106,20 +106,7 @@ DEPOT_MINERAL_TRIGGER = 400
 
 
 def proxy_location(ctx) -> Point2:
-    """Where every crew structure goes, and where Marines muster.
-
-    The enemy's fourth base — deep enough that it usually goes unseen by
-    early scouting, at the cost of a longer opening walk than a nearer proxy
-    spot would need. (An earlier round of this build used the enemy's
-    *third* instead; this is a deliberate change, not a typo — see
-    `claude/four-rax-proxy.md` for the history.)
-
-    Its own named function rather than an inline lambda because several
-    separate places have to agree on it: every task in `PROXY_CREW` below,
-    `combat.rally`, and `builder_workers_attack`'s claim radius. A proxy
-    build where those drift apart is a build that rallies its army to the
-    wrong side of the map.
-    """
+    """Enemy fourth — shared by crew tasks, `combat.rally`, and claim radius."""
     return targeting.enemy_fourth(ctx)
 
 
@@ -287,7 +274,6 @@ BUILD = BuildDefinition(
                 claim_gate=gates.structure_started(UnitTypeId.BARRACKS, PROXY_BARRACKS),
             ),
         ),
-        wave_gate=gates.always,  # no tech to wait on; size is the only gate
         wave1_min=FIRST_WAVE,
         # Marines spawn at the proxy, not at home. Without this they would
         # walk back to our own natural to muster before every attack.

@@ -63,29 +63,12 @@ IGNORED_ENEMY_TYPES: frozenset[UnitTypeId] = frozenset(
     {UnitTypeId.EGG, UnitTypeId.LARVA}
 )
 
-# A label WE own for a build's `ProxyCrewPlan` workers (`steps.terran.
-# proxy_crew`), picked specifically because nothing in ares itself ever
-# reads or writes it (checked against the whole ares-sc2 v3.13.1 source, not
-# just the obvious managers). That matters because the two roles that would
-# otherwise fit the name both carry side effects fatal to a worker mid
-# multi-step choreography:
-#   - `UnitRole.BUILDING` gets reverted to GATHERING by
-#     `BuildingManager._handle_construction_orders` the instant its tracked
-#     structure completes - flinging a builder back into the mineral line one
-#     frame after finishing Barracks A, long before its next task is issued.
-#   - `UnitRole.PERSISTENT_BUILDER` gets swept back to GATHERING in one shot
-#     by `BuildOrderRunner.set_build_completed()` the moment the opening's own
-#     `OpeningBuildOrder` list is exhausted - which, for a build using this
-#     mechanism, happens within the first few seconds, i.e. long before a
-#     proxy crew's work is anywhere near done.
-# `GATE_KEEPER` is simply an unused slot in `ares.consts.UnitRole`'s enum, the
-# same trick `UnitRole.SCOUTING`/`UnitRole.QUEEN_INJECT` already use elsewhere
-# in this codebase for "our own bookkeeping, not ares'".
+# Role for `ProxyCrewPlan` workers (`steps.terran.proxy_crew`). Unused by
+# ares itself — `BUILDING` / `PERSISTENT_BUILDER` get swept back to GATHERING
+# when a structure finishes or the opening completes, which would yank a
+# multi-step crew SCV mid-choreography.
 PROXY_CREW_ROLE: UnitRole = UnitRole.GATE_KEEPER
 
-# Same unused-slot trick as `PROXY_CREW_ROLE`: a dedicated SCV that keeps
-# laying Supply Depots after an all-in (see `steps.terran.continuous_main_
-# depots`) must not sit in `GATHERING` (Mining would reclaim it) or
-# `BUILDING`/`PERSISTENT_BUILDER` (ares sweeps those back to minerals).
-# `CONTROL_GROUP_ONE` is never written by ares itself.
+# Role for the continuous Depot SCV (`steps.terran.continuous_main_depots`).
+# Same unused-slot trick: must not sit in GATHERING or BUILDING.
 SUPPLY_BUILDER_ROLE: UnitRole = UnitRole.CONTROL_GROUP_ONE

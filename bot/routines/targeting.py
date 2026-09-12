@@ -189,15 +189,8 @@ def hunt_remaining_bases(ctx: "BotContext", from_pos: Point2) -> Point2:
     return ctx.bot.enemy_start_locations[0]
 
 
-def enemy_third(ctx: "BotContext") -> Point2:
-    """The enemy's third base. A `PointLocator`, for builds that want to put
-    something there - a proxy, a rally - rather than merely walk to it."""
-    return ctx.mediator.get_enemy_third
-
-
 def enemy_fourth(ctx: "BotContext") -> Point2:
-    """The enemy's fourth base. Same idea as `enemy_third`, one base further
-    out - deep enough that early scouting rarely reaches it."""
+    """The enemy's fourth base - a `PointLocator` for proxy / rally placement."""
     return ctx.mediator.get_enemy_fourth
 
 
@@ -272,19 +265,6 @@ def squad_destination(ctx: "BotContext", from_pos: Point2) -> Point2:
     if (locator := ctx.build.combat.attack_objective) is not None:
         return locator(ctx)
     return attack_target(ctx, from_pos)
-
-
-def map_center(ctx: "BotContext") -> Point2:
-    """The playable map's centre point - a `PointLocator` for something that
-    wants open room around it rather than any base's own formation.
-
-    `game_info.map_center` is python-sc2's own centroid of the playable
-    area, not tied to any expansion - so a caller placing there should pair
-    this with `routines.placement.near_point` (see `WorkerTask.near`) rather
-    than `where`'s formation lookup, which would just snap back to whichever
-    base happens to be nearest.
-    """
-    return ctx.bot.game_info.map_center
 
 
 def rally_point(ctx: "BotContext") -> Point2:

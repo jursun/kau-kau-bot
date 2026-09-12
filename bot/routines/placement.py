@@ -1,24 +1,12 @@
 """Synchronous "find a legal spot near an arbitrary point" placement.
 
-`ares.managers.placement_manager.request_building_placement` snaps its
-`base_location` to the nearest key in ares' own precomputed per-expansion
-formation (`PlacementManager.placements_dict`) and can only reorder
-candidates *within* that formation via `closest_to` - it cannot escape a bad
-formation or offer a spot outside it. That's fine for placing at a base
-(`steps.terran.proxy_barracks` leans on exactly that), but wrong for "put
-this on / next to an arbitrary point": e.g. Barracks C on the enemy fourth's
-townhall tile (`builds.terran.four_rax_proxy`), which must not compete with
-A/B for that base's precomputed Barracks slots.
+`ares.managers.placement_manager.request_building_placement` snaps to a
+precomputed per-expansion formation and cannot escape it. Fine for base
+formation builds (`proxy_crew` formation tasks), wrong for an arbitrary
+point (e.g. Barracks C on the enemy fourth's townhall tile).
 
-`near_point` sidesteps the formation entirely: the snapped reference first,
-then ring-sampled candidates around it, filtered for standable ground and
-clearance from resources, validated one at a time with the synchronous
-`mediator.can_place_structure`. Same technique
-`behaviors/zerg/build_macro_hatch.py`'s `BuildMacroHatch` already uses for
-an in-main hatch, generalized: any structure type, any reference point - not
-tied to a `MacroBehavior`, and not assuming a "home plateau" to match
-terrain height against, since a proxy site is enemy ground with no such
-thing.
+`near_point` tries the snapped reference first, then ring samples, filtered
+for pathing and resource clearance via `mediator.can_place_structure`.
 """
 
 from __future__ import annotations

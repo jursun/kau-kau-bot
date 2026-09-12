@@ -8,8 +8,7 @@ attack-objective choices:
   unset), not a ring search next to standing Barracks.
 * `attack_objective` - stutter destination is the enemy ramp bottom while
   the natural stands, the enemy main once the natural is cleared, and
-  `targeting.attack_target` (scout remaining / hidden bases) once the main
-  is cleared too.
+  `targeting.hunt_remaining_bases` once the main has fallen.
 
 Runs under pytest, or standalone with no test dependency:
 

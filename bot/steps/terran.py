@@ -40,7 +40,7 @@ def proxy_barracks(
     `_solve_terran_building_formation` walks **every** entry in
     `ai.expansion_locations_list` when it precomputes placements, enemy
     expansions included, so `request_building_placement` solves a real,
-    legal Terran placement at the enemy's third exactly as happily as at our
+    legal Terran placement at an enemy expansion exactly as happily as at our
     own main. None of the roll-your-own placement search that
     `behaviors/zerg/build_macro_hatch.py` needed applies here - that was
     forced by `_solve_zerg_building_formation` being an unimplemented stub
@@ -77,22 +77,10 @@ def proxy_barracks(
 
 
 def claim_z_on_first_scv() -> UnitCreatedHook:
-    """Claim the first SCV beyond the starting 12 as `z` in
-    `ctx.state.proxy_crew` - a build's `on_unit_created` for a
-    `ProxyCrewPlan` whose `z_tasks` should run on "the 13th SCV".
+    """Claim the 13th SCV as `proxy_crew.z` (`on_unit_created` hook).
 
-    Guards on `len(ctx.bot.workers) >= 13` at the moment of the event, not
-    merely "the first SCV-creation event seen". An earlier version trusted
-    ares/python-sc2 to never fire `on_unit_created` for a game's starting
-    units - the same guarantee `roles.assign_on_created`'s scout assignment
-    leans on for the second Overlord - and claimed whichever SCV triggered
-    the very first such event. In an actual game that claimed one of the
-    starting 12: a third worker was seen peeling off the mineral line at
-    game start alongside X and Y, instead of only the two of them, meaning
-    the event fired for a starting SCV too. Counting workers directly
-    sidesteps the assumption rather than depending on it - regardless of
-    what fires this event or when, only a call that lands once a 13th SCV
-    genuinely exists gets to claim one.
+    Requires `len(workers) >= 13` so a starting SCV cannot be claimed if
+    `on_unit_created` fires for one of the opening twelve.
     """
 
     def hook(ctx: "BotContext", unit: "Unit") -> None:
@@ -222,59 +210,17 @@ def _within(worker: "Unit", target: Point2, radius: float) -> bool:
     return cy_distance_to(worker.position, target) <= radius
 
 
-def _drive_crew_member(ctx: "BotContext", member: "CrewMember", tasks: "tuple") -> None:
-    """Work one crew member through its task list by one step.
+def _drive_crew_member(
+    ctx: "BotContext", member: "CrewMember", tasks: "tuple[WorkerTask, ...]"
+) -> None:
+    """Advance one crew member by one step.
 
-    A task enters ares' building tracker once - placement then
-    `build_with_specific_worker(..., assign_role=False)` - and only when
-    we can already afford it, its tech requirement is met, *and* the
-    worker is inside `BUILD_ISSUE_RADIUS`. Until then the worker is path'd
-    toward the placement by hand. That matters for X and Y's opening
-    Barracks: putting both in the tracker on frame one left
-    BuildingManager to issue both builds the same frame minerals hit 300,
-    so neither started at 150. Reserving the cost on the bot's mineral
-    count when we queue (mirroring `Unit.build`'s own subtract) means a
-    second crew member driven later this same frame sees the remainder and
-    keeps pathing instead of also queueing.
-
-    Formation slots are reserved separately from the building tracker:
-    `WorkerTask.reserve_early` (Barracks A) locks a slot immediately so Y
-    cannot take it; Y paths to the proxy first and only then reserves
-    (see `_ensure_reserved_placement`). Reusing `member.reserved_placement`
-    at build time avoids a second `request_building_placement` that would
-    abandon the first reserved slot.
-
-    Waiting on minerals/tech: hold still inside `HOLD_RADIUS`, otherwise
-    path. Ready to pay: keep pathing ourselves until inside
-    `BUILD_ISSUE_RADIUS`, then enter the tracker and fire `worker.build`
-    the same frame. Handing off to BuildingManager any earlier lets its
-    move-to-1.0 loop cancel the build order every frame.
-
-    Once queued, the worker is left alone until its tag drops out of
-    `mediator.get_building_tracker_dict`, which ares itself removes it from
-    the instant the structure completes (`BuildingManager.
-    _handle_construction_orders`). That tracker-membership check is the
-    entire completion signal - nothing here infers it from structure counts,
-    which would misattribute one worker's completion to another's identical
-    structure type (Barracks A and B finish within moments of each other,
-    both via this same mechanism).
-
-    `assign_role=False` is load-bearing: see `bot.consts.PROXY_CREW_ROLE` for
-    why the crew's own role must be the only thing that ever touches these
-    workers' roles between claim and hand-off.
-
-    A task's `closest_to`, when set, is forwarded to `request_building_
-    placement` as-is - it only orders the precalculated spots `where`
-    already resolved to, e.g. biasing a home Depot toward the main ramp.
-
-    A task's `near`, when set, skips `where`'s formation lookup in favor of
-    `routines.placement.near_point` - see `WorkerTask.near`.
-
-    A task's optional `verify` runs once tracker departure would otherwise
-    mark it done, and must pass before `task_index` actually advances - see
-    `WorkerTask.verify`'s own docstring for why. A failed `verify` clears
-    `queued` and leaves `task_index` alone, so the very next call re-issues
-    the identical task.
+    Queue into the building tracker only when affordable, tech-ready, and
+    inside `BUILD_ISSUE_RADIUS`; otherwise path (or hold inside
+    `HOLD_RADIUS`). Reserve minerals in-frame so X and Y do not both queue
+    at 150. Formation slots use `reserved_placement` / `reserve_early`
+    separately from the tracker. Completion is tracker departure only.
+    `assign_role=False` — see `PROXY_CREW_ROLE`.
     """
     if member.tag is None or member.task_index >= len(tasks):
         return
@@ -365,43 +311,12 @@ def _drive_crew_member(ctx: "BotContext", member: "CrewMember", tasks: "tuple") 
 
 
 def proxy_crew() -> MacroStep:
-    """Drive the three hand-walked SCVs declared by `ctx.build.crew`
-    (`bot.builds.definition.ProxyCrewPlan`) through their own task lists.
+    """Drive `ctx.build.crew` (X/Y/Z) through their task lists every frame.
 
-    Belongs in `always`, not `macro_steps`: `x` and `y` peel off on the very
-    first frame of the game, well before `macro_steps` starts running (it
-    waits for `build_completed` - see `macro_engine.py`). A build using this
-    plan should not also list any of the plan's own structures in
-    `OpeningBuildOrder`/`macro_steps` - ares' generic `BuildStructure`/
-    `select_worker` machinery knows nothing about this plan and would happily
-    build them a second time with a worker pulled fresh off the minerals.
-
-    `z` is claimed separately, by `on_unit_created` (see
-    `claim_z_on_first_scv`) - unlike `x`/`y` it does not exist yet at the
-    frame this step first runs.
-
-    A task's `gate` is checked only once its task list actually reaches it,
-    not the moment the plan is declared - so e.g. a Barracks gated on Marine
-    production having started simply leaves its worker idle wherever its
-    previous task finished, for as long as the gate fails, with nothing else
-    for it to do since it was never in `UnitRole.GATHERING` to begin with.
-
-    Affordability, tech, and proximity are checked before a task enters
-    the building tracker: until all three pass, the worker is path'd by
-    hand (holding still only while waiting on money/tech inside
-    `HOLD_RADIUS`). That keeps X and Y from both sitting in the tracker
-    as pending Barracks that BuildingManager only issues together once
-    300 minerals are banked - and keeps BM from move-cancelling a build
-    issued outside its 1.0 radius. With 150 minerals, the first crew
-    member driven this frame that is already on its tile queues and
-    reserves the cost; the second keeps walking.
-
-    Once a slot's task list is exhausted this step stops touching it -
-    `combat.builder_workers_attack`'s proximity-based claiming (identity-
-    blind; it has no idea this was "x") picks it up from there once its own
-    `claim_gate` passes *and* the worker is no longer listed as an active
-    crew member (see `_active_crew_tags`). Claiming earlier while tasks
-    remain is what made Y oscillate between Depot pathing and attack orders.
+    Belongs in `always` (not `macro_steps`). Do not also list crew structures
+    in the opening YAML. Z is claimed via `claim_z_on_first_scv`. Finished
+    slots are left alone for `builder_workers_attack` once `_active_crew_tags`
+    drops them.
     """
 
     def step(ctx: "BotContext"):
@@ -453,7 +368,7 @@ def continuous_main_depots(gate: Gate = _always) -> MacroStep:
             ctx.mediator.assign_role(tag=worker.tag, role=SUPPLY_BUILDER_ROLE)
             ctx.state.cleanup_depot_builder_tag = worker.tag
             ctx.state.cleanup_depot_queued = False
-            ctx.log("CLEANUP: SCV claimed for continuous Depots")
+            ctx.log("DEPOTS: SCV claimed for continuous Depots")
 
         if ctx.state.cleanup_depot_queued:
             if worker.tag in ctx.mediator.get_building_tracker_dict:
@@ -479,7 +394,7 @@ def continuous_main_depots(gate: Gate = _always) -> MacroStep:
         ):
             ctx.bot.minerals -= cost.minerals
             ctx.state.cleanup_depot_queued = True
-            ctx.log("CLEANUP: Supply Depot started")
+            ctx.log("DEPOTS: Supply Depot started")
         return None
 
     return step

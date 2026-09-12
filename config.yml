@@ -38,10 +38,10 @@ DebugOptions:
     DebugSpawn: False
     ShowPathingCost: False
     ResourceDebug: False
-    ShowBuildingFormation: True
+    ShowBuildingFormation: False
 
-# Ares mines gas with 3 workers per extractor by default, which is what both
-# of our openings want.
+# Ares mines gas with 3 workers per extractor by default (Zerg openings).
+# Four Rax leaves gas at 0; these factors still apply if MyBotRace flips.
 Mining:
     GeyserDistanceFactor: 1.05
     MineralDistanceFactor: 1.25

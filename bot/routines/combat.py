@@ -29,7 +29,7 @@ from sc2.position import Point2
 from sc2.unit import Unit
 from sc2.units import Units
 
-from bot.builds.definition import ProxyCrewPlan, _always
+from bot.builds.definition import _always
 from bot.consts import IGNORED_ENEMY_TYPES
 from bot.core.types import CombatRoutine, Gate, PointLocator
 from bot.routines import targeting
@@ -48,7 +48,7 @@ def _active_crew_tags(ctx: "BotContext") -> set[int]:
     Y's second task was still pending.
     """
     plan = ctx.build.crew
-    if not isinstance(plan, ProxyCrewPlan):
+    if plan is None:
         return set()
     crew = ctx.state.proxy_crew
     busy: set[int] = set()
@@ -242,7 +242,7 @@ def _combat_force_supply(ctx: "BotContext", units) -> float:
     return sum(
         ctx.bot.calculate_supply_cost(u.type_id)
         for u in units
-        if not getattr(u, "is_structure", False)
+        if not u.is_structure
     )
 
 
@@ -488,14 +488,10 @@ def builder_workers_attack(
 
     `claim_gate` is the part that is easy to get wrong, so it is explicit.
     Claiming assigns `UnitRole.PROXY_WORKER`, and `select_worker` only ever
-    considers `UnitRole.GATHERING` - so a claimed worker is invisible to
-    `steps.terran.proxy_barracks`. Claim too early and the builder standing
-    right next to the site where the *next* Barracks goes stops being
-    eligible to build it, and a fresh SCV gets pulled from home for the
-    walk instead. So the gate should say "every Barracks this build wants is
-    already standing or under way" - after that there is nothing left for a
-    *generic* builder to be saved for. Crew workers with remaining tasks are
-    still excluded separately via `_active_crew_tags`.
+    considers `UnitRole.GATHERING`. Open the gate only once every Barracks
+    this build wants is standing or under way - otherwise a builder next to
+    the next site gets yanked off and a fresh SCV walks from home. Crew
+    workers with remaining tasks are still excluded via `_active_crew_tags`.
 
     Before the first wave is released the claimed workers wait at the proxy
     rather than running in alone; from wave 1 on they attack the same target
