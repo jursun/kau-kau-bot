@@ -71,9 +71,10 @@ BUILD = BuildDefinition(
     ),
     combat=Combat(
         routines=(
-            combat.release_first_wave_then_stream(muster=False),
+            # First wave musters at the enemy-front staging point, then streams.
+            combat.release_first_wave_then_stream(muster=True),
             combat.defend_home(),
-            combat.attack_squads(),
+            combat.chargelot_attack(),
             ps.escort_warp_prism(),
             ps.escort_observer(),
             ps.harassing_adept(),
@@ -87,18 +88,16 @@ BUILD = BuildDefinition(
         wave1_min=FIRST_WAVE,
         wave_growth=1.0,  # unused once streaming; kept for validator math
         focus=(FOCUS_NATURAL, FOCUS_MAIN),
+        # Keep default home rally so defenders gather at our natural; the
+        # enemy-front staging muster lives in `chargelot_attack` only.
         wave_stage_label="Chargelot All-In",
     ),
     always=(
         # Mining/gas every frame. Supply lives in macro_steps (after Gates/Robo)
         # so the dedicated builder prefers production over pylons.
         c.mining(),
-        # Full gas until Charge is under way, then peel for mineral flood.
-        # Keep one per geyser so Robo units / extra Stalkers stay fundable.
-        c.gas_workers(
-            pull_off=gates.upgrade_started(CHARGE),
-            when_pulled=1,
-        ),
+        # Gas schedule 3 → 1 → 2 (Charge bank / Prism / Stalkers).
+        c.chargelot_gas_workers(),
     ),
     macro_steps=(
         # Wall FirstPylon before Gate/Robo so ThreeByThreesWall slots have power.

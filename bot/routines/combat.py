@@ -30,10 +30,11 @@ from sc2.unit import Unit
 from sc2.units import Units
 
 from bot.builds.definition import _always
-from bot.consts import IGNORED_ENEMY_TYPES
+from bot.consts import IGNORED_ENEMY_TYPES, WORKER_TYPES
 from bot.core.types import CombatRoutine, Gate, PointLocator
 from bot.intel import enemy_army
 from bot.routines import targeting
+from bot.routines.protoss_support import chargelot_staging
 
 if TYPE_CHECKING:
     from bot.core.context import BotContext
@@ -70,6 +71,8 @@ MUSTER_RADIUS: float = 4.0
 """How tightly a freshly-released wave must cluster at the rally point
 before it is let off to attack, rather than trickling toward the enemy
 as units peel off from wherever they were defending."""
+CHARGELOT_MUSTER_RADIUS: float = 7.0
+"""Wider muster for the ~12 Zealot first wave so it commits as one squad."""
 
 BUILDER_CLAIM_RADIUS: float = 30.0
 """How close to the proxy a worker has to be for `builder_workers_attack`
@@ -153,12 +156,10 @@ def release_first_wave_then_stream(muster: bool = True) -> CombatRoutine:
     exists, with no minimum size.
 
     When `muster` is True (default), the first wave is also added to
-    `RunState.mustering_tags` so `attack_squads` holds it at the rally
-    point until it clumps - good for proxy armies that spawn already
-    forward. When False, the first wave skips that hold and marches on
-    the same frame (Chargelot-style home production: units are already
-    together at the natural, and holding just invites home defense fights
-    that never leave for the enemy base).
+    `RunState.mustering_tags` so `attack_squads` / `chargelot_attack` holds
+    it at the rally point until it clumps - good when the rally is forward
+    (proxy, or Chargelot staging in front of the enemy). When False, the
+    first wave skips that hold and marches on the same frame.
     """
 
     def routine(ctx: "BotContext") -> None:
@@ -460,6 +461,233 @@ def attack_squads(
                     grid=grid,
                 )
             )
+
+    return routine
+
+
+# Backline picks for Chargelot Stalkers: healers first, then workers (repair /
+# mineral line), then anything else already in range.
+_STALKER_PICK_TYPES: frozenset[UnitTypeId] = frozenset(
+    {
+        UnitTypeId.MEDIVAC,
+        UnitTypeId.SCV,
+        UnitTypeId.MULE,
+        UnitTypeId.PROBE,
+        UnitTypeId.DRONE,
+    }
+)
+
+
+def _enemies_near_ground_air(ctx: "BotContext", point, distance: float) -> list[Unit]:
+    """Ground + air enemies near `point` (Stalkers need Medivacs)."""
+    ground = ctx.mediator.get_units_in_range(
+        start_points=[point],
+        distances=distance,
+        query_tree=UnitTreeQueryType.EnemyGround,
+    )[0]
+    air = ctx.mediator.get_units_in_range(
+        start_points=[point],
+        distances=distance,
+        query_tree=UnitTreeQueryType.EnemyFlying,
+    )[0]
+    seen: set[int] = set()
+    out: list[Unit] = []
+    for group in (ground, air):
+        for u in group:
+            if u.tag in seen or u.type_id in IGNORED_ENEMY_TYPES:
+                continue
+            seen.add(u.tag)
+            out.append(u)
+    return out
+
+
+def _stalker_pick_target(stalker: Unit, enemies: list[Unit]) -> Unit | None:
+    """Prefer Medivacs / repairing-or-wall SCVs, else lowest-HP in range."""
+    in_range = list(cy_in_attack_range(stalker, enemies))
+    if not in_range:
+        return None
+
+    def _score(u: Unit) -> tuple:
+        repairing = False
+        orders = getattr(u, "orders", None) or ()
+        for order in orders:
+            ability = getattr(order, "ability", None)
+            name = getattr(ability, "name", "") or ""
+            if "Repair" in name or "REPAIR" in name:
+                repairing = True
+                break
+        is_medivac = u.type_id == UnitTypeId.MEDIVAC
+        is_worker = u.type_id in WORKER_TYPES
+        # Lower tuple sorts first.
+        return (
+            0 if is_medivac else 1,
+            0 if repairing else 1,
+            0 if is_worker else 1,
+            u.health + u.shield,
+        )
+
+    return min(in_range, key=_score)
+
+
+def chargelot_attack(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
+    """Chargelot all-in micro: Zealots commit, Stalkers snipe the backline.
+
+    Unlike `attack_squads`, Zealots never influence-retreat — they AMove the
+    attack objective and trade. Stalkers stutter at range and prioritize
+    Medivacs and workers (repair / wall) over the marine ball.
+
+    The first wave musters at `chargelot_staging` (in front of the enemy
+    natural) as one ball before committing — not the home `rally_point`,
+    so defenders stay home until WAVE 1 leaves.
+    """
+
+    _last_sig: dict[str, object] = {"sig": None}
+
+    def routine(ctx: "BotContext") -> None:
+        attackers = list(ctx.units_in_role(UnitRole.ATTACKING))
+        alive_attackers = {u.tag for u in attackers}
+        ctx.state.mustering_tags &= alive_attackers
+
+        staging = chargelot_staging(ctx)
+        mustering_units = [u for u in attackers if u.tag in ctx.state.mustering_tags]
+        muster_center_dist = None
+        muster_near_frac = None
+        if mustering_units:
+            center = Point2(cy_center(mustering_units))
+            muster_center_dist = cy_distance_to(center, staging)
+            near_n = sum(
+                1
+                for u in mustering_units
+                if cy_distance_to(u.position, staging)
+                <= CHARGELOT_MUSTER_RADIUS + 3.0
+            )
+            muster_near_frac = near_n / len(mustering_units)
+            # Release only when the whole first wave is on station — not
+            # per-squad, or early arrivals trickle into the base alone.
+            if (
+                muster_center_dist <= CHARGELOT_MUSTER_RADIUS
+                and muster_near_frac >= 0.75
+            ):
+                ctx.log(
+                    f"MUSTER commit n={len(mustering_units)} "
+                    f"dist={muster_center_dist:.0f}"
+                )
+                ctx.state.mustering_tags.clear()
+                mustering_units = []
+
+        still_mustering = bool(ctx.state.mustering_tags)
+
+        squads = ctx.mediator.get_squads(
+            role=UnitRole.ATTACKING, squad_radius=squad_radius
+        )
+        if not squads:
+            return
+
+        enemy_nat = ctx.mediator.get_enemy_nat
+        total_z = 0
+        total_s = 0
+        closest_enemy = 999.0
+        mustering_n = len(ctx.state.mustering_tags)
+
+        for squad in squads:
+            position = squad.squad_position
+            # Whole first wave shares one muster gate; any leftover tag means
+            # this frame still walks to staging.
+            squad_mustering = still_mustering and bool(
+                squad.tags & ctx.state.mustering_tags
+            )
+            target = (
+                staging
+                if squad_mustering
+                else targeting.squad_destination(ctx, position)
+            )
+            closest_enemy = min(closest_enemy, cy_distance_to(position, enemy_nat))
+
+            zealots = [
+                u for u in squad.squad_units if u.type_id == UnitTypeId.ZEALOT
+            ]
+            stalkers = [
+                u for u in squad.squad_units if u.type_id == UnitTypeId.STALKER
+            ]
+            total_z += len(zealots)
+            total_s += len(stalkers)
+
+            # Zealots: never KeepUnitSafe — overwhelm.
+            for zealot in zealots:
+                maneuver = CombatManeuver()
+                near = _enemies_near(ctx, zealot.position, SQUAD_ENGAGE_RANGE)
+                if near:
+                    maneuver.add(ShootTargetInRange(unit=zealot, targets=near))
+                    maneuver.add(
+                        AttackTarget(
+                            unit=zealot,
+                            target=cy_closest_to(
+                                position=zealot.position, units=near
+                            ),
+                        )
+                    )
+                maneuver.add(AMove(unit=zealot, target=target))
+                ctx.bot.register_behavior(maneuver)
+
+            # Stalkers: while mustering, stick with the ball; after commit,
+            # pick Medivacs / repair SCVs and kite on cooldown.
+            for stalker in stalkers:
+                maneuver = CombatManeuver()
+                if squad_mustering:
+                    near = _enemies_near_ground_air(
+                        ctx, stalker.position, SQUAD_ENGAGE_RANGE
+                    )
+                    if near and stalker.weapon_cooldown <= 0.1:
+                        pick = _stalker_pick_target(stalker, near)
+                        if pick is not None:
+                            maneuver.add(AttackTarget(unit=stalker, target=pick))
+                    maneuver.add(AMove(unit=stalker, target=target))
+                else:
+                    enemies = _enemies_near_ground_air(
+                        ctx, stalker.position, SQUAD_ENGAGE_RANGE + 2.0
+                    )
+                    pick = _stalker_pick_target(stalker, enemies)
+                    if pick is not None and stalker.weapon_cooldown <= 0.1:
+                        maneuver.add(AttackTarget(unit=stalker, target=pick))
+                    elif pick is not None and stalker.weapon_cooldown > 0.1:
+                        kite_to = Point2(
+                            cy_towards(pick.position, stalker.position, 1.5)
+                        )
+                        maneuver.add(_Move(unit=stalker, target=kite_to))
+                    else:
+                        maneuver.add(AMove(unit=stalker, target=target))
+                ctx.bot.register_behavior(maneuver)
+
+            # Any other ATTACKING leftovers (should be rare) AMove with zealots.
+            other = [
+                u
+                for u in squad.squad_units
+                if u.type_id not in (UnitTypeId.ZEALOT, UnitTypeId.STALKER)
+            ]
+            for unit in other:
+                ctx.bot.register_behavior(AMove(unit=unit, target=target))
+
+        sig = (
+            total_z,
+            total_s,
+            int(closest_enemy // 5),
+            mustering_n > 0,
+            None if muster_center_dist is None else int(muster_center_dist // 5),
+        )
+        if _last_sig["sig"] != sig:
+            _last_sig["sig"] = sig
+            if mustering_n:
+                ctx.log(
+                    f"MUSTER n={mustering_n} "
+                    f"centerDist={muster_center_dist:.0f} "
+                    f"near={muster_near_frac:.0%} "
+                    f"enemyNat={closest_enemy:.0f}"
+                )
+            elif closest_enemy < 40:
+                ctx.log(
+                    f"ENGAGE near enemy nat={closest_enemy:.0f} "
+                    f"z={total_z} s={total_s}"
+                )
 
     return routine
 

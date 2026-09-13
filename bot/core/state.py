@@ -109,6 +109,9 @@ class RunState:
     Cleared once weapon_cooldown rises so we do not re-issue and cancel windup."""
     adept_last_action: str | None = None
     """Last ADEPT action log line — only re-log on change."""
+    chargelot_prism_gas_bank: bool = False
+    """Latched once Charge gas covers a Prism — stay peeled for minerals
+    until the Prism is started (avoids 3↔1 thrash when Stalkers spend gas)."""
     hunt_objective: Point2 | None = None
     """Single army-wide scout/cleanup destination while hunting remaining
     bases after the enemy main falls - see `targeting.hunt_remaining_bases`.

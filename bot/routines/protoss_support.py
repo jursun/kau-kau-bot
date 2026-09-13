@@ -42,8 +42,18 @@ ARMY_LEAVE_TIME: float = 5 * 60 + 20  # used by build wave_gate; documented here
 
 PRISM_STANDOFF: float = 6.0
 """How far behind the army center the Prism sits while phasing."""
+PRISM_WARP_FIELD_RADIUS: float = 10.0
+"""Keep field up while incomplete warp-ins are within this of the Prism."""
+PRISM_PHASE_APPROACH: float = 10.0
+"""Phase for warps once within this of the army pocket."""
+PRISM_REPOSITION_DIST: float = 16.0
+"""Unphase to catch up only beyond this (hysteresis vs PHASE_APPROACH)."""
+PRISM_ENEMY_PHASE_RANGE: float = 24.0
+"""Prism must be within this of the enemy natural before phasing."""
 OBS_FOLLOW_RADIUS: float = 3.0
 """How tightly the Observer hugs the army destination / center."""
+CHARGELOT_STAGING_OFFSET: float = 14.0
+"""Pull-back from enemy natural toward our start for the pre-attack muster."""
 
 # Adept shade — lifetime ~7s. Always wait until 6.5s before CANCEL
 # (0.5s remaining). While pathing, cast shade ahead toward the destination.
@@ -94,12 +104,37 @@ def _warpgates_ready_to_warp(ctx: "BotContext") -> bool:
     return False
 
 
-def escort_warp_prism():
-    """Phase behind the army; reposition in transport mode while WG on CD.
+def _incomplete_warps_near(ctx: "BotContext", pos: Point2) -> int:
+    """Count own units still materializing in the Prism / pylon field."""
+    n = 0
+    for u in ctx.bot.units:
+        if not (0.0 < u.build_progress < 1.0):
+            continue
+        if cy_distance_to(u.position, pos) <= PRISM_WARP_FIELD_RADIUS:
+            n += 1
+    return n
 
-    One `CombatManeuver` per Prism per frame (APM-safe): air influence retreat
-    first, then morph / move so orders do not fight each other.
+
+def chargelot_staging(ctx: "BotContext") -> Point2:
+    """Muster point in front of the enemy natural (toward our base)."""
+    return Point2(
+        cy_towards(
+            ctx.mediator.get_enemy_nat,
+            ctx.mediator.get_own_nat,
+            CHARGELOT_STAGING_OFFSET,
+        )
+    )
+
+
+def escort_warp_prism():
+    """Escort the army across the map; phase only near the enemy.
+
+    Priority: (1) fly with the ball, (2) phase on station once the Prism is
+    near the enemy natural and the army pocket, (3) finish incomplete warps
+    before dropping the field, then transport-catch-up if the pocket pulls away.
     """
+
+    _last_mode: dict[int, str] = {}
 
     def routine(ctx: "BotContext") -> None:
         prisms = [
@@ -112,55 +147,90 @@ def escort_warp_prism():
 
         army = _army_anchor(ctx)
         home = ctx.mediator.get_own_nat
+        enemy = ctx.mediator.get_enemy_nat
         can_warp = _warpgates_ready_to_warp(ctx)
         grid = ctx.mediator.get_air_grid
 
         for prism in prisms:
             maneuver = CombatManeuver()
             maneuver.add(KeepUnitSafe(unit=prism, grid=grid))
+            phased = prism.type_id == UnitTypeId.WARPPRISMPHASING
+            # Only trust incomplete counts under our own field — pylon warps
+            # near the rally otherwise look like Prism warp-ins.
+            incomplete = (
+                _incomplete_warps_near(ctx, prism.position) if phased else 0
+            )
+            prism_to_enemy = cy_distance_to(prism.position, enemy)
+            near_enemy = prism_to_enemy <= PRISM_ENEMY_PHASE_RANGE
 
             if army is None:
                 hold = targeting.rally_point(ctx)
-                if prism.type_id == UnitTypeId.WARPPRISMPHASING:
+                mode = "rally"
+                if phased and incomplete == 0:
                     maneuver.add(
                         UseAbility(
                             AbilityId.MORPH_WARPPRISMTRANSPORTMODE, prism
                         )
                     )
+                elif phased and incomplete > 0:
+                    mode = "finish_warps_no_army"
                 maneuver.add(
                     MoveToSafeTarget(unit=prism, grid=grid, target=hold)
                 )
+                if _last_mode.get(prism.tag) != mode:
+                    _last_mode[prism.tag] = mode
+                    ctx.log(f"PRISM {mode}")
                 ctx.bot.register_behavior(maneuver)
                 continue
 
-            # Behind the army: from army toward our natural.
             behind = Point2(cy_towards(army, home, PRISM_STANDOFF))
+            dist = cy_distance_to(prism.position, behind)
+            near_army = dist <= PRISM_PHASE_APPROACH
+            far_from_pocket = dist > PRISM_REPOSITION_DIST
 
-            if can_warp:
-                dist = cy_distance_to(prism.position, behind)
-                if dist > 2.5:
-                    # Must move — drop phase first, then path on the air grid.
-                    if prism.type_id == UnitTypeId.WARPPRISMPHASING:
+            # Finish materializing units always. Otherwise only phase when the
+            # Prism is near the enemy and on station with the army pocket.
+            on_station = can_warp and near_army and near_enemy
+            hold_phase = incomplete > 0 or on_station
+
+            if hold_phase:
+                if not phased:
+                    if not near_army or not near_enemy:
+                        mode = "escort"
                         maneuver.add(
-                            UseAbility(
-                                AbilityId.MORPH_WARPPRISMTRANSPORTMODE, prism
+                            MoveToSafeTarget(
+                                unit=prism, grid=grid, target=behind
                             )
                         )
-                    maneuver.add(
-                        MoveToSafeTarget(
-                            unit=prism, grid=grid, target=behind
-                        )
-                    )
-                elif prism.type_id != UnitTypeId.WARPPRISMPHASING:
-                    if AbilityId.MORPH_WARPPRISMPHASINGMODE in prism.abilities:
+                    elif AbilityId.MORPH_WARPPRISMPHASINGMODE in prism.abilities:
+                        mode = "phase_on_station"
                         maneuver.add(
                             UseAbility(
                                 AbilityId.MORPH_WARPPRISMPHASINGMODE, prism
                             )
                         )
-                # else already phased on the pocket — stay
+                    else:
+                        mode = "wait_phase"
+                else:
+                    mode = (
+                        "on_station"
+                        if near_army and near_enemy
+                        else "crawl_with_warps"
+                    )
+                    if dist > 2.0:
+                        maneuver.add(
+                            MoveToSafeTarget(
+                                unit=prism, grid=grid, target=behind
+                            )
+                        )
             else:
-                if prism.type_id == UnitTypeId.WARPPRISMPHASING:
+                # Not on station: fly with the army (and unphase if we drifted
+                # past hysteresis while gates are still ready).
+                mode = "escort" if not near_enemy or far_from_pocket else "hold_transport"
+                if phased and (incomplete == 0) and (
+                    not near_enemy or far_from_pocket
+                ):
+                    mode = "reposition"
                     maneuver.add(
                         UseAbility(
                             AbilityId.MORPH_WARPPRISMTRANSPORTMODE, prism
@@ -168,6 +238,14 @@ def escort_warp_prism():
                     )
                 maneuver.add(
                     MoveToSafeTarget(unit=prism, grid=grid, target=behind)
+                )
+
+            if _last_mode.get(prism.tag) != mode:
+                _last_mode[prism.tag] = mode
+                ctx.log(
+                    f"PRISM {mode} dist={dist:.0f} "
+                    f"enemy={prism_to_enemy:.0f} "
+                    f"warp={int(can_warp)} inc={incomplete}"
                 )
 
             ctx.bot.register_behavior(maneuver)
