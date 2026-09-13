@@ -9,9 +9,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ares.behaviors.macro import BuildStructure
-from cython_extensions import cy_towards
+from ares.consts import BuildingSize
+from cython_extensions import cy_distance_to
 from sc2.ids.unit_typeid import UnitTypeId
-from sc2.position import Point2
 
 from bot.builds.definition import _always
 from bot.core.types import Gate, MacroStep
@@ -20,24 +20,74 @@ if TYPE_CHECKING:
     from bot.core.context import BotContext
 
 
-def _natural_choke_bias(ctx: "BotContext") -> Point2:
-    """A point on the enemy-facing side of our natural.
-
-    Used as `closest_to` so nat Gateway placements pick choke-side formation
-    slots. Prefer ares' PvZ nat gatekeeper tile when map data has one; otherwise
-    lean from the nat toward the enemy spawn.
-
-    Do **not** pass `wall=True` here: ares only precomputes Protoss wall slots
-    for the main ramp (`_calculate_protoss_main_ramp_placements`), so
-    `wall=True` at the nat either falls back to non-wall nat spots or steals
-    the main wall via `find_alternative`.
-    """
+def _nat_wall_first_pylon_present(ctx: "BotContext") -> bool:
+    """True if a pylon occupies (or is building on) the YAML FirstPylon slot."""
     nat = ctx.mediator.get_own_nat
-    gatekeeper = ctx.mediator.get_pvz_nat_gatekeeping_pos
-    if gatekeeper is not None:
-        return gatekeeper
-    enemy = ctx.bot.enemy_start_locations[0]
-    return Point2(cy_towards(nat, enemy, 10.0))
+    placements = ctx.mediator.get_placements_dict
+    if nat not in placements:
+        return False
+    first_slots = [
+        pos
+        for pos, info in placements[nat][BuildingSize.TWO_BY_TWO].items()
+        if info.get("first_pylon")
+    ]
+    if not first_slots:
+        return False
+    pylons = ctx.bot.structures(UnitTypeId.PYLON)
+    return any(
+        cy_distance_to(pylon.position, slot) < 0.75
+        for slot in first_slots
+        for pylon in pylons
+    )
+
+
+def _powered_nat_wall_3x3(
+    ctx: "BotContext",
+    structure_type: UnitTypeId,
+) -> bool:
+    """True if a powered `is_wall` 3x3 is free at own nat (probe only)."""
+    return (
+        ctx.mediator.request_building_placement(
+            base_location=ctx.mediator.get_own_nat,
+            structure_type=structure_type,
+            wall=True,
+            production=True,
+            find_alternative=False,
+            within_psionic_matrix=True,
+            reserve_placement=False,
+        )
+        is not None
+    )
+
+
+def natural_wall_pylon(gate: Gate = _always) -> MacroStep:
+    """Ensure the nat-wall FirstPylon exists so wall 3x3s can receive power.
+
+    Opening should place it via `pylon @ nat_wall`. A nearby production wall
+    pylon is not enough — on Magannatha that only covers 1 of 3 wall 3x3s.
+    """
+
+    def step(ctx: "BotContext"):
+        if not gate(ctx):
+            return None
+
+        if _nat_wall_first_pylon_present(ctx):
+            return None
+
+        nat = ctx.mediator.get_own_nat
+        ctx.log_once(
+            "macro_nat_wall_pylon",
+            "MACRO pylon: placing nat wall FirstPylon for wall power",
+        )
+        return BuildStructure(
+            base_location=nat,
+            structure_id=UnitTypeId.PYLON,
+            wall=True,
+            first_pylon=True,
+            find_alternative=False,
+        )
+
+    return step
 
 
 def gateways(
@@ -54,10 +104,10 @@ def gateways(
     stop at `count`.
 
     When `wall_natural` > 0, the next `wall_natural` Gateways after the
-    opening one are placed at the natural, biased toward the choke (gatekeeper
-    tile or toward-enemy) with `find_alternative=False` so they stay at the
-    nat and do not steal main-ramp wall slots. Remaining Gateways go in the
-    main / production base as before. Formation spacing leaves a unit exit.
+    opening one use ares nat `is_wall` 3x3 slots (`wall=True`, own nat,
+    `find_alternative=False`). Those YAML walls leave a GateKeeper gap so
+    units can exit — do not seal it with extra structures. Remaining
+    Gateways go in the main / production base.
     """
 
     def step(ctx: "BotContext"):
@@ -78,25 +128,126 @@ def gateways(
         )
 
         # Opening Gateway is usually in main (YAML `@ ramp`). While total is
-        # still within 1 + wall_natural, place at the natural choke — not via
-        # ares `wall=True` (main-ramp-only).
+        # still within 1 + wall_natural, take nat wall 3x3 slots.
         use_nat_wall = wall_natural > 0 and total < 1 + wall_natural
         if use_nat_wall:
             nat = ctx.mediator.get_own_nat
-            return BuildStructure(
+            # PoweredPlacementStrategy falls through to non-wall near-pylon
+            # when wall slots are unpowered — wait for FirstPylon coverage.
+            # If no wall 3x3 remains (claimed / rejected), continue in main.
+            if _powered_nat_wall_3x3(ctx, UnitTypeId.GATEWAY):
+                ctx.log_once(
+                    "macro_gateways_nat_wall",
+                    f"MACRO gateways: nat wall slot "
+                    f"(have {total}, want {wall_natural} at nat)",
+                )
+                return BuildStructure(
+                    base_location=nat,
+                    structure_id=UnitTypeId.GATEWAY,
+                    to_count=max(0, count - warpgates),
+                    wall=True,
+                    production=True,
+                    find_alternative=False,
+                )
+            unpowered = ctx.mediator.request_building_placement(
                 base_location=nat,
-                structure_id=UnitTypeId.GATEWAY,
-                to_count=max(0, count - warpgates),
-                wall=False,
+                structure_type=UnitTypeId.GATEWAY,
+                wall=True,
                 production=True,
-                closest_to=_natural_choke_bias(ctx),
                 find_alternative=False,
+                within_psionic_matrix=False,
+                reserve_placement=False,
+            )
+            if unpowered is not None:
+                ctx.log_once(
+                    "macro_gateways_nat_wall_wait",
+                    "MACRO gateways: waiting for powered nat wall 3x3",
+                )
+                return None
+            ctx.log_once(
+                "macro_gateways_nat_wall_full",
+                "MACRO gateways: nat wall full; remaining in main",
             )
 
         return BuildStructure(
             base_location=ctx.production_location,
             structure_id=UnitTypeId.GATEWAY,
             to_count=max(0, count - warpgates),
+        )
+
+    return step
+
+
+def robotics_facility_at_natural_wall(
+    count: int = 1,
+    gate: Gate = _always,
+) -> MacroStep:
+    """Place Robotics Facility into a natural wall 3x3 slot when one is free.
+
+    Shares `ThreeByThreesWall` with nat Gateways. Wait while wall slots exist
+    but lack power (FirstPylon still missing). Fall back to main only when no
+    wall 3x3 remains at all.
+    """
+
+    def step(ctx: "BotContext"):
+        if not gate(ctx):
+            return None
+        have = (
+            ctx.bot.structures(UnitTypeId.ROBOTICSFACILITY).amount
+            + ctx.bot.structure_pending(UnitTypeId.ROBOTICSFACILITY)
+        )
+        if have >= count:
+            return None
+
+        nat = ctx.mediator.get_own_nat
+        wall_pos = ctx.mediator.request_building_placement(
+            base_location=nat,
+            structure_type=UnitTypeId.ROBOTICSFACILITY,
+            wall=True,
+            production=True,
+            find_alternative=False,
+            within_psionic_matrix=True,
+            reserve_placement=False,
+        )
+        if wall_pos is not None:
+            ctx.log_once(
+                "macro_robo_nat_wall",
+                f"MACRO robotics: nat wall slot (have {have}, want {count})",
+            )
+            return BuildStructure(
+                base_location=nat,
+                structure_id=UnitTypeId.ROBOTICSFACILITY,
+                to_count=count,
+                wall=True,
+                production=True,
+                find_alternative=False,
+            )
+
+        # Unpowered wall slot still free → wait for FirstPylon, don't main-bail.
+        unpowered = ctx.mediator.request_building_placement(
+            base_location=nat,
+            structure_type=UnitTypeId.ROBOTICSFACILITY,
+            wall=True,
+            production=True,
+            find_alternative=False,
+            within_psionic_matrix=False,
+            reserve_placement=False,
+        )
+        if unpowered is not None:
+            ctx.log_once(
+                "macro_robo_nat_wall_wait",
+                "MACRO robotics: waiting for powered nat wall 3x3",
+            )
+            return None
+
+        ctx.log_once(
+            "macro_robo_main_fallback",
+            "MACRO robotics: no nat wall 3x3 left; placing in main",
+        )
+        return BuildStructure(
+            base_location=ctx.production_location,
+            structure_id=UnitTypeId.ROBOTICSFACILITY,
+            to_count=count,
         )
 
     return step

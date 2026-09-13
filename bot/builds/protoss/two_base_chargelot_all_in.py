@@ -13,7 +13,8 @@ go into Gates and Zealots; leave a trickle for Stalkers / Prism / Obs.
 Intended hit: leave ~5:20, on the enemy base ~5:45 with Warp Prism
 phasing behind the ball, Observer overhead, and a few Stalkers (wshadows
 PvT guide). Opening worker harasses until ~1:48; Adept shades and hits the
-natural at 3:00. Gateways 2-4 wall the natural.
+natural at 3:00. Around 3:30, Gateways 2-3 and the Robotics Facility fill
+the natural wall (GateKeeper gap left open for army exit).
 """
 
 from __future__ import annotations
@@ -101,17 +102,19 @@ BUILD = BuildDefinition(
         p.pylon_buffer(min_left=32, max_pending=4, gate=lambda ctx: ctx.build_completed),
     ),
     macro_steps=(
+        # Wall FirstPylon before Gate/Robo so ThreeByThreesWall slots have power.
+        # Opening already places `pylon @ nat_wall`; this is a safety net.
+        p.natural_wall_pylon(gate=gates.upgrade_started(CHARGE)),
         # Gates before Robo so the 8-Gate commit is never waiting on gas units.
-        # Gates 2-4 at the natural choke (closest_to gatekeeper/enemy; not ares
-        # wall=True — that is main-ramp-only). Exit path left by formation.
-        # Opening already placed Gateway 1; wall_natural covers the next 3.
+        # Opening Gateway 1 is in main (@ ramp). Gates 2-3 take nat wall 3x3
+        # slots (~3:30); Robo prefers a third wall slot, else falls back to main.
+        # GateKeeper gap stays open for exit. See protoss_building_placements.yml.
         p.gateways(
             GATEWAY_COUNT,
             gate=gates.upgrade_started(CHARGE),
-            wall_natural=3,
+            wall_natural=2,
         ),
-        c.structure(
-            UnitTypeId.ROBOTICSFACILITY,
+        p.robotics_facility_at_natural_wall(
             1,
             gate=gates.upgrade_started(CHARGE),
         ),

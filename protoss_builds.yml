@@ -63,7 +63,9 @@ Builds:
             - 20 core @ ramp
             - 20 chrono @ nexus
             - 21 gas
-            - 22 pylon @ nat
+            # Wall FirstPylon — powers Gateways 2-3 + Robo in ThreeByThreesWall.
+            # `@ nat` alone often lands too far from the wall choke.
+            - 22 pylon @ nat_wall
             - 22 adept
             - 22 chrono @ gateway
             - 22 twilightcouncil

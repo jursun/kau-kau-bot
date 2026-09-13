@@ -1,0 +1,218 @@
+# KauKauBot Protoss custom placements (overrides/merges ares defaults).
+# Nat wall under VsAll so VsTerran (ares: reaper-only) still gets 3x3 wall slots.
+# Coords from ares VsZerg nat walls; PylonsWall renamed to Pylons (ares applies that key).
+# Order matters: ThreeByThreesWall before Pylons so wall 3x3s win avoid-grid
+# conflicts (Persephone Lower: production pylon sat on a wall slot).
+# ThreeByThreesWall + GateKeeper leave a unit-width exit — fill with 2 Gate + Robo only;
+# do not place a fourth structure on the GateKeeper gap.
+# MapPool: Incorporeal, LeyLines, Magannatha, Persephone, Pylon, Torches, Ultralove.
+
+Incorporeal:
+  UpperSpawn:
+    VsAll:
+      FirstPylon:
+        # natural wall
+        - [ [ 62.0, 134.0 ] ]
+      ThreeByThreesWall:
+        # natural wall
+        - [ [ 62.5, 128.5 ], [ 59.5, 129.5 ], [ 66.5, 129.5 ] ]
+      GateKeeper:
+        # natural wall
+        - [ [ 64.5, 128.5 ] ]
+      Pylons:
+        # natural wall
+        - [ [ 62.0, 131.0 ] ]
+  LowerSpawn:
+    VsAll:
+      FirstPylon:
+        # natural wall
+        - [ [ 94.0, 31.0 ] ]
+      ThreeByThreesWall:
+        # natural wall
+        - [ [ 89.5, 34.5 ], [ 93.5, 36.5 ], [ 96.5, 34.5 ] ]
+      GateKeeper:
+        # natural wall
+        - [ [ 91.5, 36.5 ] ]
+      Pylons:
+        # natural wall
+        - [ [ 94.0, 34.0 ] ]
+
+LeyLines:
+  UpperSpawn:
+    VsAll:
+      FirstPylon:
+        # natural wall
+        - [ [ 153.0, 105.0 ] ]
+      ThreeByThreesWall:
+        # natural wall
+        - [ [ 147.5, 107.5 ], [ 148.5, 103.5 ], [ 149.5, 100.5 ] ]
+      GateKeeper:
+        # natural wall
+        - [ [ 147.5, 105.5 ] ]
+      Pylons:
+        # natural wall
+        - [ [ 151.0, 103.0 ] ]
+  LowerSpawn:
+    VsAll:
+      FirstPylon:
+        # natural wall
+        - [ [ 45.0, 69.0 ] ]
+      ThreeByThreesWall:
+        # natural wall
+        - [ [ 50.5, 66.5 ], [ 49.5, 70.5 ], [ 48.5, 73.5 ] ]
+      GateKeeper:
+        # natural wall
+        - [ [ 50.5, 68.5 ] ]
+      Pylons:
+        # natural wall
+        - [ [ 47.0, 70.0 ] ]
+
+Magannatha:
+  UpperSpawn:
+    VsAll:
+      FirstPylon:
+        # natural wall
+        - [ [ 32.0, 114.0 ] ]
+      ThreeByThreesWall:
+        # natural wall
+        - [ [ 37.5, 113.5 ], [ 36.5, 110.5 ], [ 32.5, 108.5 ] ]
+      GateKeeper:
+        # natural wall
+        - [ [ 34.5, 109.5 ] ]
+      Pylons:
+        # natural wall
+        - [ [ 33.0, 116.0 ] ]
+  LowerSpawn:
+    VsAll:
+      FirstPylon:
+        # natural wall
+        - [ [ 114.0, 32.0 ] ]
+      ThreeByThreesWall:
+        # natural wall
+        - [ [ 113.5, 37.5 ], [ 110.5, 36.5 ], [ 108.5, 32.5 ] ]
+      GateKeeper:
+        # natural wall
+        - [ [ 109.5, 34.5 ] ]
+      Pylons:
+        # natural wall
+        - [ [ 116.0, 33.0 ] ]
+
+Persephone:
+  UpperSpawn:
+    VsAll:
+      FirstPylon:
+        # natural wall
+        - [ [ 69.0, 144.0 ] ]
+      ThreeByThreesWall:
+        # natural wall
+        - [ [ 71.5, 138.5 ], [ 73.5, 142.5 ], [ 74.5, 145.5 ] ]
+      GateKeeper:
+        # natural wall
+        - [ [ 72.5, 140.5 ] ]
+      Pylons:
+        # natural wall
+        - [ [ 71.0, 145.0 ] ]
+  LowerSpawn:
+    VsAll:
+      FirstPylon:
+        # natural wall
+        - [ [ 69.0, 36.0 ] ]
+      ThreeByThreesWall:
+        # natural wall
+        - [ [ 74.5, 35.5 ], [ 72.5, 39.5 ], [ 69.5, 41.5 ] ]
+      GateKeeper:
+        # natural wall
+        - [ [ 73.5, 37.5 ] ]
+      Pylons:
+        # natural wall
+        - [ [ 71.0, 39.0 ] ]
+
+Pylon:
+  UpperSpawn:
+    VsAll:
+      FirstPylon:
+        # natural wall
+        - [ [ 104.0, 169.0 ] ]
+      ThreeByThreesWall:
+        # natural wall
+        - [ [ 104.5, 163.5 ], [ 107.5, 164.5 ], [ 109.5, 168.5 ] ]
+      GateKeeper:
+        # natural wall
+        - [ [ 108.5, 166.5 ] ]
+      Pylons:
+        # natural wall
+        - [ [ 105.0, 166.0 ] ]
+  LowerSpawn:
+    VsAll:
+      FirstPylon:
+        # natural wall
+        - [ [ 143.0, 78.0 ] ]
+      ThreeByThreesWall:
+        # natural wall
+        - [ [ 144.5, 83.5 ], [ 140.5, 82.5 ], [ 138.5, 79.5 ] ]
+      GateKeeper:
+        # natural wall
+        - [ [ 142.5, 83.5 ] ]
+      Pylons:
+        # natural wall
+        - [ [ 141.0, 80.0 ] ]
+
+Torches:
+  UpperSpawn:
+    VsAll:
+      FirstPylon:
+        # natural wall
+        - [ [ 92.0, 154.0 ] ]
+      ThreeByThreesWall:
+        # natural wall
+        - [ [ 91.5, 148.5 ], [ 90.5, 151.5 ], [ 86.5, 153.5 ] ]
+      GateKeeper:
+        # natural wall
+        - [ [ 88.5, 152.5 ] ]
+      Pylons:
+        # natural wall
+        - [ [ 90.0, 154.0 ] ]
+  LowerSpawn:
+    VsAll:
+      FirstPylon:
+        # natural wall
+        - [ [ 92.0, 54.0 ] ]
+      ThreeByThreesWall:
+        # natural wall
+        - [ [ 91.5, 59.5 ], [ 89.5, 55.5 ], [ 86.5, 55.5 ] ]
+      GateKeeper:
+        # natural wall
+        - [ [ 90.5, 57.5 ] ]
+      Pylons:
+        # natural wall
+        - [ [ 90.0, 53.0 ] ]
+
+Ultralove:
+  UpperSpawn:
+    VsAll:
+      FirstPylon:
+        # natural wall
+        - [ [ 110.0, 138.0 ] ]
+      ThreeByThreesWall:
+        # natural wall
+        - [ [ 111.5, 132.5 ], [ 110.5, 135.5 ], [ 106.5, 137.5 ] ]
+      GateKeeper:
+        # natural wall
+        - [ [ 108.5, 136.5 ] ]
+      Pylons:
+        # natural wall
+        - [ [ 113.0, 135.0 ] ]
+  LowerSpawn:
+    VsAll:
+      FirstPylon:
+        # natural wall
+        - [ [ 73.0, 46.0 ] ]
+      ThreeByThreesWall:
+        # natural wall
+        - [ [ 72.5, 51.5 ], [ 73.5, 48.5 ], [ 77.5, 46.5 ] ]
+      GateKeeper:
+        # natural wall
+        - [ [ 75.5, 47.5 ] ]
+      Pylons:
+        # natural wall
+        - [ [ 71.0, 48.0 ] ]
