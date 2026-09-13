@@ -94,6 +94,21 @@ class RunState:
     current Depot - same meaning as `CrewMember.queued`."""
     protoss_builder_tag: int | None = None
     """Dedicated Probe for macro construction (`PERSISTENT_BUILDER`)."""
+    adept_shade_cast_at: dict[int, float] = field(default_factory=dict)
+    """Adept tag → game time when its current shade was cast."""
+    adept_shade_goal: dict[int, Point2] = field(default_factory=dict)
+    """Adept tag → final destination the shade should path toward."""
+    adept_shade_aborted: set[int] = field(default_factory=set)
+    """Adept tags whose shade was CANCEL'd (no teleport) for danger."""
+    adept_shade_last_pos: dict[int, Point2] = field(default_factory=dict)
+    """Adept tag → last seen shade position (teleport verification)."""
+    adept_shade_awaiting_teleport: set[int] = field(default_factory=set)
+    """Tags whose shade expired safely — next frame check adept jumped."""
+    adept_attack_pending: dict[int, int] = field(default_factory=dict)
+    """Adept tag → enemy tag for an attack issued while weapon_cd was 0.
+    Cleared once weapon_cooldown rises so we do not re-issue and cancel windup."""
+    adept_last_action: str | None = None
+    """Last ADEPT action log line — only re-log on change."""
     hunt_objective: Point2 | None = None
     """Single army-wide scout/cleanup destination while hunting remaining
     bases after the enemy main falls - see `targeting.hunt_remaining_bases`.
