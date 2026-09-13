@@ -92,6 +92,8 @@ class RunState:
     supply_depot_queued: bool = False
     """True while the Depot builder is in ares' building tracker for its
     current Depot - same meaning as `CrewMember.queued`."""
+    protoss_builder_tag: int | None = None
+    """Dedicated Probe for macro construction (`PERSISTENT_BUILDER`)."""
     hunt_objective: Point2 | None = None
     """Single army-wide scout/cleanup destination while hunting remaining
     bases after the enemy main falls - see `targeting.hunt_remaining_bases`.

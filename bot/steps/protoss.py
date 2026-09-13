@@ -8,11 +8,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ares.behaviors.macro import BuildStructure
 from ares.consts import BuildingSize
 from cython_extensions import cy_distance_to
 from sc2.ids.unit_typeid import UnitTypeId
 
+from bot.behaviors.protoss import (
+    ProtossAutoSupply,
+    ProtossBuildStructure,
+    ProtossExpansionController,
+    ProtossGasBuildingController,
+)
 from bot.builds.definition import _always
 from bot.core.types import Gate, MacroStep
 
@@ -41,11 +46,13 @@ def _nat_wall_first_pylon_present(ctx: "BotContext") -> bool:
     )
 
 
-def _powered_nat_wall_3x3(
+def _nat_wall_3x3_available(
     ctx: "BotContext",
     structure_type: UnitTypeId,
+    *,
+    powered: bool,
 ) -> bool:
-    """True if a powered `is_wall` 3x3 is free at own nat (probe only)."""
+    """True if an `is_wall` 3x3 at own nat is free (powered filter optional)."""
     return (
         ctx.mediator.request_building_placement(
             base_location=ctx.mediator.get_own_nat,
@@ -53,11 +60,19 @@ def _powered_nat_wall_3x3(
             wall=True,
             production=True,
             find_alternative=False,
-            within_psionic_matrix=True,
+            within_psionic_matrix=powered,
             reserve_placement=False,
         )
         is not None
     )
+
+
+def _powered_nat_wall_3x3(
+    ctx: "BotContext",
+    structure_type: UnitTypeId,
+) -> bool:
+    """True if a powered `is_wall` 3x3 is free at own nat (probe only)."""
+    return _nat_wall_3x3_available(ctx, structure_type, powered=True)
 
 
 def natural_wall_pylon(gate: Gate = _always) -> MacroStep:
@@ -79,13 +94,38 @@ def natural_wall_pylon(gate: Gate = _always) -> MacroStep:
             "macro_nat_wall_pylon",
             "MACRO pylon: placing nat wall FirstPylon for wall power",
         )
-        return BuildStructure(
+        return ProtossBuildStructure(
             base_location=nat,
             structure_id=UnitTypeId.PYLON,
             wall=True,
             first_pylon=True,
             find_alternative=False,
         )
+
+    return step
+
+
+def auto_supply(gate: Gate = _always) -> MacroStep:
+    """Protoss supply via the dedicated macro builder Probe."""
+
+    def step(ctx: "BotContext"):
+        if not gate(ctx):
+            return None
+        return ProtossAutoSupply(ctx.production_location)
+
+    return step
+
+
+def expansions() -> MacroStep:
+    def step(ctx: "BotContext"):
+        return ProtossExpansionController(to_count=ctx.build.economy.max_bases)
+
+    return step
+
+
+def gas_buildings() -> MacroStep:
+    def step(ctx: "BotContext"):
+        return ProtossGasBuildingController(to_count=ctx.gas_target)
 
     return step
 
@@ -141,7 +181,7 @@ def gateways(
                     f"MACRO gateways: nat wall slot "
                     f"(have {total}, want {wall_natural} at nat)",
                 )
-                return BuildStructure(
+                return ProtossBuildStructure(
                     base_location=nat,
                     structure_id=UnitTypeId.GATEWAY,
                     to_count=max(0, count - warpgates),
@@ -149,27 +189,31 @@ def gateways(
                     production=True,
                     find_alternative=False,
                 )
-            unpowered = ctx.mediator.request_building_placement(
-                base_location=nat,
-                structure_type=UnitTypeId.GATEWAY,
-                wall=True,
-                production=True,
-                find_alternative=False,
-                within_psionic_matrix=False,
-                reserve_placement=False,
+            unpowered = _nat_wall_3x3_available(
+                ctx, UnitTypeId.GATEWAY, powered=False
             )
-            if unpowered is not None:
+            # Wait only while FirstPylon is still missing. Once it exists,
+            # leftover unpowered wall slots will never gain power — continue
+            # in main instead of stalling the 8-Gate commit.
+            if unpowered and not _nat_wall_first_pylon_present(ctx):
                 ctx.log_once(
                     "macro_gateways_nat_wall_wait",
                     "MACRO gateways: waiting for powered nat wall 3x3",
                 )
                 return None
-            ctx.log_once(
-                "macro_gateways_nat_wall_full",
-                "MACRO gateways: nat wall full; remaining in main",
-            )
+            if unpowered:
+                ctx.log_once(
+                    "macro_gateways_nat_wall_unpowered",
+                    "MACRO gateways: wall slots unpowered after FirstPylon; "
+                    "remaining in main",
+                )
+            else:
+                ctx.log_once(
+                    "macro_gateways_nat_wall_full",
+                    "MACRO gateways: nat wall full; remaining in main",
+                )
 
-        return BuildStructure(
+        return ProtossBuildStructure(
             base_location=ctx.production_location,
             structure_id=UnitTypeId.GATEWAY,
             to_count=max(0, count - warpgates),
@@ -184,9 +228,8 @@ def robotics_facility_at_natural_wall(
 ) -> MacroStep:
     """Place Robotics Facility into a natural wall 3x3 slot when one is free.
 
-    Shares `ThreeByThreesWall` with nat Gateways. Wait while wall slots exist
-    but lack power (FirstPylon still missing). Fall back to main only when no
-    wall 3x3 remains at all.
+    Shares `ThreeByThreesWall` with nat Gateways. Wait while FirstPylon is
+    still missing. Fall back to main when no powered wall 3x3 remains.
     """
 
     def step(ctx: "BotContext"):
@@ -200,21 +243,12 @@ def robotics_facility_at_natural_wall(
             return None
 
         nat = ctx.mediator.get_own_nat
-        wall_pos = ctx.mediator.request_building_placement(
-            base_location=nat,
-            structure_type=UnitTypeId.ROBOTICSFACILITY,
-            wall=True,
-            production=True,
-            find_alternative=False,
-            within_psionic_matrix=True,
-            reserve_placement=False,
-        )
-        if wall_pos is not None:
+        if _powered_nat_wall_3x3(ctx, UnitTypeId.ROBOTICSFACILITY):
             ctx.log_once(
                 "macro_robo_nat_wall",
                 f"MACRO robotics: nat wall slot (have {have}, want {count})",
             )
-            return BuildStructure(
+            return ProtossBuildStructure(
                 base_location=nat,
                 structure_id=UnitTypeId.ROBOTICSFACILITY,
                 to_count=count,
@@ -223,17 +257,10 @@ def robotics_facility_at_natural_wall(
                 find_alternative=False,
             )
 
-        # Unpowered wall slot still free → wait for FirstPylon, don't main-bail.
-        unpowered = ctx.mediator.request_building_placement(
-            base_location=nat,
-            structure_type=UnitTypeId.ROBOTICSFACILITY,
-            wall=True,
-            production=True,
-            find_alternative=False,
-            within_psionic_matrix=False,
-            reserve_placement=False,
-        )
-        if unpowered is not None:
+        # Unpowered wall slot still free → wait only until FirstPylon exists.
+        if _nat_wall_3x3_available(
+            ctx, UnitTypeId.ROBOTICSFACILITY, powered=False
+        ) and not _nat_wall_first_pylon_present(ctx):
             ctx.log_once(
                 "macro_robo_nat_wall_wait",
                 "MACRO robotics: waiting for powered nat wall 3x3",
@@ -242,9 +269,9 @@ def robotics_facility_at_natural_wall(
 
         ctx.log_once(
             "macro_robo_main_fallback",
-            "MACRO robotics: no nat wall 3x3 left; placing in main",
+            "MACRO robotics: no powered nat wall 3x3; placing in main",
         )
-        return BuildStructure(
+        return ProtossBuildStructure(
             base_location=ctx.production_location,
             structure_id=UnitTypeId.ROBOTICSFACILITY,
             to_count=count,
@@ -275,7 +302,7 @@ def pylon_buffer(
             return None
         if ctx.bot.structure_pending(UnitTypeId.PYLON) >= max_pending:
             return None
-        return BuildStructure(
+        return ProtossBuildStructure(
             base_location=ctx.production_location,
             structure_id=UnitTypeId.PYLON,
         )

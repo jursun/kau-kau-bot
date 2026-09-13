@@ -90,6 +90,8 @@ BUILD = BuildDefinition(
         wave_stage_label="Chargelot All-In",
     ),
     always=(
+        # Mining/gas every frame. Supply lives in macro_steps (after Gates/Robo)
+        # so the dedicated builder prefers production over pylons.
         c.mining(),
         # Full gas until Charge is under way, then peel for mineral flood.
         # Keep one per geyser so Robo units / extra Stalkers stay fundable.
@@ -97,9 +99,6 @@ BUILD = BuildDefinition(
             pull_off=gates.upgrade_started(CHARGE),
             when_pulled=1,
         ),
-        # Outside MacroPlan so 8-Gate warpins cannot starve pylon placement.
-        c.auto_supply(gate=lambda ctx: ctx.build_completed),
-        p.pylon_buffer(min_left=32, max_pending=4, gate=lambda ctx: ctx.build_completed),
     ),
     macro_steps=(
         # Wall FirstPylon before Gate/Robo so ThreeByThreesWall slots have power.
@@ -118,8 +117,11 @@ BUILD = BuildDefinition(
             1,
             gate=gates.upgrade_started(CHARGE),
         ),
-        c.expansions(),
-        c.gas_buildings(),
+        # After production so the single builder prefers Gates/Robo when needed.
+        p.auto_supply(gate=lambda ctx: ctx.build_completed),
+        p.pylon_buffer(min_left=32, max_pending=4, gate=lambda ctx: ctx.build_completed),
+        p.expansions(),
+        p.gas_buildings(),
         c.upgrades(),
         c.build_workers(),
         c.spawn_army(),
