@@ -67,10 +67,12 @@ class RunState:
     worker_harass_returning: bool = False
     worker_harass_last_action: str | None = None
     worker_harass_gas_scouted: bool = False
+    """True once the opening base-circle scout lap is finished."""
     worker_harass_enemy_has_gas: bool = False
     worker_harass_geysers_seen: set[tuple[float, float]] = field(
         default_factory=set
     )
+    """Visited base-circle waypoint keys (rounded x,y) during the scout lap."""
     worker_harass_focus_tag: int | None = None
     worker_harass_known_builders: set[int] = field(default_factory=set)
     worker_harass_worker_dists: dict[int, float] = field(default_factory=dict)
