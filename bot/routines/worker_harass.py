@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ares.behaviors.combat.individual import AMove, AttackTarget
+from ares.behaviors.combat.individual import AMove
 from ares.consts import ID, UnitRole, UnitTreeQueryType
 from cython_extensions import cy_center, cy_closest_to, cy_distance_to, cy_towards
 from sc2.data import Race
@@ -30,6 +30,8 @@ HOME_TIME: float = 1 * 60 + 48
 MIN_WORKERS_TO_CLAIM: int = 14
 HOME_ARRIVE: float = 15.0
 APPROACH_RADIUS: float = 28.0
+# Stay in the enemy main — do not chase scouting/fleeing workers map-wide.
+HARASS_BASE_RADIUS: float = 16.0
 # Get main vision before walking geysers so unfinished buildings redirect first.
 GAS_SCOUT_ENTER: float = 12.0
 KITE_MAIN_RADIUS: float = 14.0
@@ -70,7 +72,6 @@ OPENING_BUILDING: dict[Race, UnitTypeId | None] = {
 }
 
 VITAL_RESUME: float = 0.35
-VITAL_RESUME_CLEAR: float = 0.12
 # Below half vitals, one damage source starts kite; otherwise need two.
 VITAL_KITE_SINGLE: float = 0.5
 # Enemies this close count as hit sources when we lose vitals.
@@ -97,24 +98,20 @@ MW_BURST: float = 0.8
 # MW_SPENT = already peeled this kite (move-only until resume).
 MW_SPENT: float = -1.0
 
-
 # --- helpers ----------------------------------------------------------------
 
 def _vital(unit) -> float:
     return float(unit.health + unit.shield)
 
-
 def _vital_pct(unit) -> float:
     mx = float(unit.health_max + unit.shield_max)
     return _vital(unit) / mx if mx > 0 else 1.0
-
 
 def _log(ctx: "BotContext", action: str) -> None:
     if ctx.state.worker_harass_last_action == action:
         return
     ctx.state.worker_harass_last_action = action
     ctx.log(f"HARASS {action}")
-
 
 def _order_name(unit) -> str:
     orders = getattr(unit, "orders", None) or ()
@@ -127,11 +124,9 @@ def _order_name(unit) -> str:
         or ""
     )
 
-
 def _is_gather_order(name: str) -> bool:
     low = name.lower()
     return "gather" in low or "harvest" in low
-
 
 def _cancel_gather(scout) -> bool:
     """Stop a stuck mineral-walk gather so attack/move can take over."""
@@ -139,7 +134,6 @@ def _cancel_gather(scout) -> bool:
         return False
     scout.stop()
     return True
-
 
 def _unit_by_tag(ctx: "BotContext", tag: int | None):
     if tag is None:
@@ -149,25 +143,49 @@ def _unit_by_tag(ctx: "BotContext", tag: int | None):
             return u
     return None
 
-
 def _hit_sources(ctx: "BotContext", scout) -> list:
-    """Enemy units close enough to be dealing the damage we just took."""
+    """Enemy workers close enough to be dealing the damage we just took."""
     return [
         u
         for u in ctx.bot.enemy_units
-        if not u.is_structure
+        if u.type_id in ENEMY_WORKERS
+        and not u.is_structure
         and cy_distance_to(scout.position, u.position) <= HIT_SOURCE_RADIUS
     ]
 
+def _remember_hit_sources(
+    ctx: "BotContext",
+    scout,
+    *,
+    damage_hint: float | None = None,
+) -> int:
+    """Stamp likely hitters; return unique count in the memory window.
 
-def _remember_hit_sources(ctx: "BotContext", scout) -> int:
-    """Stamp nearby enemies as recent hitters; return unique count in window."""
+    With a damage hint, only stamp ~dmg/5 nearest workers so one swing does
+    not treat the whole mineral line as hit sources.
+    """
     now = ctx.bot.time
     recent = ctx.state.worker_harass_hit_sources
-    for u in _hit_sources(ctx, scout):
+    nearby = _hit_sources(ctx, scout)
+    if damage_hint is not None and damage_hint > 0:
+        n = max(1, int(round(float(damage_hint) / 5.0)))
+        nearby = sorted(
+            nearby,
+            key=lambda u: cy_distance_to(scout.position, u.position),
+        )[:n]
+    for u in nearby:
         recent[u.tag] = now
     return _prune_hit_sources(ctx)
 
+def _warm_hit_sources(ctx: "BotContext", scout) -> int:
+    """While kiting, refresh only already-known hitters still in range."""
+    now = ctx.bot.time
+    recent = ctx.state.worker_harass_hit_sources
+    nearby_tags = {u.tag for u in _hit_sources(ctx, scout)}
+    for tag in list(recent):
+        if tag in nearby_tags:
+            recent[tag] = now
+    return _prune_hit_sources(ctx)
 
 def _prune_hit_sources(ctx: "BotContext") -> int:
     now = ctx.bot.time
@@ -178,24 +196,27 @@ def _prune_hit_sources(ctx: "BotContext") -> int:
         del recent[tag]
     return len(recent)
 
-
 def _should_kite_from_hits(scout, source_count: int) -> bool:
     """Kite gate: 2 hit sources normally; 1 when under half vitals."""
     need = 1 if _vital_pct(scout) < VITAL_KITE_SINGLE else 2
     return source_count >= need
-
 
 def _pick_focus(scout, group, focus_tag: int | None):
     if focus_tag is not None:
         for u in group:
             if u.tag == focus_tag:
                 return u
-    return min(group, key=lambda u: _vital(u))
-
+    # Closest first, then lowest vitals (avoids walking through the pack).
+    return min(
+        group,
+        key=lambda u: (
+            cy_distance_to(scout.position, u.position),
+            _vital(u),
+        ),
+    )
 
 def _incomplete(ctx: "BotContext"):
     return [s for s in ctx.bot.enemy_structures if 0 < s.build_progress < 1]
-
 
 def _workers_on_site(ctx: "BotContext", structure, radius: float = BUILDER_RADIUS):
     """Enemy workers physically on an unfinished building."""
@@ -206,7 +227,6 @@ def _workers_on_site(ctx: "BotContext", structure, radius: float = BUILDER_RADIU
         and not u.is_structure
         and cy_distance_to(u.position, structure.position) <= radius
     ]
-
 
 def _pick_builder_on_site(structure, workers, focus_tag: int | None):
     """Prefer the worker closest to the unfinished building (the real builder)."""
@@ -219,8 +239,7 @@ def _pick_builder_on_site(structure, workers, focus_tag: int | None):
         key=lambda u: cy_distance_to(u.position, structure.position),
     )
 
-
-def _building_workers(ctx: "BotContext"):
+def _building_workers(ctx: "BotContext", enemy_main: Point2 | None = None):
     """Workers constructing (API has no is_constructing)."""
     workers = []
     seen: set[int] = set()
@@ -259,7 +278,12 @@ def _building_workers(ctx: "BotContext"):
     if incomplete:
         for tag in list(ctx.state.worker_harass_known_builders):
             unit = _unit_by_tag(ctx, tag)
-            if unit is None:
+            # Zerg morph reuses the drone tag as the unfinished building.
+            if (
+                unit is None
+                or unit.is_structure
+                or unit.type_id not in ENEMY_WORKERS
+            ):
                 ctx.state.worker_harass_known_builders.discard(tag)
                 continue
             if tag in seen:
@@ -276,8 +300,9 @@ def _building_workers(ctx: "BotContext"):
     else:
         ctx.state.worker_harass_known_builders.clear()
 
+    if enemy_main is not None:
+        workers = [u for u in workers if _in_enemy_base(u, enemy_main)]
     return workers
-
 
 def _closest_incomplete(ctx: "BotContext", scout):
     incomplete = _incomplete(ctx)
@@ -285,12 +310,13 @@ def _closest_incomplete(ctx: "BotContext", scout):
         return None
     return cy_closest_to(position=scout.position, units=incomplete)
 
-
-def _gas_workers(ctx: "BotContext"):
+def _gas_workers(ctx: "BotContext", enemy_main: Point2 | None = None):
     gases = [s for s in ctx.bot.enemy_structures if s.type_id in GAS_STRUCTURES]
     workers = []
     for u in ctx.bot.enemy_units:
         if u.type_id not in ENEMY_WORKERS or u.is_structure:
+            continue
+        if enemy_main is not None and not _in_enemy_base(u, enemy_main):
             continue
         if getattr(u, "is_carrying_vespene", False):
             workers.append(u)
@@ -301,17 +327,21 @@ def _gas_workers(ctx: "BotContext"):
                 break
     return workers
 
+def _in_enemy_base(unit, enemy_main: Point2) -> bool:
+    return cy_distance_to(unit.position, enemy_main) <= HARASS_BASE_RADIUS
 
 def _mineral_workers(ctx: "BotContext", enemy_main: Point2):
     minerals = ctx.bot.mineral_field.closer_than(15, enemy_main)
     if not minerals:
         return []
-    skip = {u.tag for u in _building_workers(ctx)} | {
-        u.tag for u in _gas_workers(ctx)
+    skip = {u.tag for u in _building_workers(ctx, enemy_main)} | {
+        u.tag for u in _gas_workers(ctx, enemy_main)
     }
     workers = []
     for u in ctx.bot.enemy_units:
         if u.type_id not in ENEMY_WORKERS or u.is_structure or u.tag in skip:
+            continue
+        if not _in_enemy_base(u, enemy_main):
             continue
         if getattr(u, "is_carrying_minerals", False):
             workers.append(u)
@@ -322,20 +352,20 @@ def _mineral_workers(ctx: "BotContext", enemy_main: Point2):
                 break
     return workers
 
-
-def _low_hp_workers(ctx: "BotContext"):
+def _low_hp_workers(ctx: "BotContext", enemy_main: Point2):
+    """Low-HP workers still inside the enemy main (not map-wide chase)."""
     workers = []
     for u in ctx.bot.enemy_units:
         if u.type_id not in ENEMY_WORKERS or u.is_structure:
+            continue
+        if not _in_enemy_base(u, enemy_main):
             continue
         if _vital_pct(u) < LOW_HP_FRACTION:
             workers.append(u)
     return workers
 
-
 def _geyser_key(pos: Point2) -> tuple[float, float]:
     return (round(float(pos.x), 1), round(float(pos.y), 1))
-
 
 def _gas_move_target(ctx: "BotContext", scout, enemy_main: Point2) -> Point2 | None:
     """Next main-geyser waypoint. Visits both geysers before marking done."""
@@ -385,47 +415,102 @@ def _gas_move_target(ctx: "BotContext", scout, enemy_main: Point2) -> Point2 | N
 
     return cy_closest_to(position=scout.position, units=unchecked).position
 
-
 def _harass_target(ctx: "BotContext", scout, enemy_main: Point2):
-    tiers: list[tuple[str, list]] = [("builder", _building_workers(ctx))]
+    tiers: list[tuple[str, list]] = [
+        ("builder", _building_workers(ctx, enemy_main))
+    ]
     if ctx.state.worker_harass_enemy_has_gas:
-        tiers.append(("gas", _gas_workers(ctx)))
-    tiers.append(("low_hp", _low_hp_workers(ctx)))
+        tiers.append(("gas", _gas_workers(ctx, enemy_main)))
+    tiers.append(("low_hp", _low_hp_workers(ctx, enemy_main)))
     tiers.append(("minerals", _mineral_workers(ctx, enemy_main)))
     focus = ctx.state.worker_harass_focus_tag
+    # Drop focus that left the main (no map-wide chase).
+    if focus is not None:
+        focus_u = _unit_by_tag(ctx, focus)
+        if focus_u is None or not _in_enemy_base(focus_u, enemy_main):
+            ctx.state.worker_harass_focus_tag = None
+            focus = None
     for name, group in tiers:
         if group:
             return name, _pick_focus(scout, group, focus)
     return None, None
 
-
-def _attack(ctx: "BotContext", scout, priority: str, target) -> None:
+def _attack(
+    ctx: "BotContext",
+    scout,
+    priority: str,
+    target,
+    enemy_main: Point2 | None = None,
+) -> bool:
+    # Workers only — never attack unfinished buildings / morph pads.
+    if (
+        target is None
+        or target.is_structure
+        or target.type_id not in ENEMY_WORKERS
+    ):
+        if target is not None:
+            ctx.state.worker_harass_known_builders.discard(target.tag)
+        ctx.state.worker_harass_focus_tag = None
+        return False
+    main = enemy_main or ctx.bot.enemy_start_locations[0]
+    if not _in_enemy_base(target, main):
+        ctx.state.worker_harass_focus_tag = None
+        return False
     changed = ctx.state.worker_harass_focus_tag != target.tag
     ctx.state.worker_harass_focus_tag = target.tag
     if changed:
         _log(ctx, f"attack {priority} {target.type_id.name}")
-    orders = scout.orders
-    if orders:
-        ability = getattr(orders[0], "ability", None)
-        ability_name = str(
-            getattr(ability, "id", None)
-            or getattr(ability, "link_name", "")
-            or ""
-        ).lower()
-        if "gather" in ability_name or "harvest" in ability_name:
-            _cancel_gather(scout)
-        else:
+    # Stay SCOUTING so Mining cannot reclaim an idle probe in their base.
+    ctx.mediator.assign_role(tag=scout.tag, role=UnitRole.SCOUTING)
+    if _is_gather_order(_order_name(scout)):
+        _cancel_gather(scout)
+    else:
+        orders = scout.orders
+        if orders:
             tgt = orders[0].target
             if tgt == target.tag or getattr(tgt, "tag", None) == target.tag:
-                return
-    ctx.bot.register_behavior(AttackTarget(unit=scout, target=target))
+                # Keep the order only while prey stays in the main.
+                if _in_enemy_base(target, main):
+                    return True
+                ctx.state.worker_harass_focus_tag = None
+                scout.stop()
+                return False
+    # Unit-target only — attack-move can hit morph pads near the worker.
+    if _unit_by_tag(ctx, target.tag) is not None:
+        scout.attack(target)
+    else:
+        scout.move(target.position)
+    return True
 
+def _break_out_of_base_chase(
+    ctx: "BotContext", scout, enemy_main: Point2
+) -> bool:
+    """Stop chasing a worker that left the main. True if chase was broken."""
+    focus = _unit_by_tag(ctx, ctx.state.worker_harass_focus_tag)
+    chase = focus
+    if chase is None:
+        orders = scout.orders
+        if orders:
+            tgt = orders[0].target
+            tag = tgt if isinstance(tgt, int) else getattr(tgt, "tag", None)
+            if tag is not None:
+                u = _unit_by_tag(ctx, tag)
+                if u is not None and u.type_id in ENEMY_WORKERS:
+                    chase = u
+    if chase is None or _in_enemy_base(chase, enemy_main):
+        return False
+    ctx.log(
+        f"HARASS drop chase (left main, "
+        f"{cy_distance_to(chase.position, enemy_main):.0f} from nexus)"
+    )
+    ctx.state.worker_harass_focus_tag = None
+    scout.stop()
+    return True
 
 def _clamp_main(point: Point2, enemy_main: Point2) -> Point2:
     if cy_distance_to(point, enemy_main) <= KITE_MAIN_RADIUS:
         return point
     return Point2(cy_towards(enemy_main, point, KITE_MAIN_RADIUS))
-
 
 def _nearby_workers(ctx: "BotContext", scout, radius: float):
     return [
@@ -435,7 +520,6 @@ def _nearby_workers(ctx: "BotContext", scout, radius: float):
         and not u.is_structure
         and cy_distance_to(scout.position, u.position) <= radius
     ]
-
 
 def _refresh_pressure(ctx: "BotContext", scout) -> tuple[bool, bool]:
     near = _nearby_workers(ctx, scout, max(PRESSURE_RADIUS, 8.0))
@@ -447,8 +531,6 @@ def _refresh_pressure(ctx: "BotContext", scout) -> tuple[bool, bool]:
     for w in near:
         dist = cy_distance_to(scout.position, w.position)
         new_dists[w.tag] = dist
-        # Include focus — excluding it caused instant resume while the
-        # mineral-line target + friends were still hitting us.
         old = prev.get(w.tag)
         on_top = dist <= 3.2
         approaching = (
@@ -482,7 +564,6 @@ def _refresh_pressure(ctx: "BotContext", scout) -> tuple[bool, bool]:
         ctx.state.worker_harass_pressure_clear = 0
     return False, surrounded
 
-
 def _can_kill_shot(ctx: "BotContext", scout) -> bool:
     focus = _unit_by_tag(ctx, ctx.state.worker_harass_focus_tag)
     if focus is None:
@@ -491,7 +572,6 @@ def _can_kill_shot(ctx: "BotContext", scout) -> bool:
         _vital(focus) <= KILL_SHOT_HP
         and cy_distance_to(scout.position, focus.position) <= KILL_SHOT_RANGE
     )
-
 
 def _mineral_walk(ctx: "BotContext", scout, enemy_nat: Point2, threats) -> bool:
     minerals = list(ctx.bot.mineral_field.closer_than(15, enemy_nat))
@@ -510,7 +590,6 @@ def _mineral_walk(ctx: "BotContext", scout, enemy_nat: Point2, threats) -> bool:
     scout.gather(patch)
     return True
 
-
 def _kite(
     ctx: "BotContext",
     scout,
@@ -526,12 +605,10 @@ def _kite(
     near = _nearby_workers(ctx, scout, 8.0)
     now = ctx.bot.time
     mw_until = ctx.state.worker_harass_mw_until
-    # Don't mineral-walk to the nat while an unfinished building is up —
-    # that peels the scout off the builder into the mineral line.
+    # Skip nat mineral-walk while an unfinished building is up (stay on builder).
     allow_mw = surrounded and not _incomplete(ctx)
     if allow_mw:
-        # One mineral-walk peel per kite session — repeat bursts were pulling
-        # the scout onto nat minerals and leaving it mining.
+        # One peel per kite session — repeat bursts leave the scout mining.
         if mw_until > 0 and now <= mw_until:
             if _mineral_walk(ctx, scout, enemy_nat, near):
                 return
@@ -559,7 +636,6 @@ def _kite(
     else:
         away = Point2(cy_towards(scout.position, enemy_main, 6.0))
     scout.move(_clamp_main(away, enemy_main))
-
 
 def _update_combat_stats(ctx: "BotContext", scout) -> None:
     hp = _vital(scout)
@@ -598,14 +674,12 @@ def _update_combat_stats(ctx: "BotContext", scout) -> None:
         if tag not in seen:
             del ctx.state.worker_harass_prey_hp[tag]
 
-
 def _log_combat(ctx: "BotContext", reason: str) -> None:
     ctx.log(
         f"HARASS combat ({reason}): "
         f"dealt {ctx.state.worker_harass_damage_dealt:.0f}, "
         f"took {ctx.state.worker_harass_damage_taken:.0f}"
     )
-
 
 def _clear_mission(ctx: "BotContext") -> None:
     ctx.state.worker_harass_done = True
@@ -626,7 +700,6 @@ def _clear_mission(ctx: "BotContext") -> None:
     ctx.state.worker_harass_mw_until = 0.0
     ctx.state.worker_harass_hit_sources.clear()
 
-
 def _begin_return(ctx: "BotContext", scouts, reason: str) -> None:
     if not ctx.state.worker_harass_returning:
         for scout in scouts:
@@ -639,7 +712,6 @@ def _begin_return(ctx: "BotContext", scouts, reason: str) -> None:
         ctx.state.worker_harass_last_action = None
     for scout in scouts:
         scout.move(ctx.bot.start_location)
-
 
 def _finish_return(ctx: "BotContext", scout) -> None:
     home_mins = ctx.bot.mineral_field.closer_than(12, ctx.bot.start_location)
@@ -657,7 +729,6 @@ def _finish_return(ctx: "BotContext", scout) -> None:
         ctx.log("HARASS arrived home; no minerals found")
     _clear_mission(ctx)
 
-
 def _remember_opening_builder(ctx: "BotContext", building: UnitTypeId) -> None:
     if ctx.state.worker_harass_opening_builder_tag is not None:
         return
@@ -669,7 +740,6 @@ def _remember_opening_builder(ctx: "BotContext", building: UnitTypeId) -> None:
             ctx.state.worker_harass_opening_builder_tag = tag
             ctx.log(f"HARASS opening builder latched (tag={tag})")
             return
-
 
 def _claim_worker(
     ctx: "BotContext",
@@ -729,6 +799,7 @@ def _claim_worker(
         )
         if worker is not None and ready:
             worker.stop()
+            ctx.mediator.remove_worker_from_mineral(worker_tag=worker.tag)
             ctx.state.worker_harass_tags = {worker.tag}
             ctx.mediator.assign_role(tag=worker.tag, role=UnitRole.SCOUTING)
             ctx.state.worker_harass_done = True
@@ -760,11 +831,11 @@ def _claim_worker(
         return
     scout = cy_closest_to(position=enemy, units=pool)
     scout.stop()
+    ctx.mediator.remove_worker_from_mineral(worker_tag=scout.tag)
     ctx.state.worker_harass_tags = {scout.tag}
     ctx.mediator.assign_role(tag=scout.tag, role=UnitRole.SCOUTING)
     ctx.state.worker_harass_done = True
     ctx.log(f"HARASS assigned (fallback, tag={scout.tag})")
-
 
 # --- public routine ---------------------------------------------------------
 
@@ -873,34 +944,51 @@ def worker_harass(
             under_pressure, surrounded = _refresh_pressure(ctx, scout)
             vitals = _vital_pct(scout)
 
-            if took_hit and not ctx.state.worker_harass_kiting:
-                source_count = _remember_hit_sources(ctx, scout)
-                need = 1 if vitals < VITAL_KITE_SINGLE else 2
-                will_kite = _should_kite_from_hits(scout, source_count)
-                if will_kite:
+            if (
+                not ctx.state.worker_harass_kiting
+                and _break_out_of_base_chase(ctx, scout, enemy_main)
+            ):
+                scout.move(enemy_main)
+                continue
+
+            if took_hit:
+                dmg = (prev - hp) if prev is not None else None
+                source_count = _remember_hit_sources(
+                    ctx, scout, damage_hint=dmg
+                )
+                if (
+                    not ctx.state.worker_harass_kiting
+                    and _should_kite_from_hits(scout, source_count)
+                ):
+                    need = 1 if vitals < VITAL_KITE_SINGLE else 2
                     ctx.state.worker_harass_kiting = True
                     ctx.log(
                         f"HARASS kite ({source_count} hit sources, "
                         f"need {need}, vitals={vitals:.0%})"
                     )
-            elif took_hit:
-                _remember_hit_sources(ctx, scout)
 
             if ctx.state.worker_harass_kiting:
-                # Keep hit memory warm while enemies stay in range so we do
-                # not resume one second after stepping off the mineral line.
-                _remember_hit_sources(ctx, scout)
+                # Refresh known hitters in range; do not re-stamp every neighbor.
+                _warm_hit_sources(ctx, scout)
                 if _can_kill_shot(ctx, scout):
                     focus = _unit_by_tag(ctx, ctx.state.worker_harass_focus_tag)
-                    if focus is not None:
+                    if (
+                        focus is not None
+                        and not focus.is_structure
+                        and focus.type_id in ENEMY_WORKERS
+                    ):
                         _log(ctx, f"kill shot on {focus.type_id.name}")
                         _cancel_gather(scout)
-                        ctx.bot.register_behavior(
-                            AttackTarget(unit=scout, target=focus)
-                        )
+                        scout.attack(focus)
                         continue
 
-                if under_pressure or _prune_hit_sources(ctx) > 0:
+                can_resume = (
+                    not under_pressure
+                    and _prune_hit_sources(ctx) == 0
+                    and vitals >= VITAL_RESUME
+                )
+                if not can_resume:
+                    # Hold kite until vitals recover or the 1:48 home timer.
                     bucket = int(vitals * 10) * 10
                     _log(ctx, f"kite in main (vitals ~{bucket}%)")
                     _kite(
@@ -912,31 +1000,18 @@ def worker_harass(
                     )
                     continue
 
-                if vitals >= VITAL_RESUME or vitals >= VITAL_RESUME_CLEAR:
-                    dist_main = cy_distance_to(scout.position, enemy_main)
-                    _cancel_gather(scout)
-                    ctx.state.worker_harass_kiting = False
-                    ctx.state.worker_harass_mw_until = 0.0
-                    ctx.state.worker_harass_hit_sources.clear()
-                    ctx.state.worker_harass_focus_tag = None
-                    why = "vitals" if vitals >= VITAL_RESUME else "pressure cleared"
-                    ctx.log(
-                        f"HARASS resume harass ({why}, vitals={vitals:.0%})"
-                    )
-                    if dist_main > KITE_MAIN_RADIUS:
-                        _log(ctx, "re-enter main after peel")
-                        scout.move(enemy_main)
-                        continue
-                else:
-                    bucket = int(vitals * 10) * 10
-                    _log(ctx, f"kite in main (vitals ~{bucket}%)")
-                    _kite(
-                        ctx,
-                        scout,
-                        enemy_main,
-                        enemy_nat,
-                        surrounded=surrounded,
-                    )
+                dist_main = cy_distance_to(scout.position, enemy_main)
+                _cancel_gather(scout)
+                ctx.state.worker_harass_kiting = False
+                ctx.state.worker_harass_mw_until = 0.0
+                ctx.state.worker_harass_hit_sources.clear()
+                ctx.state.worker_harass_focus_tag = None
+                ctx.log(
+                    f"HARASS resume harass (vitals, vitals={vitals:.0%})"
+                )
+                if dist_main > KITE_MAIN_RADIUS:
+                    _log(ctx, "re-enter main after peel")
+                    scout.move(enemy_main)
                     continue
 
             dist_main = cy_distance_to(scout.position, enemy_main)
@@ -944,16 +1019,16 @@ def worker_harass(
                 not ctx.state.worker_harass_gas_scouted
                 and dist_main > APPROACH_RADIUS
             ):
-                builders = _building_workers(ctx)
-                if builders:
-                    _attack(
-                        ctx,
-                        scout,
-                        "builder",
-                        _pick_focus(
-                            scout, builders, ctx.state.worker_harass_focus_tag
-                        ),
-                    )
+                builders = _building_workers(ctx, enemy_main)
+                if builders and _attack(
+                    ctx,
+                    scout,
+                    "builder",
+                    _pick_focus(
+                        scout, builders, ctx.state.worker_harass_focus_tag
+                    ),
+                    enemy_main,
+                ):
                     continue
                 unfinished = _closest_incomplete(ctx, scout)
                 if unfinished is not None:
@@ -978,10 +1053,9 @@ def worker_harass(
                 scout.move(waypoint)
                 continue
 
-            builders = _building_workers(ctx)
+            builders = _building_workers(ctx, enemy_main)
             unfinished = _closest_incomplete(ctx, scout)
-            # Unfinished building ⇒ go there (assume a builder) before gas /
-            # mineral-line workers. Only attack SCVs actually on the job.
+            # Prefer unfinished buildings (on-site builders) over gas/minerals.
             if unfinished is not None:
                 on_site = _workers_on_site(ctx, unfinished)
                 if on_site:
@@ -994,38 +1068,39 @@ def worker_harass(
                         unfinished, on_site, ctx.state.worker_harass_focus_tag
                     )
                     ctx.state.worker_harass_known_builders.add(target.tag)
-                    _attack(ctx, scout, "builder", target)
-                    continue
+                    if _attack(ctx, scout, "builder", target, enemy_main):
+                        continue
                 dist_job = cy_distance_to(
                     scout.position, unfinished.position
                 )
-                if dist_job > BUILDER_RADIUS:
+                # Empty pads (warped probe / Zerg morph) yield to other prey.
+                _, prey = _harass_target(ctx, scout, enemy_main)
+                if prey is None and dist_job > BUILDER_RADIUS:
                     _log(ctx, f"hunt builder at {unfinished.type_id.name}")
                     ctx.state.worker_harass_focus_tag = None
                     scout.move(unfinished.position)
                     continue
-                # Already on the pad with nobody building — fall through to
-                # other prey instead of standing on an empty unfinished.
 
             if builders:
                 focus = ctx.state.worker_harass_focus_tag
                 if focus is not None and all(b.tag != focus for b in builders):
                     ctx.state.worker_harass_focus_tag = None
-                _attack(
+                if _attack(
                     ctx,
                     scout,
                     "builder",
                     _pick_focus(
                         scout, builders, ctx.state.worker_harass_focus_tag
                     ),
-                )
-                continue
+                    enemy_main,
+                ):
+                    continue
 
-            # Harass prey before finishing leftover geyser walks — after a
-            # peel, walking gas looks like standing around in the mineral line.
+            # Prey before leftover geyser walks (post-peel gas looks idle).
             priority, target = _harass_target(ctx, scout, enemy_main)
-            if target is not None:
-                _attack(ctx, scout, priority, target)
+            if target is not None and _attack(
+                ctx, scout, priority, target, enemy_main
+            ):
                 continue
 
             if (
