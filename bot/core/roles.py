@@ -62,20 +62,17 @@ def assign_on_created(ctx: "BotContext", unit: Unit) -> None:
 
 
 def forget_destroyed(ctx: "BotContext", unit_tag: int) -> None:
-    """Drop a destroyed scout tag.
+    """Drop destroyed scout / worker-harass tags."""
+    if unit_tag in ctx.state.scout_tags:
+        ctx.state.scout_tags.discard(unit_tag)
 
-    Zerg Overlord scouts may be replaced (tag clears, next Overlord can take
-    the slot). Protoss harass Probe is one-shot — latch done so we never
-    send a second Probe.
-    """
-    if unit_tag not in ctx.state.scout_tags:
+    if unit_tag not in ctx.state.worker_harass_tags:
         return
-    ctx.state.scout_tags.discard(unit_tag)
-    if ctx.build.race == Race.Protoss:
-        ctx.log(
-            f"SCOUT combat (probe died): "
-            f"dealt {ctx.state.scout_damage_dealt:.0f}, "
-            f"took {ctx.state.scout_damage_taken:.0f}"
-        )
-        ctx.state.scout_probe_done = True
-        ctx.state.scout_prey_hp.clear()
+    ctx.state.worker_harass_tags.discard(unit_tag)
+    ctx.log(
+        f"HARASS combat (worker died): "
+        f"dealt {ctx.state.worker_harass_damage_dealt:.0f}, "
+        f"took {ctx.state.worker_harass_damage_taken:.0f}"
+    )
+    ctx.state.worker_harass_done = True
+    ctx.state.worker_harass_prey_hp.clear()

@@ -56,7 +56,7 @@ Builds:
         OpeningBuildOrder:
             - 14 pylon @ ramp
             - 15 gate @ ramp
-            # Scout Probe is owned by `scout_probe_harass` (one Probe only).
+            # Opening worker scout is owned by `worker_harass` (one Probe only).
             # Do not use ares `worker_scout` — it would send a second Probe.
             - 17 gas
             - 20 expand

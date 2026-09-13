@@ -51,43 +51,33 @@ class RunState:
     wave_number: int = 0
     next_wave_size: int = 0
     scout_tags: set[int] = field(default_factory=set)
-    scout_probe_done: bool = False
-    """Latches True once a harass Probe has been claimed (or finished), so we
-    never send a replacement after death / home."""
-    scout_probe_miss_frames: int = 0
-    """Consecutive frames the claimed scout Probe was missing from unit lists."""
-    scout_probe_regen: bool = False
-    """True while the harass Probe is kiting after taking damage."""
-    scout_last_hp: float | None = None
-    """Prior frame health+shield — used to detect damage for kite."""
-    scout_damage_dealt: float = 0.0
-    """Cumulative HP+shield the harass Probe removed from nearby workers."""
-    scout_damage_taken: float = 0.0
-    """Cumulative HP+shield the harass Probe lost while scouting."""
-    scout_prey_hp: dict[int, float] = field(default_factory=dict)
-    """Last-seen HP+shield of workers near the scout (damage-dealt attribution)."""
-    scout_pylon_builder_tag: int | None = None
-    """Probe that built the opening Pylon — preferred harass scout."""
-    scout_probe_returning: bool = False
-    """True while the scout is pathing home; stay in SCOUTING until near base."""
-    scout_last_action: str | None = None
-    """Last SCOUT action log line — only re-log when the action changes."""
-    scout_gas_scouted: bool = False
-    """True after the Probe has checked enemy main geysers for gas buildings."""
-    scout_enemy_has_gas: bool = False
-    """Latched when a gas building was seen during the gas check."""
-    scout_geysers_seen: set[tuple[float, float]] = field(default_factory=set)
-    """Main-geyser positions already walked for the opening gas check."""
-    scout_focus_tag: int | None = None
-    """Sticky harass target — stay on them to secure the kill."""
-    scout_known_builder_tags: set[int] = field(default_factory=set)
-    """Builder workers seen on incomplete buildings; chase while near the job."""
-    scout_worker_dists: dict[int, float] = field(default_factory=dict)
-    """Prior-frame distances to nearby enemy workers (incoming detection)."""
-    scout_pressure_clear_frames: int = 0
-    """Consecutive frames without aggressors before ending kite."""
-    scout_mw_until: float = 0.0
-    """Game time until which mineral-walk escape may keep gathering."""
+    """Air vision scout tags (e.g. Zerg Overlord) — not the worker harasser."""
+    worker_harass_tags: set[int] = field(default_factory=set)
+    """One-shot opening worker harass scout."""
+    worker_harass_done: bool = False
+    """Latched once claimed / finished / dead — never send a replacement."""
+    worker_harass_miss_frames: int = 0
+    worker_harass_kiting: bool = False
+    worker_harass_last_hp: float | None = None
+    worker_harass_damage_dealt: float = 0.0
+    worker_harass_damage_taken: float = 0.0
+    worker_harass_prey_hp: dict[int, float] = field(default_factory=dict)
+    worker_harass_opening_builder_tag: int | None = None
+    """Preferred harass worker — built the opening supply (Pylon/Depot)."""
+    worker_harass_returning: bool = False
+    worker_harass_last_action: str | None = None
+    worker_harass_gas_scouted: bool = False
+    worker_harass_enemy_has_gas: bool = False
+    worker_harass_geysers_seen: set[tuple[float, float]] = field(
+        default_factory=set
+    )
+    worker_harass_focus_tag: int | None = None
+    worker_harass_known_builders: set[int] = field(default_factory=set)
+    worker_harass_worker_dists: dict[int, float] = field(default_factory=dict)
+    worker_harass_pressure_clear: int = 0
+    worker_harass_mw_until: float = 0.0
+    worker_harass_hit_sources: dict[int, float] = field(default_factory=dict)
+    """tag → last time seen in hit radius on a damage frame (kite memory)."""
     mustering_tags: set[int] = field(default_factory=set)
     """Attacking units still forming up at the rally point (see
     `bot.routines.combat.attack_squads`)."""

@@ -12,7 +12,7 @@ go into Gates and Zealots; leave a trickle for Stalkers / Prism / Obs.
 
 Intended hit: leave ~5:20, on the enemy base ~5:45 with Warp Prism
 phasing behind the ball, Observer overhead, and a few Stalkers (wshadows
-PvT guide). Scout Probe harasses until 2:00; Adept shades and hits the
+PvT guide). Opening worker harasses until ~1:48; Adept shades and hits the
 natural at 3:00. Gateways 2-4 wall the natural.
 """
 
@@ -25,6 +25,7 @@ from sc2.ids.upgrade_id import UpgradeId
 from bot.builds.definition import Army, BuildDefinition, Combat, Economy
 from bot.consts import CHARGELOT_COMP, FOCUS_MAIN, FOCUS_NATURAL
 from bot.routines import combat, gates, protoss_support as ps
+from bot.routines.worker_harass import worker_harass
 from bot.steps import common as c
 from bot.steps import protoss as p
 
@@ -75,7 +76,7 @@ BUILD = BuildDefinition(
             ps.escort_warp_prism(),
             ps.escort_observer(),
             ps.harassing_adept(),
-            ps.scout_probe_harass(),
+            worker_harass(),
         ),
         # Charge done AND 5:20 — army on the map by then, base hit ~5:45.
         wave_gate=gates.all_of(
