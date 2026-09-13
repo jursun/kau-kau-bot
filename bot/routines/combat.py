@@ -34,7 +34,10 @@ from bot.consts import IGNORED_ENEMY_TYPES, WORKER_TYPES
 from bot.core.types import CombatRoutine, Gate, PointLocator
 from bot.intel import enemy_army
 from bot.routines import targeting
-from bot.routines.protoss_support import chargelot_staging
+from bot.routines.protoss_support import (
+    PRISM_ENEMY_PHASE_RANGE,
+    chargelot_staging,
+)
 
 if TYPE_CHECKING:
     from bot.core.context import BotContext
@@ -529,6 +532,25 @@ def _stalker_pick_target(stalker: Unit, enemies: list[Unit]) -> Unit | None:
     return min(in_range, key=_score)
 
 
+def _prism_near_enemy_for_muster(ctx: "BotContext") -> bool:
+    """True when no Prism exists, or any Prism is in enemy-nat phase range.
+
+    Used so the Chargelot muster holds at staging until the Prism can phase
+    with the push — without soft-locking if Robo/Prism never finished.
+    """
+    prisms = [
+        u
+        for u in ctx.mediator.get_units_from_role(role=UnitRole.DROP_SHIP)
+        if u.type_id in (UnitTypeId.WARPPRISM, UnitTypeId.WARPPRISMPHASING)
+    ]
+    if not prisms:
+        return True
+    enemy = ctx.mediator.get_enemy_nat
+    return any(
+        cy_distance_to(p.position, enemy) <= PRISM_ENEMY_PHASE_RANGE for p in prisms
+    )
+
+
 def chargelot_attack(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
     """Chargelot all-in micro: Zealots commit, Stalkers snipe the backline.
 
@@ -564,9 +586,13 @@ def chargelot_attack(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
             muster_near_frac = near_n / len(mustering_units)
             # Release only when the whole first wave is on station — not
             # per-squad, or early arrivals trickle into the base alone.
+            # Also wait for the Prism to reach enemy-nat phase range so the
+            # ball does not dive before the field can go up.
+            prism_ready = _prism_near_enemy_for_muster(ctx)
             if (
                 muster_center_dist <= CHARGELOT_MUSTER_RADIUS
                 and muster_near_frac >= 0.75
+                and prism_ready
             ):
                 ctx.log(
                     f"MUSTER commit n={len(mustering_units)} "
@@ -574,6 +600,16 @@ def chargelot_attack(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
                 )
                 ctx.state.mustering_tags.clear()
                 mustering_units = []
+            elif (
+                muster_center_dist <= CHARGELOT_MUSTER_RADIUS
+                and muster_near_frac >= 0.75
+                and not prism_ready
+            ):
+                ctx.log_once(
+                    "muster_hold_prism",
+                    f"MUSTER holding for Prism n={len(mustering_units)} "
+                    f"dist={muster_center_dist:.0f}",
+                )
 
         still_mustering = bool(ctx.state.mustering_tags)
 
@@ -591,11 +627,9 @@ def chargelot_attack(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
 
         for squad in squads:
             position = squad.squad_position
-            # Whole first wave shares one muster gate; any leftover tag means
-            # this frame still walks to staging.
-            squad_mustering = still_mustering and bool(
-                squad.tags & ctx.state.mustering_tags
-            )
+            # Whole attack force holds at staging until the first-wave muster
+            # commits — streamers must not dive past the ball into the base.
+            squad_mustering = still_mustering
             target = (
                 staging
                 if squad_mustering
@@ -612,21 +646,25 @@ def chargelot_attack(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
             total_z += len(zealots)
             total_s += len(stalkers)
 
-            # Zealots: never KeepUnitSafe — overwhelm.
+            # Zealots: never KeepUnitSafe — overwhelm. While mustering, only
+            # path to staging (no AttackTarget short-circuit into the nat).
             for zealot in zealots:
                 maneuver = CombatManeuver()
                 near = _enemies_near(ctx, zealot.position, SQUAD_ENGAGE_RANGE)
-                if near:
-                    maneuver.add(ShootTargetInRange(unit=zealot, targets=near))
-                    maneuver.add(
-                        AttackTarget(
-                            unit=zealot,
-                            target=cy_closest_to(
-                                position=zealot.position, units=near
-                            ),
+                if squad_mustering:
+                    maneuver.add(AMove(unit=zealot, target=target))
+                else:
+                    if near:
+                        maneuver.add(ShootTargetInRange(unit=zealot, targets=near))
+                        maneuver.add(
+                            AttackTarget(
+                                unit=zealot,
+                                target=cy_closest_to(
+                                    position=zealot.position, units=near
+                                ),
+                            )
                         )
-                    )
-                maneuver.add(AMove(unit=zealot, target=target))
+                    maneuver.add(AMove(unit=zealot, target=target))
                 ctx.bot.register_behavior(maneuver)
 
             # Stalkers: while mustering, stick with the ball; after commit,

@@ -43,6 +43,23 @@ _PRISM_GAS: int = 100
 _CHARGELOT_ATTACK_GAS_WORKERS: int = 2
 # Temporary peel while banking minerals for the Prism (gas cost already covered).
 _CHARGELOT_PRISM_BANK_GAS_WORKERS: int = 1
+# Opening YAML trains one Stalker; spawn_army must secure the second before
+# dumping mineral surplus into Zealots (guide: two Stalkers before the flood).
+_CHARGELOT_OPENING_STALKERS: int = 2
+_STALKER_MINERALS: int = 125
+_STALKER_GAS: int = 50
+_ZEALOT_MINERALS: int = 100
+
+_SPAWN_LOG_PATHS: frozenset[str] = frozenset(
+    {
+        "opening_stalker2",
+        "opening_wait_stalker2",
+        "pre_prism_stalker",
+        "pre_prism_wait_stalker",
+        "pre_prism_zealot",
+    }
+)
+_last_spawn_path: dict[str, str | None] = {"path": None}
 
 
 def _chargelot_has_prism(ctx: "BotContext") -> bool:
@@ -51,6 +68,30 @@ def _chargelot_has_prism(ctx: "BotContext") -> bool:
     if units(UnitTypeId.WARPPRISM) or units(UnitTypeId.WARPPRISMPHASING):
         return True
     return ctx.bot.already_pending(UnitTypeId.WARPPRISM) > 0
+
+
+def _chargelot_stalkers_out(ctx: "BotContext") -> int:
+    """Live + pending Stalkers (opening handoff counts both)."""
+    return (
+        ctx.bot.units(UnitTypeId.STALKER).amount
+        + ctx.bot.already_pending(UnitTypeId.STALKER)
+    )
+
+
+def _spawn_stalker_only(spawn_target: Point2 | None) -> SpawnController:
+    return SpawnController(
+        {UnitTypeId.STALKER: {"proportion": 1.0, "priority": 0}},
+        spawn_target=spawn_target,
+        freeflow_mode=True,
+    )
+
+
+def _spawn_zealot_only(spawn_target: Point2 | None) -> SpawnController:
+    return SpawnController(
+        {UnitTypeId.ZEALOT: {"proportion": 1.0, "priority": 0}},
+        spawn_target=spawn_target,
+        freeflow_mode=True,
+    )
 
 
 def chargelot_prism_ready(ctx: "BotContext") -> bool:
@@ -103,58 +144,138 @@ def _chargelot_spawn(ctx: "BotContext") -> SpawnController | None:
     Freeflow skips unaffordable priority units, which starved the Prism when
     gas was peeled for Zealots. Until one Prism is live/pending, only attempt
     Prism with freeflow off so we bank gas instead of dumping into Zealots.
+
+    After the opening's single Stalker step, secure a second Stalker before
+    mineral-surplus Zealots (3:45 Zealot-instead-of-Stalker bug).
     """
     spawn_target = _warp_spawn_target(ctx)
     has_prism = _chargelot_has_prism(ctx)
     robo_ready = bool(ctx.bot.structures(UnitTypeId.ROBOTICSFACILITY).ready)
+    stalkers = _chargelot_stalkers_out(ctx)
+    minerals = ctx.bot.minerals
+    gas = ctx.bot.vespene
+    path = "none"
+    result: SpawnController | None = None
 
     if not has_prism and robo_ready:
         can_afford_prism = (
-            ctx.bot.minerals >= _PRISM_MINERALS and ctx.bot.vespene >= _PRISM_GAS
+            minerals >= _PRISM_MINERALS and gas >= _PRISM_GAS
         )
         if can_afford_prism:
-            return SpawnController(
+            path = "prism"
+            result = SpawnController(
                 {UnitTypeId.WARPPRISM: {"proportion": 1.0, "priority": 0}},
                 spawn_target=spawn_target,
                 freeflow_mode=False,
             )
-        # Reserve 200 minerals for the Prism — Zealot warps were keeping the
-        # bank under 200 while gas sat idle (v1: 35 min / 447 gas, no Prism).
-        return None
-
-    if not has_prism:
+        else:
+            # Keep 200 minerals reserved for the Prism. Prefer Stalker when
+            # gas allows (incl. opening #2); only then Zealot surplus.
+            surplus = minerals - _PRISM_MINERALS
+            if surplus >= _STALKER_MINERALS and gas >= _STALKER_GAS:
+                path = "pre_prism_stalker"
+                result = _spawn_stalker_only(spawn_target)
+            elif (
+                stalkers < _CHARGELOT_OPENING_STALKERS
+                and gas >= _STALKER_GAS
+            ):
+                # Gas for Stalker #2 but not enough surplus minerals yet —
+                # do not dump into Zealots.
+                path = "pre_prism_wait_stalker"
+                result = None
+            elif surplus >= _ZEALOT_MINERALS:
+                path = "pre_prism_zealot"
+                result = _spawn_zealot_only(spawn_target)
+            else:
+                path = "pre_prism_hold"
+                result = None
+    elif not has_prism:
         # Robo not up yet — keep the opening/flood going (Zealots/Stalkers).
         if not ctx.build_completed:
-            return SpawnController(
+            path = "opening_comp"
+            result = SpawnController(
                 dict(ctx.build.army.comp),
                 spawn_target=spawn_target,
             )
-        return SpawnController(
-            dict(CHARGELOT_FLOOD_COMP),
-            spawn_target=spawn_target,
-            freeflow_mode=True,
-        )
+        elif stalkers < _CHARGELOT_OPENING_STALKERS:
+            # Never queue Zealots before Stalker #2 — a gas dip (Charge /
+            # Prism bank) was starting Zealots that finished ~3:45 instead.
+            if (
+                minerals >= _STALKER_MINERALS
+                and gas >= _STALKER_GAS
+            ):
+                path = "opening_stalker2"
+                result = _spawn_stalker_only(spawn_target)
+            else:
+                path = "opening_wait_stalker2"
+                result = None
+        else:
+            path = "flood_pre_prism"
+            result = SpawnController(
+                dict(CHARGELOT_FLOOD_COMP),
+                spawn_target=spawn_target,
+                freeflow_mode=True,
+            )
+    else:
+        # Prism secured: freeflow flood. Prefer Obs while missing (priority 0)
+        # but freeflow so unaffordable Obs does not freeze warps. When gas
+        # allows, Stalker-only so leftover gates do not fill with Zealots.
+        units = ctx.bot.units
+        has_obs = bool(units(UnitTypeId.OBSERVER))
+        if not has_obs and ctx.bot.already_pending(UnitTypeId.OBSERVER) <= 0:
+            if (
+                minerals >= _STALKER_MINERALS
+                and gas >= _STALKER_GAS
+            ):
+                path = "post_prism_obs_comp"
+                result = SpawnController(
+                    {
+                        UnitTypeId.OBSERVER: {
+                            "proportion": 0.1,
+                            "priority": 0,
+                        },
+                        UnitTypeId.STALKER: {
+                            "proportion": 0.9,
+                            "priority": 1,
+                        },
+                    },
+                    spawn_target=spawn_target,
+                    freeflow_mode=True,
+                )
+            else:
+                path = "post_prism_obs_zealot"
+                result = SpawnController(
+                    {
+                        UnitTypeId.OBSERVER: {
+                            "proportion": 0.1,
+                            "priority": 0,
+                        },
+                        UnitTypeId.ZEALOT: {
+                            "proportion": 0.9,
+                            "priority": 1,
+                        },
+                    },
+                    spawn_target=spawn_target,
+                    freeflow_mode=True,
+                )
+        elif minerals >= _STALKER_MINERALS and gas >= _STALKER_GAS:
+            path = "post_prism_stalker"
+            result = _spawn_stalker_only(spawn_target)
+        else:
+            path = "post_prism_zealot"
+            result = _spawn_zealot_only(spawn_target)
 
-    # Prism secured: Stalkers first when gas allows, else Zealots.
-    units = ctx.bot.units
-    has_obs = bool(units(UnitTypeId.OBSERVER))
-    if not has_obs and ctx.bot.already_pending(UnitTypeId.OBSERVER) <= 0:
-        comp = {
-            UnitTypeId.OBSERVER: {"proportion": 0.1, "priority": 0},
-            UnitTypeId.STALKER: {"proportion": 0.4, "priority": 1},
-            UnitTypeId.ZEALOT: {"proportion": 0.5, "priority": 2},
-        }
-        # Non-freeflow so we prefer banking the last bit of gas for Obs over
-        # endless Zealots — Obs is cheap enough this rarely stalls long.
-        return SpawnController(
-            comp, spawn_target=spawn_target, freeflow_mode=False
+    if (
+        ctx.bot.time >= 150.0
+        and path in _SPAWN_LOG_PATHS
+        and _last_spawn_path["path"] != path
+    ):
+        _last_spawn_path["path"] = path
+        ctx.log(
+            f"SPAWN {path} stalkers={stalkers} "
+            f"min={minerals} gas={gas}"
         )
-
-    return SpawnController(
-        dict(CHARGELOT_FLOOD_COMP),
-        spawn_target=spawn_target,
-        freeflow_mode=True,
-    )
+    return result
 
 
 def spawn_army() -> MacroStep:

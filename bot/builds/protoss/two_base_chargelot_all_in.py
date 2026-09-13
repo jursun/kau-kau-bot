@@ -32,6 +32,8 @@ from bot.steps import protoss as p
 
 # Full gateway count once the all-in commits (1 from the opening + 7 more).
 GATEWAY_COUNT = 8
+# Opening Gate + 2 nat-wall Gates before Robotics Facility (wall trio).
+WALL_GATEWAY_COUNT = 3
 
 # Two bases mining; probe chrono on both nexi during the opening aims for
 # roughly this before minerals dump into Gates / Zealots.
@@ -103,18 +105,32 @@ BUILD = BuildDefinition(
         # Wall FirstPylon before Gate/Robo so ThreeByThreesWall slots have power.
         # Opening already places `pylon @ nat_wall`; this is a safety net.
         p.natural_wall_pylon(gate=gates.upgrade_started(CHARGE)),
-        # Gates before Robo so the 8-Gate commit is never waiting on gas units.
+        # MacroPlan short-circuits on the first successful spend. Build the
+        # wall trio (Gate 1+2 + Robo) before dumping minerals into Gates 4-8,
+        # otherwise Robo/Prism slip past the 5:20 leave timing.
         # Opening Gateway 1 is in main (@ ramp). Gates 2-3 take nat wall 3x3
         # slots (~3:30); Robo prefers a third wall slot, else falls back to main.
         # GateKeeper gap stays open for exit. See protoss_building_placements.yml.
         p.gateways(
-            GATEWAY_COUNT,
+            WALL_GATEWAY_COUNT,
             gate=gates.upgrade_started(CHARGE),
             wall_natural=2,
         ),
         p.robotics_facility_at_natural_wall(
             1,
             gate=gates.upgrade_started(CHARGE),
+        ),
+        p.gateways(
+            GATEWAY_COUNT,
+            gate=gates.all_of(
+                gates.upgrade_started(CHARGE),
+                lambda ctx: (
+                    ctx.bot.structures(UnitTypeId.ROBOTICSFACILITY).amount
+                    + ctx.bot.structure_pending(UnitTypeId.ROBOTICSFACILITY)
+                )
+                > 0,
+            ),
+            wall_natural=2,
         ),
         # After production so the single builder prefers Gates/Robo when needed.
         p.auto_supply(gate=lambda ctx: ctx.build_completed),

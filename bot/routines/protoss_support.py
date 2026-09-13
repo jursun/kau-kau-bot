@@ -188,9 +188,10 @@ def escort_warp_prism():
             near_army = dist <= PRISM_PHASE_APPROACH
             far_from_pocket = dist > PRISM_REPOSITION_DIST
 
-            # Finish materializing units always. Otherwise only phase when the
-            # Prism is near the enemy and on station with the army pocket.
-            on_station = can_warp and near_army and near_enemy
+            # Phase when near the enemy natural and the army pocket. Do NOT
+            # gate on warpgate readiness — TRAINWARP ability flicker was
+            # flipping hold_phase off and MoveToSafeTarget cancelled morph.
+            on_station = near_army and near_enemy
             hold_phase = incomplete > 0 or on_station
 
             if hold_phase:
@@ -225,7 +226,7 @@ def escort_warp_prism():
                         )
             else:
                 # Not on station: fly with the army (and unphase if we drifted
-                # past hysteresis while gates are still ready).
+                # past hysteresis).
                 mode = "escort" if not near_enemy or far_from_pocket else "hold_transport"
                 if phased and (incomplete == 0) and (
                     not near_enemy or far_from_pocket
