@@ -1,0 +1,11 @@
+---
+description: Commit after every change; squash and push only when Jason asks
+alwaysApply: true
+---
+
+# Git: commit often, push on demand
+
+- After every meaningful code change (feature, fix, refactor, test, rule), create a git commit. Do not wait to be asked.
+- Do **not** push, force-push, or squash unless Jason explicitly says to **squash and push** (or clearly equivalent: he is satisfied and wants the branch cleaned up and published).
+- Still follow the repo git safety protocol: no config/secrets (e.g. `config.yml`, `.env`), use `git.exe` if the wrapper injects unsupported flags, concise why-focused messages.
+- One logical change ≈ one commit while iterating; when he says squash and push, squash the iteration commits into a clean history and push.
