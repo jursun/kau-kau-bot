@@ -20,11 +20,17 @@ import sys
 from os import path
 from pathlib import Path
 
+# Repo root must precede ares-sc2 on sys.path. Poetry's .pth adds ares-sc2
+# before the project root, which makes `import tests` resolve to
+# ares-sc2/tests instead of this repo's validators package.
+_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(_ROOT))
+
 # ares-sc2 is vendored as a git submodule; it must be importable before
 # anything reaches for `sc2` or `ares`.
-sys.path.append("ares-sc2/src/ares")
-sys.path.append("ares-sc2/src")
-sys.path.append("ares-sc2")
+sys.path.append(str(_ROOT / "ares-sc2" / "src" / "ares"))
+sys.path.append(str(_ROOT / "ares-sc2" / "src"))
+sys.path.append(str(_ROOT / "ares-sc2"))
 
 import yaml  # noqa: E402
 from ladder import run_ladder_game  # noqa: E402
