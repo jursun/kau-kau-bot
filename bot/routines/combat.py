@@ -32,7 +32,7 @@ from sc2.units import Units
 from bot.builds.definition import _always
 from bot.consts import IGNORED_ENEMY_TYPES, WORKER_TYPES
 from bot.core.types import CombatRoutine, Gate, PointLocator
-from bot.intel import enemy_army
+from bot.intel import chargelot_metrics, enemy_army
 from bot.routines import targeting
 from bot.routines.protoss_support import (
     PRISM_ENEMY_PHASE_RANGE,
@@ -555,19 +555,6 @@ def attack_squads(
     return routine
 
 
-# Backline picks for Chargelot Stalkers: healers first, then workers (repair /
-# mineral line), then anything else already in range.
-_STALKER_PICK_TYPES: frozenset[UnitTypeId] = frozenset(
-    {
-        UnitTypeId.MEDIVAC,
-        UnitTypeId.SCV,
-        UnitTypeId.MULE,
-        UnitTypeId.PROBE,
-        UnitTypeId.DRONE,
-    }
-)
-
-
 def _enemies_near_ground_air(ctx: "BotContext", point, distance: float) -> list[Unit]:
     """Ground + air enemies near `point` (Stalkers need Medivacs)."""
     ground = ctx.mediator.get_units_in_range(
@@ -592,7 +579,10 @@ def _enemies_near_ground_air(ctx: "BotContext", point, distance: float) -> list[
 
 
 def _stalker_pick_target(stalker: Unit, enemies: list[Unit]) -> Unit | None:
-    """Prefer Medivacs / repairing-or-wall SCVs, else lowest-HP in range."""
+    """Prefer Medivacs / repairing-or-wall SCVs, else lowest-HP in range.
+
+    Sort key: Medivac → repairing worker → any worker → lowest HP+shield.
+    """
     in_range = list(cy_in_attack_range(stalker, enemies))
     if not in_range:
         return None
@@ -608,7 +598,6 @@ def _stalker_pick_target(stalker: Unit, enemies: list[Unit]) -> Unit | None:
                 break
         is_medivac = u.type_id == UnitTypeId.MEDIVAC
         is_worker = u.type_id in WORKER_TYPES
-        # Lower tuple sorts first.
         return (
             0 if is_medivac else 1,
             0 if repairing else 1,
@@ -691,9 +680,7 @@ def chargelot_attack(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
             )
             prism_wait_expired = False
             if form_ready and not prism_ready:
-                from bot.intel import chargelot_metrics as _cm
-
-                _cm.note_muster_waiting_prism(ctx)
+                chargelot_metrics.note_muster_waiting_prism(ctx)
                 since = ctx.state.chargelot_metrics.muster_form_ready_since
                 if (
                     since is not None
@@ -701,14 +688,12 @@ def chargelot_attack(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
                 ):
                     prism_wait_expired = True
             if form_ready and (prism_ready or prism_wait_expired):
-                from bot.intel import chargelot_metrics as _cm
-
                 reason = "prism_timeout" if prism_wait_expired else "ready"
                 ctx.log(
                     f"MUSTER commit n={len(mustering_units)} "
                     f"dist={muster_center_dist:.0f} reason={reason}"
                 )
-                _cm.note_muster_commit(ctx)
+                chargelot_metrics.note_muster_commit(ctx)
                 ctx.state.mustering_tags.clear()
                 mustering_units = []
             elif form_ready and not prism_ready:
