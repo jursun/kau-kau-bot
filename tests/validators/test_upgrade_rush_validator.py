@@ -11,7 +11,7 @@ from tests.validators._fakes import FakeAI
 from tests.validators.upgrade_rush_validator import UpgradeRushValidator
 
 
-def test_validate_returns_all_four_base_stages() -> None:
+def test_validate_returns_all_five_base_stages() -> None:
     ai = FakeAI(upgrades=(UpgradeId.ZERGLINGMOVEMENTSPEED,))
     validator = UpgradeRushValidator(ai)
     validator.on_step(0)
@@ -22,6 +22,7 @@ def test_validate_returns_all_four_base_stages() -> None:
         "Stage 2: Tech Structures",
         "Stage 3: Upgrades",
         "Stage 4: Attack Waves",
+        "Stage 5: Combat QA",
     ]
 
 

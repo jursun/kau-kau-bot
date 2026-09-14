@@ -11,7 +11,7 @@ from tests.validators.two_base_chargelot_all_in_validator import (
 )
 
 
-def test_validate_returns_all_four_base_stages() -> None:
+def test_validate_returns_all_five_base_stages() -> None:
     ai = FakeAI(
         upgrades=(UpgradeId.CHARGE,),
         race=Race.Protoss,
@@ -26,6 +26,7 @@ def test_validate_returns_all_four_base_stages() -> None:
         "Stage 2: Tech Structures",
         "Stage 3: Upgrades",
         "Stage 4: Chargelot All-In",
+        "Stage 5: Combat QA",
     ]
 
 
