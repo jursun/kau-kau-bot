@@ -98,8 +98,6 @@ PRESSURE_RADIUS: float = 6.0
 SURROUND_RADIUS: float = 4.0
 SURROUND_COUNT: int = 2
 PRESSURE_CLEAR_FRAMES: int = 8
-MW_BURST: float = 0.8
-# worker_harass_mw_until: last mineral-walk peel end time (diagnostics).
 
 # --- helpers ----------------------------------------------------------------
 
@@ -354,7 +352,7 @@ def _low_hp_workers(ctx: "BotContext", enemy_main: Point2):
             workers.append(u)
     return workers
 
-def _geyser_key(pos: Point2) -> tuple[float, float]:
+def _waypoint_key(pos: Point2) -> tuple[float, float]:
     return (round(float(pos.x), 1), round(float(pos.y), 1))
 
 def _base_scout_waypoints(enemy_main: Point2) -> list[Point2]:
@@ -404,7 +402,7 @@ def _base_scout_move_target(
     for wp in waypoints:
         if cy_distance_to(scout.position, wp) > BASE_SCOUT_WP_RADIUS:
             continue
-        key = _geyser_key(wp)
+        key = _waypoint_key(wp)
         if key in ctx.state.worker_harass_geysers_seen:
             continue
         ctx.state.worker_harass_geysers_seen.add(key)
@@ -417,7 +415,7 @@ def _base_scout_move_target(
     unchecked = [
         wp
         for wp in waypoints
-        if _geyser_key(wp) not in ctx.state.worker_harass_geysers_seen
+        if _waypoint_key(wp) not in ctx.state.worker_harass_geysers_seen
     ]
     if not unchecked:
         ctx.state.worker_harass_gas_scouted = True
@@ -632,7 +630,6 @@ def _kite(
         used_mw = _mineral_walk(ctx, scout, enemy_main, enemy_nat, near)
         if used_mw:
             _log(ctx, "mineral-walk escape (nat minerals)")
-            ctx.state.worker_harass_mw_until = ctx.bot.time + MW_BURST
             return
         # No nat minerals visible yet — still run toward the natural.
         toward_nat = Point2(cy_towards(scout.position, enemy_nat, 8.0))
@@ -733,7 +730,6 @@ def _clear_mission(ctx: "BotContext") -> None:
     ctx.state.worker_harass_known_builders.clear()
     ctx.state.worker_harass_worker_dists.clear()
     ctx.state.worker_harass_pressure_clear = 0
-    ctx.state.worker_harass_mw_until = 0.0
     ctx.state.worker_harass_hit_sources.clear()
 
 def _begin_return(ctx: "BotContext", scouts, reason: str) -> None:
@@ -1049,7 +1045,6 @@ def worker_harass(
                 dist_main = cy_distance_to(scout.position, enemy_main)
                 _cancel_gather(scout)
                 ctx.state.worker_harass_kiting = False
-                ctx.state.worker_harass_mw_until = 0.0
                 ctx.state.worker_harass_hit_sources.clear()
                 ctx.state.worker_harass_focus_tag = None
                 ctx.log(

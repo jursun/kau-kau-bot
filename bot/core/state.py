@@ -119,7 +119,6 @@ class RunState:
     worker_harass_known_builders: set[int] = field(default_factory=set)
     worker_harass_worker_dists: dict[int, float] = field(default_factory=dict)
     worker_harass_pressure_clear: int = 0
-    worker_harass_mw_until: float = 0.0
     worker_harass_hit_sources: dict[int, float] = field(default_factory=dict)
     """tag → last time seen in hit radius on a damage frame (kite memory)."""
     mustering_tags: set[int] = field(default_factory=set)

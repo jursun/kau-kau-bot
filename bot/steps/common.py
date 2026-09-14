@@ -99,11 +99,6 @@ def _spawn_zealot_only(spawn_target: Point2 | None) -> SpawnController:
     )
 
 
-def chargelot_prism_ready(ctx: "BotContext") -> bool:
-    """Gate: Warp Prism live or training."""
-    return _chargelot_has_prism(ctx)
-
-
 def _chargelot_gas_amount(ctx: "BotContext") -> int:
     """Gas schedule 3 → 1 → 2 for Chargelot.
 

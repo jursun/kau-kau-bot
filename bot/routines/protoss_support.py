@@ -38,7 +38,8 @@ if TYPE_CHECKING:
 
 # Timings (game seconds) — Jason Chargelot brief 2026-09-12.
 ADEPT_NATURAL_HARASS_TIME: float = 3 * 60
-ARMY_LEAVE_TIME: float = 5 * 60 + 20  # used by build wave_gate; documented here
+ARMY_LEAVE_TIME: float = 5 * 60 + 20
+"""When Prism leaves home rally for chargelot staging (matches build wave_gate)."""
 
 PRISM_STANDOFF: float = 6.0
 """How far behind the army center the Prism sits while phasing."""
@@ -167,7 +168,7 @@ def escort_warp_prism():
                 # Once leave time hits, fly to Chargelot staging even with no
                 # ATTACKING ball yet. Sitting at home rally until a late force
                 # Wave (Terran pressure ~6:35) leaves no time to phase.
-                leave_time = 5 * 60 + 20
+                leave_time = ARMY_LEAVE_TIME
                 if ctx.bot.time >= leave_time:
                     hold = chargelot_staging(ctx)
                     mode = "preposition"
@@ -211,11 +212,7 @@ def escort_warp_prism():
                         )
                     elif phased and incomplete > 0:
                         mode = "finish_warps_no_army"
-                if mode not in ("phase_preposition", "finish_warps_no_army"):
-                    maneuver.add(
-                        MoveToSafeTarget(unit=prism, grid=grid, target=hold)
-                    )
-                elif mode == "finish_warps_no_army":
+                if mode != "phase_preposition":
                     maneuver.add(
                         MoveToSafeTarget(unit=prism, grid=grid, target=hold)
                     )
@@ -646,9 +643,9 @@ def harassing_adept():
                         dest_danger = _imminent_danger_at(ctx, dest)
                         if land_danger or dest_danger:
                             ctx.state.adept_shade_aborted.add(adept.tag)
-                            from bot.intel import chargelot_metrics as _cm
+                            from bot.intel import chargelot_metrics
 
-                            _cm.note_adept_shade_abort(ctx)
+                            chargelot_metrics.note_adept_shade_abort(ctx)
                             maneuver.add(
                                 UseAbility(
                                     AbilityId.CANCEL_ADEPTPHASESHIFT, adept
