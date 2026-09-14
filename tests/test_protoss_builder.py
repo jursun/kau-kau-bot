@@ -27,6 +27,8 @@ def _ctx() -> BotContext:
     bot.tech_requirement_progress.return_value = 1.0
     bot.structure_pending.return_value = 0
     bot.structures.return_value.amount = 0
+    bot.supply_cap = 100.0
+    bot.supply_left = 2.0
 
     build = MagicMock()
     build.economy.max_bases = 2
@@ -86,6 +88,7 @@ def test_ensure_protoss_builder_replaces_stuck_probe() -> None:
 
     replacement = MagicMock()
     replacement.tag = 99
+    replacement.position = Point2((11, 11))
 
     ctx.bot.unit_tag_dict = {42: stuck, 99: replacement}
     ctx.bot.can_afford.return_value = True
