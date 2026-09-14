@@ -25,6 +25,7 @@ from sc2.ids.upgrade_id import UpgradeId
 
 from bot.builds.definition import Army, BuildDefinition, Combat, Economy
 from bot.consts import CHARGELOT_COMP, FOCUS_MAIN, FOCUS_NATURAL
+from bot.intel import chargelot_metrics
 from bot.routines import combat, gates, protoss_support as ps
 from bot.routines.worker_harass import worker_harass
 from bot.steps import common as c
@@ -111,6 +112,11 @@ BUILD = BuildDefinition(
         # Gas schedule 3 → 1 → 2 (Charge bank / Prism / Stalkers).
         c.chargelot_gas_workers(),
     ),
+    on_step=chargelot_metrics.update_chargelot_metrics,
+    on_end=chargelot_metrics.on_game_end,
+    on_unit_created=chargelot_metrics.note_unit_created,
+    on_unit_destroyed=chargelot_metrics.note_unit_destroyed,
+    on_upgrade_complete=chargelot_metrics.note_upgrade_complete,
     macro_steps=(
         # Wall FirstPylon before Gate/Robo so ThreeByThreesWall slots have power.
         # Opening already places `pylon @ nat_wall`; this is a safety net.

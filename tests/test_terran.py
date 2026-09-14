@@ -438,6 +438,22 @@ def test_assign_on_created_calls_the_builds_hook() -> None:
     ctx.build.on_unit_created.assert_called_once_with(ctx, unit)
 
 
+def test_assign_on_created_calls_the_builds_hook_even_when_a_role_matched() -> None:
+    """A build watching every unit (e.g. chargelot_metrics.note_unit_created,
+    which tracks Stalkers/Zealots that ARE in army.types) must not be
+    skipped by an early role-assignment match."""
+    ctx = _ctx()  # army.types = {MARINE}
+    ctx.build.on_unit_created = MagicMock()
+    unit = MagicMock()
+    unit.type_id = UnitTypeId.MARINE
+    unit.tag = 5
+
+    roles.assign_on_created(ctx, unit)
+
+    ctx.mediator.assign_role.assert_called_once_with(tag=5, role=UnitRole.DEFENDING)
+    ctx.build.on_unit_created.assert_called_once_with(ctx, unit)
+
+
 # --- steps.terran.proxy_crew -------------------------------------------------
 
 

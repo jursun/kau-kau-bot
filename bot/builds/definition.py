@@ -16,7 +16,17 @@ from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 
 from bot.consts import FOCUS_MAIN, PROXY_CREW_ROLE
-from bot.core.types import CombatRoutine, Gate, MacroStep, PointLocator, UnitCreatedHook
+from bot.core.types import (
+    CombatRoutine,
+    Gate,
+    GameEndHook,
+    MacroStep,
+    PointLocator,
+    StepHook,
+    UnitCreatedHook,
+    UnitDestroyedHook,
+    UpgradeCompleteHook,
+)
 
 
 def _always(ctx) -> bool:
@@ -214,8 +224,21 @@ class BuildDefinition:
     `always`) is what actually runs it."""
     on_unit_created: UnitCreatedHook | None = None
     """Called from `roles.assign_on_created` after its generic role table,
+    for every created unit regardless of which (if any) role branch matched -
     for a build that needs to react to a specific freshly created unit (e.g.
     `steps.terran.claim_z_on_first_scv`, for `crew.z_tasks` above)."""
+    on_step: StepHook | None = None
+    """Called from `KauKauBot.on_step`, every frame, for a build that needs
+    its own frame-tick bookkeeping (e.g. `chargelot_metrics.
+    update_chargelot_metrics`) without the core engine knowing it exists."""
+    on_end: GameEndHook | None = None
+    """Called from `KauKauBot.on_end`, once, for a build's own end-of-game
+    reporting (e.g. `chargelot_metrics.on_game_end`)."""
+    on_unit_destroyed: UnitDestroyedHook | None = None
+    """Called from `KauKauBot.on_unit_destroyed`, before `roles.
+    forget_destroyed` clears any tags for the destroyed unit."""
+    on_upgrade_complete: UpgradeCompleteHook | None = None
+    """Called from `KauKauBot.on_upgrade_complete`."""
     pool_deadline: float = 50.0
     """Latest acceptable Spawning Pool start time (game seconds), read by
     `tests.validators.base_validator.BaseValidator`'s "Pool Timing" check

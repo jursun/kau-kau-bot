@@ -8,6 +8,7 @@ from cython_extensions import cy_distance_to
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 
+from bot.common.log import log_event
 from bot.routines.protoss_support import PRISM_WARP_FIELD_RADIUS
 
 if TYPE_CHECKING:
@@ -301,3 +302,46 @@ def snapshot(ctx: "BotContext") -> dict[str, Any]:
         "max_gas_after_nat": m.max_gas_after_nat,
         "nat_nexus_ready": m.nat_nexus_ready,
     }
+
+
+def on_game_end(ctx: "BotContext") -> None:
+    """`BuildDefinition.on_end` for this build: log METRICS/CHECKS and stash
+    a snapshot on the bot for the test harness's `--metrics` flag to read."""
+    snap = snapshot(ctx)
+    bot = ctx.bot
+    log_event(
+        bot,
+        "METRICS "
+        f"scout={snap['scout_damage_dealt']:.0f}/"
+        f"{snap['scout_damage_taken']:.0f}/k{snap['scout_kills']} "
+        f"adept={snap['adept_damage_dealt']:.0f}/"
+        f"{snap['adept_damage_taken']:.0f}/k{snap['adept_kills']} "
+        f"adept_n={snap['adept_produced']}/"
+        f"d{snap['adept_died']}/a{snap['adept_shade_aborts']} "
+        f"s2_before_robo={snap['stalkers_before_robo']} "
+        f"s2@{snap['time_second_stalker']} "
+        f"robo@{snap['time_robo_started']} "
+        f"prism={snap['prism_produced']}@{snap['time_prism']} "
+        f"phased@{snap['time_prism_phased']} "
+        f"muster@{snap['muster_commit_time']} "
+        f"gates={snap['warpgate_peak']} "
+        f"prism_warps={snap['prism_warps']} "
+        f"pylon_warps={snap['pylon_warps']} "
+        f"supply_block={snap['auto_supply_block_frames']} "
+        f"float={snap['max_minerals_after_nat']}/"
+        f"{snap['max_gas_after_nat']}",
+    )
+    log_event(
+        bot,
+        "CHECKS "
+        f"probe_alive@2:00={snap['scout_probe_alive_at_200']} "
+        f"adept_alive@4:30={snap['adept_alive_at_430']} "
+        f"charge_by@5:45={snap['charge_by_545']} "
+        f"stalkers2_by@4:00={snap['stalkers_2_by_400']}"
+        f"({snap['stalkers_trained']} trained) "
+        f"zealots6_by@5:10={snap['zealots_6_by_510']}"
+        f"({snap['zealots_trained']} trained) "
+        f"prism_by@5:25={snap['prism_by_525']} "
+        f"observer_by@5:45={snap['observer_by_545']}",
+    )
+    bot.chargelot_regression_metrics = snap

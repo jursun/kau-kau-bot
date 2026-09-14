@@ -38,24 +38,28 @@ SCOUT_TYPES: dict[Race, UnitTypeId | None] = {
 
 
 def assign_on_created(ctx: "BotContext", unit: Unit) -> None:
-    """Ares auto-assigns GATHERING to workers; everything else starts roleless."""
+    """Ares auto-assigns GATHERING to workers; everything else starts roleless.
+
+    `ctx.build.on_unit_created` always fires last, regardless of which (if
+    any) role branch above it matched - a build reacting to a specific unit
+    type that's also in `army.types` or `SUPPORT_ROLES` (e.g. `chargelot_
+    metrics.note_unit_created`, which watches Stalkers/Zealots) must not be
+    skipped by an early return here.
+    """
     race = ctx.build.race
 
     if unit.type_id in ctx.build.army.types:
         ctx.mediator.assign_role(tag=unit.tag, role=UnitRole.DEFENDING)
-        return
-
-    support = SUPPORT_ROLES.get(race, {}).get(unit.type_id)
-    if support is not None:
-        ctx.mediator.assign_role(tag=unit.tag, role=support)
-        return
-
-    if unit.type_id == SCOUT_TYPES.get(race) and not ctx.state.scout_tags:
-        # The game-start supply unit never fires on_unit_created, so the first
-        # one seen here is the second one — spend it on vision.
-        ctx.state.scout_tags.add(unit.tag)
-        ctx.mediator.assign_role(tag=unit.tag, role=UnitRole.SCOUTING)
-        ctx.log("SCOUT assigned")
+    else:
+        support = SUPPORT_ROLES.get(race, {}).get(unit.type_id)
+        if support is not None:
+            ctx.mediator.assign_role(tag=unit.tag, role=support)
+        elif unit.type_id == SCOUT_TYPES.get(race) and not ctx.state.scout_tags:
+            # The game-start supply unit never fires on_unit_created, so the
+            # first one seen here is the second one — spend it on vision.
+            ctx.state.scout_tags.add(unit.tag)
+            ctx.mediator.assign_role(tag=unit.tag, role=UnitRole.SCOUTING)
+            ctx.log("SCOUT assigned")
 
     if ctx.build.on_unit_created is not None:
         ctx.build.on_unit_created(ctx, unit)

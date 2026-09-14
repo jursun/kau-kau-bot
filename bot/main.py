@@ -22,7 +22,6 @@ from sc2.unit import Unit
 from bot.common.log import log_event
 from bot.core import BotContext, CombatEngine, MacroEngine, RunState, roles
 from bot.core.registry import UnknownBuild, default_build, get_build
-from bot.intel import chargelot_metrics
 
 # Team policy (Jason via CoS): local + validate end at 7:00 game time via
 # `run_game(..., game_time_limit=...)`. Ladder never passes the limit.
@@ -136,53 +135,14 @@ class KauKauBot(AresBot):
 
         self.macro.execute(self.ctx)
         self.combat.execute(self.ctx)
-        if self.ctx.build.name == "2base Chargelot All-In":
-            chargelot_metrics.update_chargelot_metrics(self.ctx)
+        if self.ctx.build.on_step is not None:
+            self.ctx.build.on_step(self.ctx)
 
     async def on_end(self, game_result: Result) -> None:
         await super(KauKauBot, self).on_end(game_result)
         log_event(self, f"END result={game_result}")
-        if (
-            self.ctx is not None
-            and self.ctx.build.name == "2base Chargelot All-In"
-        ):
-            snap = chargelot_metrics.snapshot(self.ctx)
-            log_event(
-                self,
-                "METRICS "
-                f"scout={snap['scout_damage_dealt']:.0f}/"
-                f"{snap['scout_damage_taken']:.0f}/k{snap['scout_kills']} "
-                f"adept={snap['adept_damage_dealt']:.0f}/"
-                f"{snap['adept_damage_taken']:.0f}/k{snap['adept_kills']} "
-                f"adept_n={snap['adept_produced']}/"
-                f"d{snap['adept_died']}/a{snap['adept_shade_aborts']} "
-                f"s2_before_robo={snap['stalkers_before_robo']} "
-                f"s2@{snap['time_second_stalker']} "
-                f"robo@{snap['time_robo_started']} "
-                f"prism={snap['prism_produced']}@{snap['time_prism']} "
-                f"phased@{snap['time_prism_phased']} "
-                f"muster@{snap['muster_commit_time']} "
-                f"gates={snap['warpgate_peak']} "
-                f"prism_warps={snap['prism_warps']} "
-                f"pylon_warps={snap['pylon_warps']} "
-                f"supply_block={snap['auto_supply_block_frames']} "
-                f"float={snap['max_minerals_after_nat']}/"
-                f"{snap['max_gas_after_nat']}"
-            )
-            log_event(
-                self,
-                "CHECKS "
-                f"probe_alive@2:00={snap['scout_probe_alive_at_200']} "
-                f"adept_alive@4:30={snap['adept_alive_at_430']} "
-                f"charge_by@5:45={snap['charge_by_545']} "
-                f"stalkers2_by@4:00={snap['stalkers_2_by_400']}"
-                f"({snap['stalkers_trained']} trained) "
-                f"zealots6_by@5:10={snap['zealots_6_by_510']}"
-                f"({snap['zealots_trained']} trained) "
-                f"prism_by@5:25={snap['prism_by_525']} "
-                f"observer_by@5:45={snap['observer_by_545']}"
-            )
-            self.chargelot_regression_metrics = snap
+        if self.ctx is not None and self.ctx.build.on_end is not None:
+            self.ctx.build.on_end(self.ctx)
 
     # --- roles -----------------------------------------------------------
 
@@ -192,16 +152,11 @@ class KauKauBot(AresBot):
         if unit.type_id in LOGGED_UNITS:
             count = self.units(unit.type_id).amount
             log_event(self, f"TRAINED {unit.type_id.name.lower()} ({count})")
-        if self.ctx.build.name == "2base Chargelot All-In":
-            chargelot_metrics.note_unit_created(self.ctx, unit)
 
     async def on_unit_destroyed(self, unit_tag: int) -> None:
         await super(KauKauBot, self).on_unit_destroyed(unit_tag)
-        if (
-            self.ctx is not None
-            and self.ctx.build.name == "2base Chargelot All-In"
-        ):
-            chargelot_metrics.note_unit_destroyed(self.ctx, unit_tag)
+        if self.ctx is not None and self.ctx.build.on_unit_destroyed is not None:
+            self.ctx.build.on_unit_destroyed(self.ctx, unit_tag)
         roles.forget_destroyed(self.ctx, unit_tag)
 
     # --- logging ---------------------------------------------------------
@@ -222,8 +177,5 @@ class KauKauBot(AresBot):
         # AresBot does not override this python-sc2 hook, so there is no
         # super() implementation to chain into.
         log_event(self, f"COMPLETE upgrade {upgrade.name}")
-        if (
-            self.ctx is not None
-            and self.ctx.build.name == "2base Chargelot All-In"
-        ):
-            chargelot_metrics.note_upgrade_complete(self.ctx, upgrade)
+        if self.ctx is not None and self.ctx.build.on_upgrade_complete is not None:
+            self.ctx.build.on_upgrade_complete(self.ctx, upgrade)
