@@ -161,6 +161,13 @@ def resolve_fast_window(
     return size, pos
 
 
+def local_game_cfg_for_testing(config: dict | None = None) -> dict:
+    """`LocalGame` settings for smoke/regression with FastWindow forced on."""
+    cfg = dict((config or load_config()).get(LOCAL_GAME) or {})
+    cfg["FastWindow"] = True
+    return cfg
+
+
 @contextmanager
 def _patched_sc2_window(
     resolution: tuple[int, int], placement: tuple[int, int]

@@ -24,11 +24,11 @@ from sc2.data import Difficulty, Race, Result  # noqa: E402
 from sc2.player import Bot, Computer  # noqa: E402
 
 from run import (  # noqa: E402
-    LOCAL_GAME,
     MY_BOT_NAME,
     MY_BOT_RACE,
     build_bot_ai,
     load_config,
+    local_game_cfg_for_testing,
     resolve_map,
     resolve_map_list,
     run_local_game,
@@ -348,7 +348,7 @@ def run_smoke(
             f"(need {default_race}). Pass --race {default_race}, or change "
             f"MyBotRace in config.yml."
         )
-    local_cfg = config.get(LOCAL_GAME) or {}
+    local_cfg = local_game_cfg_for_testing(config)
 
     difficulty_name = args.difficulty or local_cfg.get("OpponentDifficulty", "VeryHard")
     try:
@@ -356,10 +356,12 @@ def run_smoke(
     except KeyError:
         raise SystemExit(f"Unknown difficulty {difficulty_name!r}") from None
 
+    # Smoke defaults to stepped mode so FastWindow applies; --realtime still works
+    # for watching (and then skips the corner window).
     realtime = (
         bool(args.realtime)
         if args.realtime is not None
-        else bool(local_cfg.get("Realtime"))
+        else False
     )
 
     maps_path = local_cfg.get("MapPath")

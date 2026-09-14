@@ -98,7 +98,9 @@ poetry run python run.py --validate
 ```
 
 `run.py` flags override `config.yml`: `--map`, `--opponent-race`,
-`--difficulty`, `--realtime`.
+`--difficulty`, `--realtime`. Non-realtime local/smoke/regression games use
+`LocalGame.FastWindow` (tiny corner client); set `FastWindow: False` only if
+you need a normal window for `run.py`.
 
 Cross-check registered builds against `<race>_builds.yml` (no pytest required):
 

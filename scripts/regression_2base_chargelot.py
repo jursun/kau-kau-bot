@@ -32,7 +32,12 @@ from loguru import logger  # noqa: E402
 from sc2.data import Difficulty, Race, Result  # noqa: E402
 from sc2.player import Bot, Computer  # noqa: E402
 
-from run import LOCAL_GAME, load_config, resolve_map, run_local_game  # noqa: E402
+from run import (  # noqa: E402
+    load_config,
+    local_game_cfg_for_testing,
+    resolve_map,
+    run_local_game,
+)
 from scripts.smoke_common import (  # noqa: E402
     build_smoke_bot,
     resolve_smoke_settings,
@@ -296,7 +301,7 @@ def main(argv: list[str] | None = None) -> int:
         default_race=DEFAULT_RACE,
         default_build=BUILD_NAME,
     )
-    local_cfg = config.get(LOCAL_GAME) or {}
+    local_cfg = local_game_cfg_for_testing(config)
     maps_path = local_cfg.get("MapPath")
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
