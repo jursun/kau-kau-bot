@@ -608,31 +608,44 @@ def _enemies_near_ground_air(ctx: "BotContext", point, distance: float) -> list[
     return out
 
 
-def _stalker_pick_target(stalker: Unit, enemies: list[Unit]) -> Unit | None:
-    """Prefer Medivacs / repairing-or-wall SCVs, else lowest-HP in range.
+def stalker_target_score(
+    *, is_medivac: bool, is_repairing: bool, is_worker: bool, vital: float
+) -> tuple[int, int, int, float]:
+    """Pure priority key for `_stalker_pick_target` (lower sorts first).
 
-    Sort key: Medivac → repairing worker → any worker → lowest HP+shield.
+    Order: Medivac → repairing-or-wall worker → any worker → lowest
+    current HP+shield among what's left.
     """
+    return (
+        0 if is_medivac else 1,
+        0 if is_repairing else 1,
+        0 if is_worker else 1,
+        vital,
+    )
+
+
+def _is_repairing(unit: Unit) -> bool:
+    orders = getattr(unit, "orders", None) or ()
+    for order in orders:
+        ability = getattr(order, "ability", None)
+        name = getattr(ability, "name", "") or ""
+        if "Repair" in name or "REPAIR" in name:
+            return True
+    return False
+
+
+def _stalker_pick_target(stalker: Unit, enemies: list[Unit]) -> Unit | None:
+    """Prefer Medivacs / repairing-or-wall SCVs, else lowest-HP in range."""
     in_range = list(cy_in_attack_range(stalker, enemies))
     if not in_range:
         return None
 
     def _score(u: Unit) -> tuple:
-        repairing = False
-        orders = getattr(u, "orders", None) or ()
-        for order in orders:
-            ability = getattr(order, "ability", None)
-            name = getattr(ability, "name", "") or ""
-            if "Repair" in name or "REPAIR" in name:
-                repairing = True
-                break
-        is_medivac = u.type_id == UnitTypeId.MEDIVAC
-        is_worker = u.type_id in WORKER_TYPES
-        return (
-            0 if is_medivac else 1,
-            0 if repairing else 1,
-            0 if is_worker else 1,
-            u.health + u.shield,
+        return stalker_target_score(
+            is_medivac=u.type_id == UnitTypeId.MEDIVAC,
+            is_repairing=_is_repairing(u),
+            is_worker=u.type_id in WORKER_TYPES,
+            vital=u.health + u.shield,
         )
 
     return min(in_range, key=_score)
@@ -664,6 +677,34 @@ def _prism_near_enemy_for_muster(ctx: "BotContext") -> bool:
         or bot.already_pending(UnitTypeId.WARPPRISM) > 0
     )
     return not expecting_prism
+
+
+def muster_commit_decision(
+    form_ready: bool,
+    prism_ready: bool,
+    waiting_since: float | None,
+    now: float,
+    prism_timeout: float = CHARGELOT_MUSTER_PRISM_TIMEOUT,
+) -> tuple[bool, bool]:
+    """Pure muster-commit gate for `chargelot_attack`.
+
+    The first wave commits once it has formed up (`form_ready`) and either
+    the Warp Prism has reached phase range (`prism_ready`) or the Prism-wait
+    clock — `waiting_since`, latched the first frame form-up was ready but
+    the Prism wasn't — has run past `prism_timeout`.
+
+    Returns `(commit, prism_wait_expired)`. `prism_wait_expired` is only
+    meaningful when `commit` is True, to pick a "ready" vs "prism_timeout"
+    log reason.
+    """
+    if not form_ready:
+        return False, False
+    if prism_ready:
+        return True, False
+    prism_wait_expired = (
+        waiting_since is not None and now - waiting_since >= prism_timeout
+    )
+    return prism_wait_expired, prism_wait_expired
 
 
 def chargelot_attack(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
@@ -708,16 +749,14 @@ def chargelot_attack(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
                 muster_center_dist <= CHARGELOT_MUSTER_RADIUS
                 and muster_near_frac >= 0.75
             )
-            prism_wait_expired = False
+            waiting_since = None
             if form_ready and not prism_ready:
                 chargelot_metrics.note_muster_waiting_prism(ctx)
-                since = ctx.state.chargelot_metrics.muster_form_ready_since
-                if (
-                    since is not None
-                    and ctx.bot.time - since >= CHARGELOT_MUSTER_PRISM_TIMEOUT
-                ):
-                    prism_wait_expired = True
-            if form_ready and (prism_ready or prism_wait_expired):
+                waiting_since = ctx.state.chargelot_metrics.muster_form_ready_since
+            commit, prism_wait_expired = muster_commit_decision(
+                form_ready, prism_ready, waiting_since, ctx.bot.time
+            )
+            if commit:
                 reason = "prism_timeout" if prism_wait_expired else "ready"
                 ctx.log(
                     f"MUSTER commit n={len(mustering_units)} "

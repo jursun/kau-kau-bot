@@ -810,5 +810,110 @@ def test_defend_home_skips_move_when_already_pathing_to_hold() -> None:
         targeting.hold_positions = original
 
 
+def test_muster_commit_holds_when_not_formed_up() -> None:
+    commit, prism_wait_expired = combat.muster_commit_decision(
+        form_ready=False, prism_ready=False, waiting_since=None, now=100.0
+    )
+    assert (commit, prism_wait_expired) == (False, False)
+
+
+def test_muster_commit_fires_immediately_once_prism_is_ready() -> None:
+    commit, prism_wait_expired = combat.muster_commit_decision(
+        form_ready=True, prism_ready=True, waiting_since=None, now=100.0
+    )
+    assert (commit, prism_wait_expired) == (True, False)
+
+
+def test_muster_commit_holds_while_prism_wait_clock_has_not_started() -> None:
+    # Mirrors the first frame form-up is ready but not yet latched by
+    # `note_muster_waiting_prism`.
+    commit, prism_wait_expired = combat.muster_commit_decision(
+        form_ready=True, prism_ready=False, waiting_since=None, now=100.0
+    )
+    assert (commit, prism_wait_expired) == (False, False)
+
+
+def test_muster_commit_holds_before_prism_timeout_elapses() -> None:
+    commit, prism_wait_expired = combat.muster_commit_decision(
+        form_ready=True,
+        prism_ready=False,
+        waiting_since=100.0,
+        now=100.0 + combat.CHARGELOT_MUSTER_PRISM_TIMEOUT - 1.0,
+    )
+    assert (commit, prism_wait_expired) == (False, False)
+
+
+def test_muster_commit_fires_once_prism_timeout_elapses() -> None:
+    commit, prism_wait_expired = combat.muster_commit_decision(
+        form_ready=True,
+        prism_ready=False,
+        waiting_since=100.0,
+        now=100.0 + combat.CHARGELOT_MUSTER_PRISM_TIMEOUT,
+    )
+    assert (commit, prism_wait_expired) == (True, True), "boundary (>=) should fire"
+
+
+def test_stalker_target_score_prefers_medivac_over_everything() -> None:
+    medivac = combat.stalker_target_score(
+        is_medivac=True, is_repairing=False, is_worker=False, vital=500.0
+    )
+    low_hp_zealot = combat.stalker_target_score(
+        is_medivac=False, is_repairing=False, is_worker=False, vital=1.0
+    )
+    assert medivac < low_hp_zealot
+
+
+def test_stalker_target_score_prefers_repairing_worker_over_plain_worker() -> None:
+    repairing = combat.stalker_target_score(
+        is_medivac=False, is_repairing=True, is_worker=True, vital=45.0
+    )
+    plain_worker = combat.stalker_target_score(
+        is_medivac=False, is_repairing=False, is_worker=True, vital=1.0
+    )
+    assert repairing < plain_worker
+
+
+def test_stalker_target_score_prefers_any_worker_over_army_unit() -> None:
+    worker = combat.stalker_target_score(
+        is_medivac=False, is_repairing=False, is_worker=True, vital=45.0
+    )
+    army_unit = combat.stalker_target_score(
+        is_medivac=False, is_repairing=False, is_worker=False, vital=1.0
+    )
+    assert worker < army_unit
+
+
+def test_stalker_target_score_falls_back_to_lowest_vital() -> None:
+    lower_hp = combat.stalker_target_score(
+        is_medivac=False, is_repairing=False, is_worker=False, vital=10.0
+    )
+    higher_hp = combat.stalker_target_score(
+        is_medivac=False, is_repairing=False, is_worker=False, vital=50.0
+    )
+    assert lower_hp < higher_hp
+
+
+def test_stalker_pick_target_uses_priority_order_end_to_end() -> None:
+    """`_stalker_pick_target` wires `stalker_target_score` to real units."""
+    stalker = _unit(1)
+    marine = _unit(2)
+    marine.type_id = UnitTypeId.MARINE
+    marine.orders = []
+    marine.health = 5.0
+    marine.shield = 0.0
+    medivac = _unit(3)
+    medivac.type_id = UnitTypeId.MEDIVAC
+    medivac.orders = []
+    medivac.health = 150.0
+    medivac.shield = 0.0
+    original = combat.cy_in_attack_range
+    combat.cy_in_attack_range = lambda _stalker, enemies: enemies
+    try:
+        picked = combat._stalker_pick_target(stalker, [marine, medivac])
+    finally:
+        combat.cy_in_attack_range = original
+    assert picked is medivac, "Medivac must outrank a low-HP Marine"
+
+
 if __name__ == "__main__":
     sys.exit(main())
