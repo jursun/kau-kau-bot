@@ -1,6 +1,9 @@
 # Publish folder
 publish/
 
+# Generated smoke/sanity/regression test output
+reports/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
