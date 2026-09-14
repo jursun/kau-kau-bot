@@ -169,6 +169,19 @@ class KauKauBot(AresBot):
                 f"float={snap['max_minerals_after_nat']}/"
                 f"{snap['max_gas_after_nat']}"
             )
+            log_event(
+                self,
+                "CHECKS "
+                f"probe_alive@2:00={snap['scout_probe_alive_at_200']} "
+                f"adept_alive@4:30={snap['adept_alive_at_430']} "
+                f"charge_by@5:45={snap['charge_by_545']} "
+                f"stalkers2_by@4:00={snap['stalkers_2_by_400']}"
+                f"({snap['stalkers_trained']} trained) "
+                f"zealots6_by@5:10={snap['zealots_6_by_510']}"
+                f"({snap['zealots_trained']} trained) "
+                f"prism_by@5:25={snap['prism_by_525']} "
+                f"observer_by@5:45={snap['observer_by_545']}"
+            )
             self.chargelot_regression_metrics = snap
 
     # --- roles -----------------------------------------------------------
@@ -209,3 +222,8 @@ class KauKauBot(AresBot):
         # AresBot does not override this python-sc2 hook, so there is no
         # super() implementation to chain into.
         log_event(self, f"COMPLETE upgrade {upgrade.name}")
+        if (
+            self.ctx is not None
+            and self.ctx.build.name == "2base Chargelot All-In"
+        ):
+            chargelot_metrics.note_upgrade_complete(self.ctx, upgrade)

@@ -65,8 +65,27 @@ class ChargelotMetrics:
     """First frame any Robotics Facility is live or pending."""
     prism_produced: bool = False
     time_prism: float | None = None
+    """First frame a Warp Prism is alive, phasing, or pending (queue-start
+    inclusive) - see `time_prism_completed` for the actual finish time."""
     time_prism_phased: float | None = None
     """First frame a Warp Prism is in phasing mode."""
+    time_prism_completed: float | None = None
+    """Game time the Warp Prism finished training (`on_unit_created`)."""
+    observer_produced: bool = False
+    time_observer: float | None = None
+    scout_probe_death_time: float | None = None
+    """Game time the opening harass Probe died, or None if it survived."""
+    adept_death_time: float | None = None
+    """Game time the harassing Adept died, or None if it survived."""
+    charge_complete_time: float | None = None
+    stalkers_trained: int = 0
+    """Cumulative Stalkers trained (never decremented on death)."""
+    time_2_stalkers: float | None = None
+    """Game time the 2nd Stalker was trained."""
+    zealots_trained: int = 0
+    """Cumulative Zealots trained (never decremented on death)."""
+    time_6_zealots: float | None = None
+    """Game time the 6th Zealot was trained."""
     muster_commit_time: float | None = None
     """Game time when Chargelot muster released the first wave."""
     muster_form_ready_since: float | None = None
