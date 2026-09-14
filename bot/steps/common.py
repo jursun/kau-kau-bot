@@ -78,6 +78,11 @@ def _chargelot_stalkers_out(ctx: "BotContext") -> int:
     )
 
 
+def chargelot_stalkers_out(ctx: "BotContext") -> int:
+    """Public helper for MacroPlan gates (2 Stalkers before Robo)."""
+    return _chargelot_stalkers_out(ctx)
+
+
 def _spawn_stalker_only(spawn_target: Point2 | None) -> SpawnController:
     return SpawnController(
         {UnitTypeId.STALKER: {"proportion": 1.0, "priority": 0}},
@@ -169,15 +174,17 @@ def _chargelot_spawn(ctx: "BotContext") -> SpawnController | None:
                 freeflow_mode=False,
             )
         else:
-            # Keep 200 minerals reserved for the Prism. Prefer Stalker when
-            # gas allows (incl. opening #2); only then Zealot surplus.
+            # Keep 200 minerals and 100 gas reserved for the Prism. Surplus
+            # Stalkers were eating Prism gas (bank dipped to ~0) and delaying
+            # production past the leave window.
             surplus = minerals - _PRISM_MINERALS
-            if surplus >= _STALKER_MINERALS and gas >= _STALKER_GAS:
+            gas_surplus = gas - _PRISM_GAS
+            if surplus >= _STALKER_MINERALS and gas_surplus >= _STALKER_GAS:
                 path = "pre_prism_stalker"
                 result = _spawn_stalker_only(spawn_target)
             elif (
                 stalkers < _CHARGELOT_OPENING_STALKERS
-                and gas >= _STALKER_GAS
+                and gas_surplus >= _STALKER_GAS
             ):
                 # Gas for Stalker #2 but not enough surplus minerals yet —
                 # do not dump into Zealots.
@@ -278,8 +285,10 @@ def _chargelot_spawn(ctx: "BotContext") -> SpawnController | None:
     return result
 
 
-def spawn_army() -> MacroStep:
+def spawn_army(gate: Gate = _always) -> MacroStep:
     def step(ctx: "BotContext"):
+        if not gate(ctx):
+            return None
         # Chargelot: dynamic Stalker-first flood after the opening.
         if ctx.build.army.comp is CHARGELOT_COMP or (
             UnitTypeId.ZEALOT in ctx.build.army.comp

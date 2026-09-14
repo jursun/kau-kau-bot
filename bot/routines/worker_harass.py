@@ -693,6 +693,9 @@ def _update_combat_stats(ctx: "BotContext", scout) -> None:
         if old is not None and cur < old:
             dealt = old - cur
             ctx.state.worker_harass_damage_dealt += dealt
+            if cur <= 0:
+                ctx.state.worker_harass_kills += 1
+                continue
             if dealt >= 5:
                 ctx.log(
                     f"HARASS dealt {dealt:.0f} to {u.type_id.name} "
@@ -701,13 +704,17 @@ def _update_combat_stats(ctx: "BotContext", scout) -> None:
         ctx.state.worker_harass_prey_hp[u.tag] = cur
     for tag in list(ctx.state.worker_harass_prey_hp):
         if tag not in seen:
-            del ctx.state.worker_harass_prey_hp[tag]
+            last = ctx.state.worker_harass_prey_hp.pop(tag)
+            # Vanished after we were damaging it — likely a kill.
+            if last <= 5.0 and ctx.state.worker_harass_damage_dealt > 0:
+                ctx.state.worker_harass_kills += 1
 
 def _log_combat(ctx: "BotContext", reason: str) -> None:
     ctx.log(
         f"HARASS combat ({reason}): "
         f"dealt {ctx.state.worker_harass_damage_dealt:.0f}, "
-        f"took {ctx.state.worker_harass_damage_taken:.0f}"
+        f"took {ctx.state.worker_harass_damage_taken:.0f}, "
+        f"kills={ctx.state.worker_harass_kills}"
     )
 
 def _clear_mission(ctx: "BotContext") -> None:

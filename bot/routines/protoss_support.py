@@ -164,19 +164,61 @@ def escort_warp_prism():
             near_enemy = prism_to_enemy <= PRISM_ENEMY_PHASE_RANGE
 
             if army is None:
-                hold = targeting.rally_point(ctx)
-                mode = "rally"
-                if phased and incomplete == 0:
-                    maneuver.add(
-                        UseAbility(
-                            AbilityId.MORPH_WARPPRISMTRANSPORTMODE, prism
-                        )
+                # Once leave time hits, fly to Chargelot staging even with no
+                # ATTACKING ball yet. Sitting at home rally until a late force
+                # Wave (Terran pressure ~6:35) leaves no time to phase.
+                leave_time = 5 * 60 + 20
+                if ctx.bot.time >= leave_time:
+                    hold = chargelot_staging(ctx)
+                    mode = "preposition"
+                    near_hold = (
+                        cy_distance_to(prism.position, hold)
+                        <= PRISM_PHASE_APPROACH
                     )
-                elif phased and incomplete > 0:
-                    mode = "finish_warps_no_army"
-                maneuver.add(
-                    MoveToSafeTarget(unit=prism, grid=grid, target=hold)
-                )
+                    # Phase at staging while waiting for the ball so warps
+                    # can land as soon as Wave 1 arrives.
+                    if (
+                        near_enemy
+                        and near_hold
+                        and not phased
+                        and AbilityId.MORPH_WARPPRISMPHASINGMODE
+                        in prism.abilities
+                    ):
+                        mode = "phase_preposition"
+                        maneuver.add(
+                            UseAbility(
+                                AbilityId.MORPH_WARPPRISMPHASINGMODE, prism
+                            )
+                        )
+                    elif phased and incomplete == 0 and not (
+                        near_enemy and near_hold
+                    ):
+                        maneuver.add(
+                            UseAbility(
+                                AbilityId.MORPH_WARPPRISMTRANSPORTMODE, prism
+                            )
+                        )
+                    elif phased and incomplete > 0:
+                        mode = "finish_warps_no_army"
+                else:
+                    hold = targeting.rally_point(ctx)
+                    mode = "rally"
+                    if phased and incomplete == 0:
+                        maneuver.add(
+                            UseAbility(
+                                AbilityId.MORPH_WARPPRISMTRANSPORTMODE, prism
+                            )
+                        )
+                    elif phased and incomplete > 0:
+                        mode = "finish_warps_no_army"
+                if mode not in ("phase_preposition", "finish_warps_no_army"):
+                    maneuver.add(
+                        MoveToSafeTarget(unit=prism, grid=grid, target=hold)
+                    )
+                elif mode == "finish_warps_no_army":
+                    maneuver.add(
+                        MoveToSafeTarget(unit=prism, grid=grid, target=hold)
+                    )
                 if _last_mode.get(prism.tag) != mode:
                     _last_mode[prism.tag] = mode
                     ctx.log(f"PRISM {mode}")
@@ -187,41 +229,49 @@ def escort_warp_prism():
             dist = cy_distance_to(prism.position, behind)
             near_army = dist <= PRISM_PHASE_APPROACH
             far_from_pocket = dist > PRISM_REPOSITION_DIST
+            staging = chargelot_staging(ctx)
+            near_staging = (
+                cy_distance_to(prism.position, staging) <= PRISM_PHASE_APPROACH
+            )
 
-            # Phase when near the enemy natural and the army pocket. Do NOT
-            # gate on warpgate readiness — TRAINWARP ability flicker was
+            # Phase when near the enemy natural and either the army pocket or
+            # Chargelot staging (prepositioned Prism before the ball arrives).
+            # Do NOT gate on warpgate readiness — TRAINWARP ability flicker was
             # flipping hold_phase off and MoveToSafeTarget cancelled morph.
-            on_station = near_army and near_enemy
+            on_station = near_enemy and (near_army or near_staging)
             hold_phase = incomplete > 0 or on_station
 
             if hold_phase:
                 if not phased:
-                    if not near_army or not near_enemy:
-                        mode = "escort"
-                        maneuver.add(
-                            MoveToSafeTarget(
-                                unit=prism, grid=grid, target=behind
-                            )
-                        )
-                    elif AbilityId.MORPH_WARPPRISMPHASINGMODE in prism.abilities:
+                    if on_station and (
+                        AbilityId.MORPH_WARPPRISMPHASINGMODE in prism.abilities
+                    ):
                         mode = "phase_on_station"
                         maneuver.add(
                             UseAbility(
                                 AbilityId.MORPH_WARPPRISMPHASINGMODE, prism
                             )
                         )
-                    else:
+                    elif on_station:
                         mode = "wait_phase"
-                else:
-                    mode = (
-                        "on_station"
-                        if near_army and near_enemy
-                        else "crawl_with_warps"
-                    )
-                    if dist > 2.0:
+                    else:
+                        mode = "escort"
                         maneuver.add(
                             MoveToSafeTarget(
                                 unit=prism, grid=grid, target=behind
+                            )
+                        )
+                else:
+                    mode = (
+                        "on_station"
+                        if near_enemy and (near_army or near_staging)
+                        else "crawl_with_warps"
+                    )
+                    hold_target = behind if near_army else staging
+                    if cy_distance_to(prism.position, hold_target) > 2.0:
+                        maneuver.add(
+                            MoveToSafeTarget(
+                                unit=prism, grid=grid, target=hold_target
                             )
                         )
             else:
@@ -347,12 +397,18 @@ def _shade_age(ctx: "BotContext", adept_tag: int) -> float | None:
 
 
 def _imminent_danger_at(ctx: "BotContext", position: Point2) -> bool:
-    """True if combat / static threats are near `position` (workers ignored)."""
+    """True if landing near `position` is suicidal.
+
+    Workers are ignored. A single army unit (e.g. one Ling/Queen) is not
+    enough to abort — that was cancelling every hop into a Zerg natural.
+    Abort on static defense or ≥2 non-worker combat units in radius.
+    """
     near = ctx.mediator.get_units_in_range(
         start_points=[position],
         distances=ADEPT_SHADE_DANGER_RADIUS,
         query_tree=UnitTreeQueryType.EnemyGround,
     )[0]
+    army_n = 0
     for enemy in near:
         if enemy.type_id in ENEMY_WORKERS:
             continue
@@ -363,7 +419,9 @@ def _imminent_danger_at(ctx: "BotContext", position: Point2) -> bool:
             ):
                 return True
             continue
-        return True
+        army_n += 1
+        if army_n >= 2:
+            return True
     return False
 
 
@@ -549,9 +607,27 @@ def harassing_adept():
                 age = age or 0.0
                 if adept.tag in ctx.state.adept_shade_aborted:
                     if age < ADEPT_SHADE_LIFETIME:
-                        maneuver.add(KeepUnitSafe(unit=adept, grid=grid))
-                        maneuver.add(AMove(unit=adept, target=dest))
-                        ctx.bot.register_behavior(maneuver)
+                        # After abort: still poke workers if already in range;
+                        # otherwise keep safe and drift toward the mineral line.
+                        workers_in_range = [
+                            e
+                            for e in combat_enemies
+                            if e.type_id in ENEMY_WORKERS
+                            and cy_distance_to(adept.position, e.position)
+                            <= 5.0
+                        ]
+                        if workers_in_range and len(army_threats) < 2:
+                            branch = _adept_do_stutter(
+                                ctx,
+                                adept,
+                                workers_in_range,
+                                chase_target=workers_in_range[0],
+                            )
+                            _adept_log(ctx, f"abort poke {branch}")
+                        else:
+                            maneuver.add(KeepUnitSafe(unit=adept, grid=grid))
+                            maneuver.add(AMove(unit=adept, target=dest))
+                            ctx.bot.register_behavior(maneuver)
                         continue
                     _adept_clear_shade_state(ctx, adept.tag)
                 elif shade is not None:
@@ -570,6 +646,9 @@ def harassing_adept():
                         dest_danger = _imminent_danger_at(ctx, dest)
                         if land_danger or dest_danger:
                             ctx.state.adept_shade_aborted.add(adept.tag)
+                            from bot.intel import chargelot_metrics as _cm
+
+                            _cm.note_adept_shade_abort(ctx)
                             maneuver.add(
                                 UseAbility(
                                     AbilityId.CANCEL_ADEPTPHASESHIFT, adept

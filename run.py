@@ -17,8 +17,10 @@ import argparse
 import platform
 import random
 import sys
+from contextlib import contextmanager
 from os import path
 from pathlib import Path
+from typing import Iterator
 
 # Repo root must precede ares-sc2 on sys.path. Poetry's .pth adds ares-sc2
 # before the project root, which makes `import tests` resolve to
@@ -40,6 +42,7 @@ from sc2.data import Difficulty, Race  # noqa: E402
 from sc2.main import run_game  # noqa: E402
 from sc2.maps import Map  # noqa: E402
 from sc2.player import Bot, Computer  # noqa: E402
+from sc2.sc2process import SC2Process  # noqa: E402
 
 from bot.main import KauKauBot, LOCAL_GAME_TIME_LIMIT_SECONDS  # noqa: E402
 
@@ -48,6 +51,11 @@ MAP_FILE_EXT: str = "SC2Map"
 MY_BOT_NAME: str = "MyBotName"
 MY_BOT_RACE: str = "MyBotRace"
 LOCAL_GAME: str = "LocalGame"
+
+# Tiny corner client for --no-realtime. python-sc2's run_game() does not
+# expose SC2Process resolution/placement, so we patch those for the launch.
+FAST_WINDOW_SIZE: tuple[int, int] = (256, 256)
+FAST_WINDOW_POS: tuple[int, int] = (0, 0)
 
 FALLBACK_MAPS: list[str] = [
     "PersephoneAIE_v4",
@@ -127,6 +135,82 @@ def resolve_map_list(local_cfg: dict) -> list[str]:
 
     logger.error(f"No maps found under {maps_path}; check `LocalGame.MapPath`.")
     return FALLBACK_MAPS
+
+
+def resolve_fast_window(
+    local_cfg: dict | None, realtime: bool
+) -> tuple[tuple[int, int], tuple[int, int]] | None:
+    """Corner-window size/pos for stepped games, or None to leave SC2 defaults.
+
+    Realtime stays full-size so the game is watchable. Disable with
+    `LocalGame.FastWindow: False`. Size/pos: WindowWidth/Height/X/Y.
+    """
+    if realtime:
+        return None
+    cfg = local_cfg or {}
+    if not cfg.get("FastWindow", True):
+        return None
+    size = (
+        int(cfg.get("WindowWidth", FAST_WINDOW_SIZE[0])),
+        int(cfg.get("WindowHeight", FAST_WINDOW_SIZE[1])),
+    )
+    pos = (
+        int(cfg.get("WindowX", FAST_WINDOW_POS[0])),
+        int(cfg.get("WindowY", FAST_WINDOW_POS[1])),
+    )
+    return size, pos
+
+
+@contextmanager
+def _patched_sc2_window(
+    resolution: tuple[int, int], placement: tuple[int, int]
+) -> Iterator[None]:
+    orig_init = SC2Process.__init__
+
+    def _init(self, *args, **kwargs):
+        kwargs["resolution"] = resolution
+        kwargs["placement"] = placement
+        orig_init(self, *args, **kwargs)
+
+    SC2Process.__init__ = _init  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        SC2Process.__init__ = orig_init
+
+
+def run_local_game(
+    map_settings,
+    players,
+    *,
+    realtime: bool,
+    game_time_limit: int | None = None,
+    local_cfg: dict | None = None,
+    **run_game_kwargs,
+):
+    """`run_game` with a tiny corner window when not realtime."""
+    window = resolve_fast_window(local_cfg, realtime)
+    if window is None:
+        return run_game(
+            map_settings,
+            players,
+            realtime=realtime,
+            game_time_limit=game_time_limit,
+            **run_game_kwargs,
+        )
+    resolution, placement = window
+    logger.info(
+        f"SC2 fast window {resolution[0]}x{resolution[1]} at {placement} "
+        "(non-realtime). Set LocalGame.FastWindow: False for a normal window."
+    )
+    with _patched_sc2_window(resolution, placement):
+        return run_game(
+            map_settings,
+            players,
+            realtime=realtime,
+            game_time_limit=game_time_limit,
+            **run_game_kwargs,
+        )
 
 
 def resolve_map(map_name: str, maps_path: str | None):
@@ -210,11 +294,12 @@ def main() -> None:
         f"Local game time limit ENABLED - end at "
         f"{LOCAL_GAME_TIME_LIMIT_SECONDS:.0f}s game time (7:00 team policy)."
     )
-    run_game(
+    run_local_game(
         map_obj,
         [bot, Computer(opponent_race, difficulty)],
         realtime=realtime,
         game_time_limit=int(LOCAL_GAME_TIME_LIMIT_SECONDS),
+        local_cfg=local_cfg,
     )
 
 

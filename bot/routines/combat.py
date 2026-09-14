@@ -68,6 +68,8 @@ def _active_crew_tags(ctx: "BotContext") -> set[int]:
 
 
 DEFENDER_ENGAGE_RANGE: float = 12.0
+DEFENDER_HOLD_ARRIVE: float = 3.0
+"""Within this of the hold point: issue no move (settled)."""
 SQUAD_ENGAGE_RANGE: float = 11.5
 SQUAD_RADIUS: float = 9.0
 MUSTER_RADIUS: float = 4.0
@@ -76,6 +78,9 @@ before it is let off to attack, rather than trickling toward the enemy
 as units peel off from wherever they were defending."""
 CHARGELOT_MUSTER_RADIUS: float = 7.0
 """Wider muster for the ~12 Zealot first wave so it commits as one squad."""
+CHARGELOT_MUSTER_PRISM_TIMEOUT: float = 55.0
+"""If form-up is ready but Prism never reaches enemy-nat range, commit anyway.
+Long enough for a late Prism (~6:00) to fly from Robo to staging after leave."""
 
 BUILDER_CLAIM_RADIUS: float = 30.0
 """How close to the proxy a worker has to be for `builder_workers_attack`
@@ -165,6 +170,11 @@ def release_first_wave_then_stream(muster: bool = True) -> CombatRoutine:
     first wave skips that hold and marches on the same frame.
     """
 
+    # If tech/time gate has been ready this long without wave1_min, leave
+    # with whatever army exists (LeyLines Zerg / Terran pressure never hit 12).
+    _WAVE1_FORCE_AFTER: float = 25.0
+    _WAVE1_FORCE_MIN_FRAC: float = 0.5
+
     def routine(ctx: "BotContext") -> None:
         defenders = ctx.units_in_role(UnitRole.DEFENDING)
         if not defenders:
@@ -178,9 +188,23 @@ def release_first_wave_then_stream(muster: bool = True) -> CombatRoutine:
 
         plan = ctx.build.combat
         size = len(defenders)
-        if size < plan.wave1_min:
+        gate_ready = plan.wave_gate(ctx)
+        force_min = max(1, int(plan.wave1_min * _WAVE1_FORCE_MIN_FRAC))
+        force_leave = False
+        if gate_ready:
+            # Start the clock as soon as leave tech/time is ready — do not
+            # wait until size hits force_min (that delayed Terran to ~6:35).
+            if ctx.state.chargelot_wave_gate_ready_since is None:
+                ctx.state.chargelot_wave_gate_ready_since = ctx.bot.time
+            ready_since = ctx.state.chargelot_wave_gate_ready_since
+            if size >= force_min and size < plan.wave1_min:
+                force_leave = ctx.bot.time - ready_since >= _WAVE1_FORCE_AFTER
+            elif size >= plan.wave1_min:
+                ctx.state.chargelot_wave_gate_ready_since = None
+
+        if size < plan.wave1_min and not force_leave:
             return
-        if not plan.wave_gate(ctx):
+        if not gate_ready:
             ctx.log_once(
                 "wave_wait_0",
                 f"GATHER wave 1 ({size}/{plan.wave1_min}) - waiting on tech",
@@ -191,9 +215,11 @@ def release_first_wave_then_stream(muster: bool = True) -> CombatRoutine:
         if muster:
             ctx.state.mustering_tags.update(tags)
         ctx.state.wave_number = 1
+        ctx.state.chargelot_wave_gate_ready_since = None
+        why = f" force_min={size}" if force_leave else ""
         ctx.log(
             f"WAVE 1 attack (size={size}) - streaming from here on"
-            f"{'' if muster else ' (no muster)'}"
+            f"{'' if muster else ' (no muster)'}{why}"
         )
 
     return routine
@@ -224,14 +250,35 @@ def _enemies_near(ctx: "BotContext", point, distance: float) -> Units:
 @dataclass
 class _Move:
     """Plain move, no attack semantics - for a unit (a claimed worker) that
-    must never fight, where `AMove`'s attack-move risks it trading blows."""
+    must never fight, where `AMove`'s attack-move risks it trading blows.
+
+    Skips re-issue when the unit is already moving to the same rounded tile —
+    per-frame `move` spam is what made home Zealots/Stalkers thrash in place.
+    """
 
     unit: Unit
     target: Point2
 
     def execute(self, ai, config, mediator, **kwargs) -> bool:
+        if _already_ordered_to_point(self.unit, self.target):
+            return False
         self.unit.move(self.target)
         return True
+
+
+def _already_ordered_to_point(unit: Unit, target: Point2) -> bool:
+    """True when the unit's current order already aims at `target`'s tile."""
+    if not unit.orders:
+        return False
+    order_target = unit.order_target
+    if isinstance(order_target, Point2):
+        return order_target.rounded == target.rounded
+    return False
+
+
+def _already_attacking(unit: Unit, target: Unit) -> bool:
+    """True when the unit is already ordered onto `target` (skip re-issue)."""
+    return bool(unit.orders) and unit.order_target == target.tag
 
 
 def _combat_force_supply(ctx: "BotContext", units) -> float:
@@ -341,25 +388,56 @@ def _kite_maneuver(
     return maneuver
 
 
-def _defender_maneuver(ctx: "BotContext", unit, home_threats, hold) -> CombatManeuver:
-    maneuver = CombatManeuver()
-    in_range = _enemies_near(ctx, unit, DEFENDER_ENGAGE_RANGE)
+def _sticky_hold_point(
+    ctx: "BotContext", unit: Unit, holds: list[Point2]
+) -> Point2:
+    """Stable hold slot per defender — not `enumerate` index into a shuffled list."""
+    idx = ctx.state.defender_hold_index.get(unit.tag)
+    if idx is not None and 0 <= idx < len(holds):
+        return holds[idx]
+    loads = [0] * len(holds)
+    for other_tag, other_idx in ctx.state.defender_hold_index.items():
+        if 0 <= other_idx < len(holds):
+            loads[other_idx] += 1
+    best = min(range(len(holds)), key=lambda i: loads[i])
+    ctx.state.defender_hold_index[unit.tag] = best
+    ctx.log(
+        f"DEFEND hold slot={best}/{len(holds)} "
+        f"tag={unit.tag} type={unit.type_id.name}"
+    )
+    return holds[best]
+
+
+def _defender_maneuver(ctx: "BotContext", unit, home_threats, hold) -> CombatManeuver | None:
+    """Orders for one defender. Returns None when settled — no order spam."""
+    in_range = _enemies_near(ctx, unit.position, DEFENDER_ENGAGE_RANGE)
     if in_range:
+        maneuver = CombatManeuver()
         maneuver.add(ShootTargetInRange(unit=unit, targets=in_range))
-        maneuver.add(
-            AttackTarget(
-                unit=unit, target=cy_closest_to(position=unit.position, units=in_range)
-            )
-        )
-    elif home_threats:
-        maneuver.add(
-            AttackTarget(
-                unit=unit,
-                target=cy_closest_to(position=unit.position, units=home_threats),
-            )
-        )
-    else:
-        maneuver.add(AMove(unit=unit, target=hold))
+        closest = cy_closest_to(position=unit.position, units=in_range)
+        # Only chase when nothing is already under the weapon / order — AttackTarget
+        # every frame cancels windup and looks like thrashing at home.
+        if not _already_attacking(unit, closest):
+            weapon_targets = list(cy_in_attack_range(unit, list(in_range)))
+            if not weapon_targets:
+                maneuver.add(AttackTarget(unit=unit, target=closest))
+        return maneuver
+    if home_threats:
+        threat = cy_closest_to(position=unit.position, units=home_threats)
+        if _already_attacking(unit, threat):
+            return None
+        maneuver = CombatManeuver()
+        maneuver.add(AttackTarget(unit=unit, target=threat))
+        return maneuver
+
+    dist = cy_distance_to(unit.position, hold)
+    if dist <= DEFENDER_HOLD_ARRIVE:
+        return None
+    if _already_ordered_to_point(unit, hold):
+        return None
+    maneuver = CombatManeuver()
+    # Plain move — AMove attack-moves and re-issues every frame past 7 range.
+    maneuver.add(_Move(unit=unit, target=hold))
     return maneuver
 
 
@@ -368,14 +446,23 @@ def defend_home() -> CombatRoutine:
 
     def routine(ctx: "BotContext") -> None:
         defenders = ctx.units_in_role(UnitRole.DEFENDING)
+        alive = {u.tag for u in defenders}
+        ctx.state.defender_hold_index = {
+            tag: idx
+            for tag, idx in ctx.state.defender_hold_index.items()
+            if tag in alive
+        }
         if not defenders:
             return
         home_threats = ctx.mediator.get_main_ground_threats_near_townhall
-        hold = targeting.hold_positions(ctx)
-        for index, unit in enumerate(defenders):
-            ctx.bot.register_behavior(
-                _defender_maneuver(ctx, unit, home_threats, hold[index % len(hold)])
-            )
+        holds = targeting.hold_positions(ctx)
+        if not holds:
+            return
+        for unit in defenders:
+            hold = _sticky_hold_point(ctx, unit, holds)
+            maneuver = _defender_maneuver(ctx, unit, home_threats, hold)
+            if maneuver is not None:
+                ctx.bot.register_behavior(maneuver)
 
     return routine
 
@@ -533,22 +620,31 @@ def _stalker_pick_target(stalker: Unit, enemies: list[Unit]) -> Unit | None:
 
 
 def _prism_near_enemy_for_muster(ctx: "BotContext") -> bool:
-    """True when no Prism exists, or any Prism is in enemy-nat phase range.
+    """True when any Prism is in enemy-nat phase range.
 
-    Used so the Chargelot muster holds at staging until the Prism can phase
-    with the push — without soft-locking if Robo/Prism never finished.
+    If a Prism (or Robo → Prism) is still coming, return False so muster
+    holds. Soft-unlock only when there is no Robo path at all — otherwise
+    Wave 1 commits at ~5:45 while Prism finishes at ~6:00 and never phases.
     """
     prisms = [
         u
         for u in ctx.mediator.get_units_from_role(role=UnitRole.DROP_SHIP)
         if u.type_id in (UnitTypeId.WARPPRISM, UnitTypeId.WARPPRISMPHASING)
     ]
-    if not prisms:
-        return True
     enemy = ctx.mediator.get_enemy_nat
-    return any(
-        cy_distance_to(p.position, enemy) <= PRISM_ENEMY_PHASE_RANGE for p in prisms
+    if prisms:
+        return any(
+            cy_distance_to(p.position, enemy) <= PRISM_ENEMY_PHASE_RANGE
+            for p in prisms
+        )
+    bot = ctx.bot
+    expecting_prism = (
+        bot.structures(UnitTypeId.ROBOTICSFACILITY).amount
+        + bot.structure_pending(UnitTypeId.ROBOTICSFACILITY)
+        > 0
+        or bot.already_pending(UnitTypeId.WARPPRISM) > 0
     )
+    return not expecting_prism
 
 
 def chargelot_attack(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
@@ -589,22 +685,33 @@ def chargelot_attack(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
             # Also wait for the Prism to reach enemy-nat phase range so the
             # ball does not dive before the field can go up.
             prism_ready = _prism_near_enemy_for_muster(ctx)
-            if (
+            form_ready = (
                 muster_center_dist <= CHARGELOT_MUSTER_RADIUS
                 and muster_near_frac >= 0.75
-                and prism_ready
-            ):
+            )
+            prism_wait_expired = False
+            if form_ready and not prism_ready:
+                from bot.intel import chargelot_metrics as _cm
+
+                _cm.note_muster_waiting_prism(ctx)
+                since = ctx.state.chargelot_metrics.muster_form_ready_since
+                if (
+                    since is not None
+                    and ctx.bot.time - since >= CHARGELOT_MUSTER_PRISM_TIMEOUT
+                ):
+                    prism_wait_expired = True
+            if form_ready and (prism_ready or prism_wait_expired):
+                from bot.intel import chargelot_metrics as _cm
+
+                reason = "prism_timeout" if prism_wait_expired else "ready"
                 ctx.log(
                     f"MUSTER commit n={len(mustering_units)} "
-                    f"dist={muster_center_dist:.0f}"
+                    f"dist={muster_center_dist:.0f} reason={reason}"
                 )
+                _cm.note_muster_commit(ctx)
                 ctx.state.mustering_tags.clear()
                 mustering_units = []
-            elif (
-                muster_center_dist <= CHARGELOT_MUSTER_RADIUS
-                and muster_near_frac >= 0.75
-                and not prism_ready
-            ):
+            elif form_ready and not prism_ready:
                 ctx.log_once(
                     "muster_hold_prism",
                     f"MUSTER holding for Prism n={len(mustering_units)} "

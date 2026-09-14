@@ -45,6 +45,45 @@ class ProxyCrewState:
 
 
 @dataclass
+class ChargelotMetrics:
+    """Regression KPIs for 2base Chargelot (see `intel.chargelot_metrics`)."""
+
+    adept_damage_dealt: float = 0.0
+    adept_damage_taken: float = 0.0
+    adept_kills: int = 0
+    adept_last_hp: float | None = None
+    adept_tag: int | None = None
+    """Last harassing Adept tag (for death-frame damage credit)."""
+    adept_prey_hp: dict[int, float] = field(default_factory=dict)
+    adept_produced: int = 0
+    adept_died: int = 0
+    adept_shade_aborts: int = 0
+    stalkers_before_robo: bool | None = None
+    """True when the 2nd Stalker arrived before any Robo was started."""
+    time_second_stalker: float | None = None
+    time_robo_started: float | None = None
+    """First frame any Robotics Facility is live or pending."""
+    prism_produced: bool = False
+    time_prism: float | None = None
+    time_prism_phased: float | None = None
+    """First frame a Warp Prism is in phasing mode."""
+    muster_commit_time: float | None = None
+    """Game time when Chargelot muster released the first wave."""
+    muster_form_ready_since: float | None = None
+    """When form-up criteria first met while waiting on Prism (timeout clock)."""
+    warpgate_peak: int = 0
+    prism_warps: int = 0
+    """Zealot/Stalker (etc.) created inside a phasing Prism field."""
+    pylon_warps: int = 0
+    """Warp-ins that appeared without a phasing Prism field (home/nat)."""
+    auto_supply_block_frames: int = 0
+    """Frames AutoSupply needed a Pylon but ProtossBuildStructure failed."""
+    nat_nexus_ready: bool = False
+    max_minerals_after_nat: int = 0
+    max_gas_after_nat: int = 0
+
+
+@dataclass
 class RunState:
     """Everything that changes over the course of one game."""
 
@@ -61,6 +100,9 @@ class RunState:
     worker_harass_last_hp: float | None = None
     worker_harass_damage_dealt: float = 0.0
     worker_harass_damage_taken: float = 0.0
+    worker_harass_kills: int = 0
+    """Enemy workers finished by the opening scout Probe."""
+    chargelot_metrics: ChargelotMetrics = field(default_factory=ChargelotMetrics)
     worker_harass_prey_hp: dict[int, float] = field(default_factory=dict)
     worker_harass_opening_builder_tag: int | None = None
     """Preferred harass worker — built the opening supply (Pylon/Depot)."""
@@ -83,6 +125,11 @@ class RunState:
     mustering_tags: set[int] = field(default_factory=set)
     """Attacking units still forming up at the rally point (see
     `bot.routines.combat.attack_squads`)."""
+    defender_hold_index: dict[int, int] = field(default_factory=dict)
+    """DEFENDING unit tag → sticky index into `targeting.hold_positions`.
+    Avoids index-by-enumerate thrash when the Units list reorders."""
+    chargelot_wave_gate_ready_since: float | None = None
+    """When wave_gate first passed while under wave1_min (force-leave clock)."""
     proxy_crew: ProxyCrewState = field(default_factory=ProxyCrewState)
     supply_depot_builder_tag: int | None = None
     """SCV claimed by `steps.terran.continuous_main_depots` - stays off the

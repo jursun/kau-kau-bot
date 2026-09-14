@@ -21,7 +21,6 @@ if str(ROOT) not in sys.path:
 
 from loguru import logger  # noqa: E402
 from sc2.data import Difficulty, Race, Result  # noqa: E402
-from sc2.main import run_game  # noqa: E402
 from sc2.player import Bot, Computer  # noqa: E402
 
 from run import (  # noqa: E402
@@ -32,6 +31,7 @@ from run import (  # noqa: E402
     load_config,
     resolve_map,
     resolve_map_list,
+    run_local_game,
 )
 
 OPPONENT_RACES: tuple[Race, ...] = (Race.Terran, Race.Zerg, Race.Protoss)
@@ -269,13 +269,14 @@ def play_one(
     time_limit: int | None,
     settings: SmokeSettings,
     build_label: str,
+    local_cfg: dict | None = None,
 ) -> GameOutcome:
     logger.info(
         f"===== SMOKE {build_label} vs {opponent.name} {difficulty.name} "
         f"on {map_name} ====="
     )
     try:
-        result = run_game(
+        result = run_local_game(
             resolve_map(map_name, maps_path),
             [
                 Bot(race, build_smoke_bot(validate, settings), bot_name),
@@ -283,6 +284,7 @@ def play_one(
             ],
             realtime=realtime,
             game_time_limit=time_limit,
+            local_cfg=local_cfg,
         )
         return GameOutcome(opponent=opponent, map_name=map_name, result=result)
     except Exception as error:  # noqa: BLE001 - smoke must keep going
@@ -379,6 +381,7 @@ def run_smoke(
                 time_limit=args.time_limit,
                 settings=settings,
                 build_label=label,
+                local_cfg=local_cfg,
             )
         )
 

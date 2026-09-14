@@ -73,8 +73,9 @@ Builds:
             - 26 charge
             - 26 chrono @ twilightcouncil
             - 26 stalker
-            # Stop here — do NOT wait on a second Stalker. Once Warp Gate
-            # finishes, ares refuses to train from an idle Gateway until it
-            # morphs, so a later Stalker step can stall the opening forever
-            # and block macro (8 gates / Chargelots). Extra Stalkers come
-            # from spawn_army after the opening completes.
+            # Second Stalker before Warp Gate morph: ares will not train from an
+            # idle Gateway once WG finishes until it morphs, so a *later* Stalker
+            # step can stall the opening. Queue #2 here while the Gate still
+            # trains, so Robo (gated on 2 Stalkers) is not delayed to ~202s.
+            - 28 stalker
+            # Stop here — extra units come from spawn_army after the opening.

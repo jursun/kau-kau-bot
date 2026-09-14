@@ -55,6 +55,7 @@ def _ctx(wave1_min: int = 6, wave_growth: float = 1.25) -> BotContext:
     # `_maxed_and_ready` is False unless a test deliberately raises these -
     # `already_pending` returning 0 for any argument means "nothing training".
     ctx.bot.supply_used = 100.0
+    ctx.bot.time = 0.0
     ctx.bot.already_pending.return_value = 0
     ctx.bot.calculate_supply_cost.return_value = 1.0
     # Influence retreat reads these every attack_squads frame.
@@ -735,6 +736,77 @@ def test_attack_squads_ignores_workers_in_intel_army_for_force() -> None:
         assert ctx.bot.register_behavior.call_count == 1
     finally:
         _restore_targeting(original)
+
+
+def test_defend_home_assigns_sticky_hold_slots() -> None:
+    """Reordering the Units list must not bounce defenders between hold points."""
+    ctx = _ctx()
+    rally = Point2((40.0, 40.0))
+    minerals = Point2((20.0, 20.0))
+    a = _unit(1, Point2((39.0, 39.0)))
+    b = _unit(2, Point2((21.0, 21.0)))
+    a.type_id = UnitTypeId.ZEALOT
+    b.type_id = UnitTypeId.STALKER
+    a.orders = []
+    b.orders = []
+    a.order_target = None
+    b.order_target = None
+    ctx.mediator.get_units_from_role.return_value = [a, b]
+    ctx.mediator.get_main_ground_threats_near_townhall = []
+    ctx.mediator.get_units_in_range.return_value = [[]]
+    original = targeting.hold_positions
+    targeting.hold_positions = lambda _ctx: [rally, minerals]
+    try:
+        combat.defend_home()(ctx)
+        first = dict(ctx.state.defender_hold_index)
+        assert set(first) == {1, 2}
+        assert first[1] != first[2]
+
+        # Reverse list order — sticky indices must stay put.
+        ctx.mediator.get_units_from_role.return_value = [b, a]
+        ctx.bot.register_behavior.reset_mock()
+        combat.defend_home()(ctx)
+        assert ctx.state.defender_hold_index == first
+    finally:
+        targeting.hold_positions = original
+
+
+def test_defend_home_does_not_reissue_when_settled_at_hold() -> None:
+    ctx = _ctx()
+    hold = Point2((40.0, 40.0))
+    unit = _unit(7, Point2((40.5, 40.2)))  # inside ARRIVE
+    unit.type_id = UnitTypeId.ZEALOT
+    unit.orders = []
+    unit.order_target = None
+    ctx.mediator.get_units_from_role.return_value = [unit]
+    ctx.mediator.get_main_ground_threats_near_townhall = []
+    ctx.mediator.get_units_in_range.return_value = [[]]
+    original = targeting.hold_positions
+    targeting.hold_positions = lambda _ctx: [hold]
+    try:
+        combat.defend_home()(ctx)
+        assert ctx.bot.register_behavior.call_count == 0
+    finally:
+        targeting.hold_positions = original
+
+
+def test_defend_home_skips_move_when_already_pathing_to_hold() -> None:
+    ctx = _ctx()
+    hold = Point2((40.0, 40.0))
+    unit = _unit(8, Point2((30.0, 30.0)))  # still walking in
+    unit.type_id = UnitTypeId.STALKER
+    unit.orders = [object()]
+    unit.order_target = Point2((40.0, 40.0))
+    ctx.mediator.get_units_from_role.return_value = [unit]
+    ctx.mediator.get_main_ground_threats_near_townhall = []
+    ctx.mediator.get_units_in_range.return_value = [[]]
+    original = targeting.hold_positions
+    targeting.hold_positions = lambda _ctx: [hold]
+    try:
+        combat.defend_home()(ctx)
+        assert ctx.bot.register_behavior.call_count == 0
+    finally:
+        targeting.hold_positions = original
 
 
 if __name__ == "__main__":

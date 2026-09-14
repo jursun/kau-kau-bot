@@ -305,6 +305,7 @@ def pylon_buffer(
         return ProtossBuildStructure(
             base_location=ctx.production_location,
             structure_id=UnitTypeId.PYLON,
+            find_alternative=True,
         )
 
     return step

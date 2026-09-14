@@ -105,6 +105,14 @@ BUILD = BuildDefinition(
         # Wall FirstPylon before Gate/Robo so ThreeByThreesWall slots have power.
         # Opening already places `pylon @ nat_wall`; this is a safety net.
         p.natural_wall_pylon(gate=gates.upgrade_started(CHARGE)),
+        # Emergency supply before production: hard supply-locks (Persephone T /
+        # LeyLines Z) never reached wave1_min because Gates outranked pylons.
+        p.auto_supply(
+            gate=lambda ctx: ctx.build_completed and ctx.bot.supply_left <= 10
+        ),
+        # Queue Stalker #2 before wall Gates/Robo. Otherwise MacroPlan finishes
+        # Gates 2-3 first and Robo starts ~202s — Prism slips past the leave.
+        c.spawn_army(gate=lambda ctx: c.chargelot_stalkers_out(ctx) < 2),
         # MacroPlan short-circuits on the first successful spend. Build the
         # wall trio (Gate 1+2 + Robo) before dumping minerals into Gates 4-8,
         # otherwise Robo/Prism slip past the 5:20 leave timing.
@@ -118,7 +126,10 @@ BUILD = BuildDefinition(
         ),
         p.robotics_facility_at_natural_wall(
             1,
-            gate=gates.upgrade_started(CHARGE),
+            gate=gates.all_of(
+                gates.upgrade_started(CHARGE),
+                lambda ctx: c.chargelot_stalkers_out(ctx) >= 2,
+            ),
         ),
         p.gateways(
             GATEWAY_COUNT,
@@ -134,7 +145,7 @@ BUILD = BuildDefinition(
         ),
         # After production so the single builder prefers Gates/Robo when needed.
         p.auto_supply(gate=lambda ctx: ctx.build_completed),
-        p.pylon_buffer(min_left=32, max_pending=4, gate=lambda ctx: ctx.build_completed),
+        p.pylon_buffer(min_left=40, max_pending=5, gate=lambda ctx: ctx.build_completed),
         p.expansions(),
         p.gas_buildings(),
         c.upgrades(),
