@@ -72,6 +72,10 @@ DEFENDER_ENGAGE_RANGE: float = 12.0
 DEFENDER_HOLD_ARRIVE: float = 3.0
 """Within this of the hold point: issue no move (settled)."""
 SQUAD_ENGAGE_RANGE: float = 11.5
+STALKER_MIN_ENGAGE_RANGE: float = 4.0
+"""Chargelot Stalkers hold at least this far back (weapon range ~6) so they
+stand behind the Zealot wall instead of crowding into melee range and
+stealing the surface area Zealots need to surround the target."""
 SQUAD_RADIUS: float = 9.0
 MUSTER_RADIUS: float = 4.0
 """How tightly a freshly-released wave must cluster at the rally point
@@ -651,6 +655,23 @@ def _stalker_pick_target(stalker: Unit, enemies: list[Unit]) -> Unit | None:
     return min(in_range, key=_score)
 
 
+def _stalker_retreat_point(
+    stalker: Unit, crowding: list[Unit], min_engage_range: float
+) -> Point2:
+    """Where a stalker crowded by `crowding` should back off to.
+
+    Backs straight away from the crowding units' center (or the lone
+    crowder's position) to exactly `min_engage_range` - same shape as
+    `_kite_maneuver`'s retreat calc, kept separate here so it can compose
+    with `_stalker_pick_target`'s Medivac/repair-worker priority instead of
+    `_kite_maneuver`'s generic lowest-HP targeting.
+    """
+    retreat_from = (
+        Point2(cy_center(crowding)) if len(crowding) > 1 else crowding[0].position
+    )
+    return Point2(cy_towards(retreat_from, stalker.position, min_engage_range))
+
+
 def _prism_near_enemy_for_muster(ctx: "BotContext") -> bool:
     """True when any Prism is in enemy-nat phase range.
 
@@ -845,16 +866,32 @@ def chargelot_attack(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
                     enemies = _enemies_near_ground_air(
                         ctx, stalker.position, SQUAD_ENGAGE_RANGE + 2.0
                     )
-                    pick = _stalker_pick_target(stalker, enemies)
-                    if pick is not None and stalker.weapon_cooldown <= 0.1:
-                        maneuver.add(AttackTarget(unit=stalker, target=pick))
-                    elif pick is not None and stalker.weapon_cooldown > 0.1:
-                        kite_to = Point2(
-                            cy_towards(pick.position, stalker.position, 1.5)
+                    in_range = list(cy_in_attack_range(stalker, enemies))
+                    crowding = [
+                        e
+                        for e in in_range
+                        if cy_distance_to(stalker.position, e.position)
+                        < STALKER_MIN_ENGAGE_RANGE
+                    ]
+                    if crowding:
+                        # Too close - back off to exactly min-range before
+                        # shooting again, regardless of cooldown, so Stalkers
+                        # do not plant in melee range once they close in.
+                        retreat_to = _stalker_retreat_point(
+                            stalker, crowding, STALKER_MIN_ENGAGE_RANGE
                         )
-                        maneuver.add(_Move(unit=stalker, target=kite_to))
+                        maneuver.add(_Move(unit=stalker, target=retreat_to))
                     else:
-                        maneuver.add(AMove(unit=stalker, target=target))
+                        pick = _stalker_pick_target(stalker, in_range)
+                        if pick is not None and stalker.weapon_cooldown <= 0.1:
+                            maneuver.add(AttackTarget(unit=stalker, target=pick))
+                        elif pick is not None and stalker.weapon_cooldown > 0.1:
+                            kite_to = Point2(
+                                cy_towards(pick.position, stalker.position, 1.5)
+                            )
+                            maneuver.add(_Move(unit=stalker, target=kite_to))
+                        else:
+                            maneuver.add(AMove(unit=stalker, target=target))
                 ctx.bot.register_behavior(maneuver)
 
             # Any other ATTACKING leftovers (should be rare) AMove with zealots.

@@ -915,5 +915,26 @@ def test_stalker_pick_target_uses_priority_order_end_to_end() -> None:
     assert picked is medivac, "Medivac must outrank a low-HP Marine"
 
 
+def test_stalker_retreat_point_backs_away_from_single_crowder() -> None:
+    stalker = _unit(1, Point2((100.0, 100.0)))
+    crowder = _unit(90, Point2((101.0, 100.0)))  # 1 unit away - melee range
+
+    retreat_to = combat._stalker_retreat_point(stalker, [crowder], 4.0)
+
+    assert round(cy_distance_to(retreat_to, crowder.position), 3) == 4.0
+    assert retreat_to.x < crowder.position.x, "retreats toward the stalker's side"
+
+
+def test_stalker_retreat_point_backs_away_from_crowd_center() -> None:
+    stalker = _unit(1, Point2((100.0, 100.0)))
+    crowder_a = _unit(90, Point2((101.0, 99.0)))
+    crowder_b = _unit(91, Point2((101.0, 101.0)))
+
+    retreat_to = combat._stalker_retreat_point(stalker, [crowder_a, crowder_b], 4.0)
+
+    center = Point2((101.0, 100.0))
+    assert round(cy_distance_to(retreat_to, center), 3) == 4.0
+
+
 if __name__ == "__main__":
     sys.exit(main())
