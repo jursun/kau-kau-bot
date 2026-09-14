@@ -739,7 +739,7 @@ def test_attack_squads_ignores_workers_in_intel_army_for_force() -> None:
 
 
 def test_defend_home_assigns_sticky_hold_slots() -> None:
-    """Reordering the Units list must not bounce defenders between hold points."""
+    """Reordering units or hold points must not bounce defenders between holds."""
     ctx = _ctx()
     rally = Point2((40.0, 40.0))
     minerals = Point2((20.0, 20.0))
@@ -758,15 +758,16 @@ def test_defend_home_assigns_sticky_hold_slots() -> None:
     targeting.hold_positions = lambda _ctx: [rally, minerals]
     try:
         combat.defend_home()(ctx)
-        first = dict(ctx.state.defender_hold_index)
+        first = dict(ctx.state.defender_hold)
         assert set(first) == {1, 2}
         assert first[1] != first[2]
 
-        # Reverse list order — sticky indices must stay put.
+        # Reverse unit list and hold list — sticky Point2 must stay put.
+        targeting.hold_positions = lambda _ctx: [minerals, rally]
         ctx.mediator.get_units_from_role.return_value = [b, a]
         ctx.bot.register_behavior.reset_mock()
         combat.defend_home()(ctx)
-        assert ctx.state.defender_hold_index == first
+        assert ctx.state.defender_hold == first
     finally:
         targeting.hold_positions = original
 

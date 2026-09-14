@@ -24,6 +24,7 @@ from cython_extensions import (
     cy_in_attack_range,
     cy_towards,
 )
+from sc2.ids.ability_id import AbilityId
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
 from sc2.unit import Unit
@@ -270,15 +271,28 @@ def _already_ordered_to_point(unit: Unit, target: Point2) -> bool:
     """True when the unit's current order already aims at `target`'s tile."""
     if not unit.orders:
         return False
+    ability_id = getattr(getattr(unit.orders[0], "ability", None), "id", None)
+    # SC2 often reports MOVE order_target as a path waypoint, not the final
+    # hold — comparing tiles then re-issues every frame and thrash-cancels
+    # pathing once many units crowd the rally.
+    if ability_id == AbilityId.MOVE and bool(getattr(unit, "is_moving", False)):
+        return True
     order_target = unit.order_target
     if isinstance(order_target, Point2):
-        return order_target.rounded == target.rounded
+        if order_target.rounded == target.rounded:
+            return True
+        # Pathing / float drift — still heading to nearly the same point.
+        if cy_distance_to(order_target, target) <= 1.5:
+            return True
+        return False
     return False
 
 
 def _already_attacking(unit: Unit, target: Unit) -> bool:
     """True when the unit is already ordered onto `target` (skip re-issue)."""
     return bool(unit.orders) and unit.order_target == target.tag
+
+
 
 
 def _combat_force_supply(ctx: "BotContext", units) -> float:
@@ -391,16 +405,25 @@ def _kite_maneuver(
 def _sticky_hold_point(
     ctx: "BotContext", unit: Unit, holds: list[Point2]
 ) -> Point2:
-    """Stable hold slot per defender — not `enumerate` index into a shuffled list."""
-    idx = ctx.state.defender_hold_index.get(unit.tag)
-    if idx is not None and 0 <= idx < len(holds):
-        return holds[idx]
+    """Stable hold per defender — match by Point2, not list index."""
+    assigned = ctx.state.defender_hold.get(unit.tag)
+    if assigned is not None:
+        nearest = min(holds, key=lambda h: cy_distance_to_squared(assigned, h))
+        if cy_distance_to(assigned, nearest) <= 2.5:
+            ctx.state.defender_hold[unit.tag] = nearest
+            return nearest
     loads = [0] * len(holds)
-    for other_tag, other_idx in ctx.state.defender_hold_index.items():
-        if 0 <= other_idx < len(holds):
-            loads[other_idx] += 1
+    for other_tag, other_pt in ctx.state.defender_hold.items():
+        if other_tag == unit.tag:
+            continue
+        nearest_i = min(
+            range(len(holds)),
+            key=lambda i: cy_distance_to_squared(other_pt, holds[i]),
+        )
+        if cy_distance_to(other_pt, holds[nearest_i]) <= 2.5:
+            loads[nearest_i] += 1
     best = min(range(len(holds)), key=lambda i: loads[i])
-    ctx.state.defender_hold_index[unit.tag] = best
+    ctx.state.defender_hold[unit.tag] = holds[best]
     ctx.log(
         f"DEFEND hold slot={best}/{len(holds)} "
         f"tag={unit.tag} type={unit.type_id.name}"
@@ -410,25 +433,32 @@ def _sticky_hold_point(
 
 def _defender_maneuver(ctx: "BotContext", unit, home_threats, hold) -> CombatManeuver | None:
     """Orders for one defender. Returns None when settled — no order spam."""
-    in_range = _enemies_near(ctx, unit.position, DEFENDER_ENGAGE_RANGE)
-    if in_range:
+    # Lone scouting SCVs/Probes in 12 range made the whole ball Attack↔Move
+    # thrash at the ramp once warps stacked (debug: 461/461 engages were SCV).
+    near = [
+        e
+        for e in _enemies_near(ctx, unit.position, DEFENDER_ENGAGE_RANGE)
+        if e.type_id not in WORKER_TYPES
+    ]
+    if near:
         maneuver = CombatManeuver()
-        maneuver.add(ShootTargetInRange(unit=unit, targets=in_range))
-        closest = cy_closest_to(position=unit.position, units=in_range)
+        maneuver.add(ShootTargetInRange(unit=unit, targets=near))
+        closest = cy_closest_to(position=unit.position, units=near)
         # Only chase when nothing is already under the weapon / order — AttackTarget
         # every frame cancels windup and looks like thrashing at home.
         if not _already_attacking(unit, closest):
-            weapon_targets = list(cy_in_attack_range(unit, list(in_range)))
+            weapon_targets = list(cy_in_attack_range(unit, list(near)))
             if not weapon_targets:
                 maneuver.add(AttackTarget(unit=unit, target=closest))
         return maneuver
     if home_threats:
         threat = cy_closest_to(position=unit.position, units=home_threats)
-        if _already_attacking(unit, threat):
-            return None
-        maneuver = CombatManeuver()
-        maneuver.add(AttackTarget(unit=unit, target=threat))
-        return maneuver
+        if threat.type_id not in WORKER_TYPES:
+            if _already_attacking(unit, threat):
+                return None
+            maneuver = CombatManeuver()
+            maneuver.add(AttackTarget(unit=unit, target=threat))
+            return maneuver
 
     dist = cy_distance_to(unit.position, hold)
     if dist <= DEFENDER_HOLD_ARRIVE:
@@ -447,9 +477,9 @@ def defend_home() -> CombatRoutine:
     def routine(ctx: "BotContext") -> None:
         defenders = ctx.units_in_role(UnitRole.DEFENDING)
         alive = {u.tag for u in defenders}
-        ctx.state.defender_hold_index = {
-            tag: idx
-            for tag, idx in ctx.state.defender_hold_index.items()
+        ctx.state.defender_hold = {
+            tag: pt
+            for tag, pt in ctx.state.defender_hold.items()
             if tag in alive
         }
         if not defenders:

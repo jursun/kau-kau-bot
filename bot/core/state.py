@@ -124,9 +124,9 @@ class RunState:
     mustering_tags: set[int] = field(default_factory=set)
     """Attacking units still forming up at the rally point (see
     `bot.routines.combat.attack_squads`)."""
-    defender_hold_index: dict[int, int] = field(default_factory=dict)
-    """DEFENDING unit tag → sticky index into `targeting.hold_positions`.
-    Avoids index-by-enumerate thrash when the Units list reorders."""
+    defender_hold: dict[int, Point2] = field(default_factory=dict)
+    """DEFENDING unit tag → sticky hold Point2 (matched to live holds by
+    nearest, not list index — townhall iteration order is unstable)."""
     chargelot_wave_gate_ready_since: float | None = None
     """When wave_gate first passed while under wave1_min (force-leave clock)."""
     proxy_crew: ProxyCrewState = field(default_factory=ProxyCrewState)

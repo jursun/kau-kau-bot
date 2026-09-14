@@ -49,6 +49,14 @@ CHARGE = UpgradeId.CHARGE
 WARPGATE = UpgradeId.WARPGATERESEARCH
 
 
+def _chargelot_home_rally(ctx):
+    """Nat-front rally — pinning `combat.rally` collapses mineral-line holds."""
+    nat = ctx.mediator.get_own_nat
+    return nat.towards(
+        ctx.bot.enemy_start_locations[0], ctx.build.combat.rally_offset
+    )
+
+
 BUILD = BuildDefinition(
     name="2base Chargelot All-In",
     label="2base Chargelot All-In",
@@ -90,8 +98,10 @@ BUILD = BuildDefinition(
         wave1_min=FIRST_WAVE,
         wave_growth=1.0,  # unused once streaming; kept for validator math
         focus=(FOCUS_NATURAL, FOCUS_MAIN),
-        # Keep default home rally so defenders gather at our natural; the
-        # enemy-front staging muster lives in `chargelot_attack` only.
+        # Pin rally so hold_positions is a single nat-front point — mineral
+        # line extras remapped every frame (unstable townhall order) and
+        # sent warping Zealots thrashing across the ramp.
+        rally=_chargelot_home_rally,
         wave_stage_label="Chargelot All-In",
     ),
     always=(
@@ -110,9 +120,8 @@ BUILD = BuildDefinition(
         p.auto_supply(
             gate=lambda ctx: ctx.build_completed and ctx.bot.supply_left <= 10
         ),
-        # Queue Stalker #2 before wall Gates/Robo. Otherwise MacroPlan finishes
-        # Gates 2-3 first and Robo starts ~202s — Prism slips past the leave.
-        c.spawn_army(gate=lambda ctx: c.chargelot_stalkers_out(ctx) < 2),
+        # Stalker #2 is queued in the opening YAML (before WG morph). Do not
+        # also spawn_army(stalkers < 2) here — that double-queued #3.
         # MacroPlan short-circuits on the first successful spend. Build the
         # wall trio (Gate 1+2 + Robo) before dumping minerals into Gates 4-8,
         # otherwise Robo/Prism slip past the 5:20 leave timing.
