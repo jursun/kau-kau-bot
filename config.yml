@@ -61,10 +61,10 @@ LocalGame:
         - PylonAIE_v4
         - TorchesAIE_v4
         - UltraloveAIE_v2
-    OpponentRace: Terran
+    OpponentRace: Protoss
     # VeryEasy .. VeryHard, plus CheatVision / CheatMoney / CheatInsane
     OpponentDifficulty: VeryHard
-    Realtime: False
+    Realtime: True
     # Tiny corner window when Realtime is False (faster GPU). Ignored if Realtime.
     FastWindow: True
     WindowWidth: 256
