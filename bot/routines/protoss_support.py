@@ -8,6 +8,7 @@ Opening worker harassment lives in `bot.routines.worker_harass`.
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 from ares.behaviors.combat import CombatManeuver
@@ -130,17 +131,41 @@ def _army_anchor(ctx: "BotContext") -> Point2 | None:
     return None
 
 
-WARP_WAVE_MIN: int = 4
-"""Hold warp-ins until at least this many Warp Gates are idle at once (or
-all of them, if fewer exist) - see `warp_wave_ready`. Batching into waves
-instead of warping the instant each Gate comes off cooldown lets the Prism
-actually reposition between drops rather than trickling reinforcements in
-one at a time while pinned in place by a warp field that never empties."""
+WARP_WAVE_FRACTION: float = 0.75
+"""Hold warp-ins until at least this fraction of ready Warp Gates are idle
+at once - see `warp_wave_threshold` / `warp_wave_ready`. With 8 Gates that
+is 6; with 4 it is 3. Used for Prism-field packs after army leave; home
+pylon warps before leave may drip."""
 
 WARP_WAVE_PREPHASE_MARGIN: int = 1
 """`warp_wave_imminent` fires this many Gates early so the Prism's
 phase-mode morph has time to finish before `warp_wave_ready` actually
 releases the wave (see `steps.common._chargelot_spawn`)."""
+
+
+def prism_warp_batch_window(ctx: "BotContext") -> bool:
+    """True once Prism-field packs should batch (not home drip).
+
+    After `ARMY_LEAVE_TIME`, any live Prism (flying or phasing) means we
+    accumulate Warp Gates into waves so `escort_warp_prism` can phase on
+    `warp_wave_imminent` and land a pack. Before leave, home pylons drip.
+    """
+    if ctx.bot.units(UnitTypeId.WARPPRISMPHASING):
+        return True
+    if ctx.bot.time < ARMY_LEAVE_TIME:
+        return False
+    return bool(ctx.bot.units(UnitTypeId.WARPPRISM))
+
+
+def warp_wave_threshold(total: int) -> int:
+    """How many idle Gates release a wave for `total` ready Warp Gates.
+
+    `ceil(total * WARP_WAVE_FRACTION)`, at least 1 when any Gates exist.
+    Always <= `total`, so early 1-3 Gate counts never stall forever.
+    """
+    if total <= 0:
+        return 0
+    return max(1, math.ceil(total * WARP_WAVE_FRACTION))
 
 
 def _ready_warpgates(ctx: "BotContext") -> list:
@@ -160,25 +185,24 @@ def _warpgates_ready_to_warp(ctx: "BotContext") -> bool:
 def warp_wave_ready(ctx: "BotContext") -> bool:
     """True once enough Warp Gates are idle at once to release a wave.
 
-    The threshold is `min(WARP_WAVE_MIN, total warp gates)`, so this can't
-    stall production below `WARP_WAVE_MIN` total Gates - early on on when we
-    only have 1-2, it fires on whatever's ready, same as before batching
-    existed. A Gate held back doesn't lose its readiness (cooldown only
-    starts on its next cast), so idle Gates just accumulate here until the
-    threshold is met.
+    Threshold is `warp_wave_threshold(total)`. A Gate held back doesn't lose
+    its readiness (cooldown only starts on its next cast), so idle Gates
+    accumulate until the threshold is met.
     """
     total = ctx.bot.structures(UnitTypeId.WARPGATE).ready.amount
-    if total == 0:
+    need = warp_wave_threshold(total)
+    if need == 0:
         return False
-    return len(_ready_warpgates(ctx)) >= min(WARP_WAVE_MIN, total)
+    return len(_ready_warpgates(ctx)) >= need
 
 
 def warp_wave_imminent(ctx: "BotContext") -> bool:
     """True slightly before `warp_wave_ready` - see `WARP_WAVE_PREPHASE_MARGIN`."""
     total = ctx.bot.structures(UnitTypeId.WARPGATE).ready.amount
-    if total == 0:
+    need = warp_wave_threshold(total)
+    if need == 0:
         return False
-    threshold = max(min(WARP_WAVE_MIN, total) - WARP_WAVE_PREPHASE_MARGIN, 1)
+    threshold = max(need - WARP_WAVE_PREPHASE_MARGIN, 1)
     return len(_ready_warpgates(ctx)) >= threshold
 
 
@@ -513,15 +537,13 @@ def escort_warp_prism():
                 cy_distance_to(prism.position, staging) <= PRISM_PHASE_APPROACH
             )
 
-            # Phase when near the enemy natural and either the army pocket or
-            # Chargelot staging (prepositioned Prism before the ball arrives)
-            # AND the next warp wave is imminent - not just because we are in
-            # position. Phasing pins the Prism in place, so holding phase
-            # open just for being "on station" never gave it a chance to
-            # reposition between waves; only an in-progress warp (incomplete)
-            # or an about-to-fire wave should keep the field up.
+            # Phase on station after leave so the Prism field is up for the
+            # next warp pack. Stay phased while on station (or finishing
+            # incomplete warps); only drop the field to catch up when the
+            # pocket pulls away. Gating phase on warp_wave_imminent alone
+            # never fired when home pylons dripped Gates down to 2-3 ready.
             on_station = near_enemy and (near_army or near_staging)
-            hold_phase = incomplete > 0 or (on_station and warp_wave_imminent(ctx))
+            hold_phase = incomplete > 0 or on_station
 
             if hold_phase:
                 if not phased:

@@ -1,9 +1,9 @@
 """Regression tests for the warp-in wave-hold gate in
 `steps.common._chargelot_spawn` (see `routines.protoss_support.
-warp_wave_ready`): the mass-production flood paths should batch into waves
-of at least `WARP_WAVE_MIN`, but the Warp Prism purchase (Robotics-trained,
-not warped in), the opening's time-critical Stalker recovery, and anything
-before Warp Gate research must never be held back waiting for a wave.
+warp_wave_ready`): while the Prism is phasing, flood paths batch into
+`ceil(0.75 * warpgates)` waves. Home pylon warps (Prism not phasing) may
+drip. Prism purchase, opening Stalker recovery, and anything before Warp
+Gate research must never be held back waiting for a wave.
 
 Runs under pytest, or standalone with no test dependency:
 
@@ -21,7 +21,7 @@ from sc2.ids.upgrade_id import UpgradeId
 
 from bot.core.context import BotContext
 from bot.core.state import RunState
-from bot.routines.protoss_support import WARP_WAVE_MIN
+from bot.routines.protoss_support import warp_wave_threshold
 from bot.steps import common as c
 
 
@@ -45,9 +45,17 @@ def _warpgate(*, ready_to_warp: bool = True) -> MagicMock:
     return gate
 
 
+_FLOOD_TOTAL_GATES = 8
+_FLOOD_WAVE_NEED = warp_wave_threshold(_FLOOD_TOTAL_GATES)
+
+
 def _flood_ctx(*, ready_gates: int, warpgate_research: bool = True) -> BotContext:
     """Prism already up and phasing, Observer already trained - selects
-    `_chargelot_spawn`'s "post_prism_flood" path (Zealot/Stalker only)."""
+    `_chargelot_spawn`'s "post_prism_flood" path (Zealot/Stalker only).
+
+    Pads to `_FLOOD_TOTAL_GATES` so the 75% threshold stays fixed at
+    `_FLOOD_WAVE_NEED` (6 for 8 Gates) across these tests.
+    """
     bot = MagicMock()
     bot.race = MagicMock()  # != Race.Protoss short-circuits _warp_spawn_target
     bot.time = 400.0
@@ -64,11 +72,11 @@ def _flood_ctx(*, ready_gates: int, warpgate_research: bool = True) -> BotContex
     bot.units.side_effect = lambda t: presence.get(t, _Units())
     bot.already_pending.side_effect = lambda t: 0
 
-    # 2 extra Gates always on cooldown, so total Gates comfortably exceeds
-    # WARP_WAVE_MIN and the threshold never self-limits down in these tests
-    # (see test_protoss_support.py for that case specifically).
     idle = [_warpgate(ready_to_warp=True) for _ in range(ready_gates)]
-    padding = [_warpgate(ready_to_warp=False) for _ in range(2)]
+    padding = [
+        _warpgate(ready_to_warp=False)
+        for _ in range(max(0, _FLOOD_TOTAL_GATES - ready_gates))
+    ]
     gates = _Units([*idle, *padding])
 
     def _structures(t):
@@ -141,13 +149,44 @@ def _prism_purchase_ctx(*, ready_gates: int) -> BotContext:
 
 
 def test_flood_holds_when_fewer_than_the_wave_minimum_are_idle() -> None:
-    ctx = _flood_ctx(ready_gates=WARP_WAVE_MIN - 1)
+    ctx = _flood_ctx(ready_gates=_FLOOD_WAVE_NEED - 1)
+
+    assert c._chargelot_spawn(ctx) is None
+
+
+def test_home_flood_is_not_held_before_army_leave() -> None:
+    """Pre-moveout home pylon warps may drip - batching starts at leave."""
+    ctx = _flood_ctx(ready_gates=_FLOOD_WAVE_NEED - 1)
+    ctx.bot.time = 200.0  # before ARMY_LEAVE_TIME (5:15)
+    presence_home = {
+        UnitTypeId.WARPPRISM: _Units([MagicMock()]),
+        UnitTypeId.WARPPRISMPHASING: _Units(),
+        UnitTypeId.OBSERVER: _Units([MagicMock()]),
+        UnitTypeId.STALKER: _Units([MagicMock() for _ in range(6)]),
+    }
+    ctx.bot.units.side_effect = lambda t: presence_home.get(t, _Units())
+
+    assert isinstance(c._chargelot_spawn(ctx), SpawnController)
+    assert ctx.state.chargelot_warp_wave_open is False
+
+
+def test_flood_holds_after_leave_even_if_prism_not_yet_phasing() -> None:
+    """After leave, accumulate Gates so the Prism can phase into a pack."""
+    ctx = _flood_ctx(ready_gates=_FLOOD_WAVE_NEED - 1)
+    ctx.bot.time = 400.0
+    presence = {
+        UnitTypeId.WARPPRISM: _Units([MagicMock()]),
+        UnitTypeId.WARPPRISMPHASING: _Units(),
+        UnitTypeId.OBSERVER: _Units([MagicMock()]),
+        UnitTypeId.STALKER: _Units([MagicMock() for _ in range(6)]),
+    }
+    ctx.bot.units.side_effect = lambda t: presence.get(t, _Units())
 
     assert c._chargelot_spawn(ctx) is None
 
 
 def test_flood_releases_once_the_wave_minimum_is_idle_at_once() -> None:
-    ctx = _flood_ctx(ready_gates=WARP_WAVE_MIN)
+    ctx = _flood_ctx(ready_gates=_FLOOD_WAVE_NEED)
 
     result = c._chargelot_spawn(ctx)
 
@@ -156,6 +195,40 @@ def test_flood_releases_once_the_wave_minimum_is_idle_at_once() -> None:
         UnitTypeId.STALKER,
         UnitTypeId.ZEALOT,
     }
+    assert ctx.state.chargelot_warp_wave_open is True
+
+
+def test_open_wave_keeps_firing_below_threshold_until_drained() -> None:
+    """After the threshold trips, warping one Gate must not re-hold the
+    rest of the pack (that was the 1-at-a-time + float=3040 failure mode)."""
+    ctx = _flood_ctx(ready_gates=_FLOOD_WAVE_NEED - 1)
+    ctx.state.chargelot_warp_wave_open = True
+    ctx.state.chargelot_warp_wave_min_ready = _FLOOD_WAVE_NEED - 1
+
+    assert isinstance(c._chargelot_spawn(ctx), SpawnController)
+    assert ctx.state.chargelot_warp_wave_open is True
+
+
+def test_wave_closes_on_ready_rebound_after_drain() -> None:
+    """Gates rolling off cooldown mid-drain must end the wave - waiting for
+    ready==0 never happens and left the wave permanently open (drip)."""
+    ctx = _flood_ctx(ready_gates=_FLOOD_WAVE_NEED - 2)
+    ctx.state.chargelot_warp_wave_open = True
+    # Already drained to need-3; this frame a Gate comes back (need-2).
+    ctx.state.chargelot_warp_wave_min_ready = _FLOOD_WAVE_NEED - 3
+
+    assert c._chargelot_spawn(ctx) is None
+    assert ctx.state.chargelot_warp_wave_open is False
+    assert ctx.state.chargelot_warp_wave_min_ready is None
+
+
+def test_wave_closes_when_no_gates_remain_idle() -> None:
+    ctx = _flood_ctx(ready_gates=0)
+    ctx.state.chargelot_warp_wave_open = True
+    ctx.state.chargelot_warp_wave_min_ready = 1
+
+    assert c._chargelot_spawn(ctx) is None
+    assert ctx.state.chargelot_warp_wave_open is False
 
 
 def test_flood_is_not_held_before_warp_gate_research() -> None:

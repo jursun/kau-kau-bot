@@ -54,43 +54,54 @@ def test_wave_not_ready_with_no_warpgates() -> None:
 
 
 def test_wave_not_ready_below_the_minimum() -> None:
-    # Total exceeds WARP_WAVE_MIN so the threshold does NOT self-limit down -
-    # a real shortfall (some Gates still on cooldown), not just "we don't
-    # have that many Gates yet" (see the self-limiting test below).
-    idle = [_gate(ready_to_warp=True) for _ in range(ps.WARP_WAVE_MIN - 1)]
-    on_cooldown = [_gate(ready_to_warp=False) for _ in range(2)]
+    # Fixed wall of 8 Gates: need ceil(0.75*8)=6. 5 idle is a real shortfall
+    # (some still on cooldown), not "we don't have that many Gates yet".
+    total = 8
+    need = ps.warp_wave_threshold(total)
+    idle = [_gate(ready_to_warp=True) for _ in range(need - 1)]
+    on_cooldown = [_gate(ready_to_warp=False) for _ in range(total - (need - 1))]
     assert ps.warp_wave_ready(_ctx(*idle, *on_cooldown)) is False
 
 
 def test_wave_ready_once_the_minimum_is_idle_at_once() -> None:
-    gates = [_gate(ready_to_warp=True) for _ in range(ps.WARP_WAVE_MIN)]
-    assert ps.warp_wave_ready(_ctx(*gates)) is True
+    total = 8
+    need = ps.warp_wave_threshold(total)
+    idle = [_gate(ready_to_warp=True) for _ in range(need)]
+    on_cooldown = [_gate(ready_to_warp=False) for _ in range(total - need)]
+    assert ps.warp_wave_ready(_ctx(*idle, *on_cooldown)) is True
 
 
 def test_gates_still_on_cooldown_do_not_count_toward_the_wave() -> None:
-    gates = [_gate(ready_to_warp=True) for _ in range(ps.WARP_WAVE_MIN - 1)]
-    gates.append(_gate(ready_to_warp=False))
-    assert ps.warp_wave_ready(_ctx(*gates)) is False
+    total = 8
+    need = ps.warp_wave_threshold(total)
+    idle = [_gate(ready_to_warp=True) for _ in range(need - 1)]
+    on_cooldown = [_gate(ready_to_warp=False) for _ in range(total - (need - 1))]
+    assert ps.warp_wave_ready(_ctx(*idle, *on_cooldown)) is False
 
 
-def test_threshold_self_limits_to_however_many_warpgates_exist() -> None:
-    """Early on (e.g. right after Warp Gate research, wall trio still
-    building) we may only have 1-3 total Gates - waiting for
-    `WARP_WAVE_MIN` would stall production forever. The threshold should
-    never exceed the total Gate count."""
-    gates = [_gate(ready_to_warp=True) for _ in range(ps.WARP_WAVE_MIN - 2)]
-    ctx = _ctx(*gates)
+def test_threshold_scales_with_gate_count() -> None:
+    """ceil(0.75 * n): 8->6, 4->3, 1->1."""
+    assert ps.warp_wave_threshold(8) == 6
+    assert ps.warp_wave_threshold(4) == 3
+    assert ps.warp_wave_threshold(1) == 1
+    assert ps.warp_wave_threshold(0) == 0
 
-    assert ps.warp_wave_ready(ctx) is True
+
+def test_threshold_never_exceeds_total_gates() -> None:
+    """Early on we may only have 1-3 Gates - waiting for a larger absolute
+    count would stall forever. ceil(0.75*n) is always <= n."""
+    for n in range(1, 9):
+        gates = [_gate(ready_to_warp=True) for _ in range(n)]
+        assert ps.warp_wave_ready(_ctx(*gates)) is True
+        assert ps.warp_wave_threshold(n) <= n
 
 
 def test_wave_imminent_fires_before_wave_ready_by_the_prephase_margin() -> None:
-    idle_count = ps.WARP_WAVE_MIN - ps.WARP_WAVE_PREPHASE_MARGIN
+    total = 8
+    need = ps.warp_wave_threshold(total)
+    idle_count = need - ps.WARP_WAVE_PREPHASE_MARGIN
     idle = [_gate(ready_to_warp=True) for _ in range(idle_count)]
-    # Pad total up to WARP_WAVE_MIN so the threshold doesn't self-limit.
-    on_cooldown = [
-        _gate(ready_to_warp=False) for _ in range(ps.WARP_WAVE_PREPHASE_MARGIN)
-    ]
+    on_cooldown = [_gate(ready_to_warp=False) for _ in range(total - idle_count)]
     ctx = _ctx(*idle, *on_cooldown)
 
     assert ps.warp_wave_ready(ctx) is False

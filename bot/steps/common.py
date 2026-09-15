@@ -32,7 +32,12 @@ from bot.builds.definition import _always
 from bot.consts import CHARGELOT_COMP, CHARGELOT_FLOOD_COMP
 from bot.core.types import Gate, MacroStep
 from bot.routines import gates as gate_fns
-from bot.routines.protoss_support import warp_wave_ready
+from bot.routines.protoss_support import (
+    _ready_warpgates,
+    prism_warp_batch_window,
+    warp_wave_ready,
+    warp_wave_threshold,
+)
 
 if TYPE_CHECKING:
     from bot.core.context import BotContext
@@ -306,20 +311,39 @@ def _chargelot_spawn(ctx: "BotContext") -> SpawnController | None:
                 freeflow_mode=True,
             )
 
-    # Batch Zealot/Stalker warp-ins into waves instead of firing the instant
-    # each Warp Gate comes off cooldown - see `warp_wave_ready`. Held-back
-    # Gates just stay idle (no cooldown ticks while unused), so this cannot
-    # starve production, only bunch it up. Scoped to the flood paths only -
-    # see `_WAVE_GATED_PATHS`. Also requires Warp Gate research to have
-    # actually finished: `build_completed` can go true while research is
-    # still in progress (it's an earlier BO step, not the last one), and
-    # `warp_wave_ready` would otherwise see 0 Warp Gate structures and hold
-    # forever even though plain Gateways are still training normally.
+    # Batch flood warps into ~75% Gate waves once the Prism is in play after
+    # army leave (`prism_warp_batch_window`). Home pylon warps before leave
+    # may drip. While batching, open the wave at threshold and keep firing
+    # until idle Gates rebound after draining below need.
+    research_done = UpgradeId.WARPGATERESEARCH in ctx.bot.state.upgrades
+    batch_window = prism_warp_batch_window(ctx)
+    if not batch_window:
+        ctx.state.chargelot_warp_wave_open = False
+        ctx.state.chargelot_warp_wave_min_ready = None
+    elif path in _WAVE_GATED_PATHS and research_done:
+        ready_now = len(_ready_warpgates(ctx))
+        total_now = ctx.bot.structures(UnitTypeId.WARPGATE).ready.amount
+        need_now = warp_wave_threshold(total_now)
+        if warp_wave_ready(ctx):
+            ctx.state.chargelot_warp_wave_open = True
+            ctx.state.chargelot_warp_wave_min_ready = ready_now
+        elif ctx.state.chargelot_warp_wave_open:
+            min_r = ctx.state.chargelot_warp_wave_min_ready
+            if min_r is None or ready_now < min_r:
+                ctx.state.chargelot_warp_wave_min_ready = ready_now
+                min_r = ready_now
+            if ready_now == 0 or (
+                min_r is not None and min_r < need_now and ready_now > min_r
+            ):
+                ctx.state.chargelot_warp_wave_open = False
+                ctx.state.chargelot_warp_wave_min_ready = None
     held_for_wave = (
         isinstance(result, SpawnController)
         and path in _WAVE_GATED_PATHS
-        and UpgradeId.WARPGATERESEARCH in ctx.bot.state.upgrades
+        and research_done
+        and batch_window
         and not warp_wave_ready(ctx)
+        and not ctx.state.chargelot_warp_wave_open
     )
     if held_for_wave:
         result = None

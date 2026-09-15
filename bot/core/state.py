@@ -156,6 +156,12 @@ class RunState:
     nearest, not list index — townhall iteration order is unstable)."""
     chargelot_wave_gate_ready_since: float | None = None
     """When wave_gate first passed while under wave1_min (force-leave clock)."""
+    chargelot_warp_wave_open: bool = False
+    """True after `warp_wave_ready` trips; cleared when the pack is spent
+    (idle Gates hit 0, or rebound after draining below the threshold)."""
+    chargelot_warp_wave_min_ready: int | None = None
+    """Lowest idle-Gate count seen while `chargelot_warp_wave_open` - used to
+    detect the post-drain rebound that ends the wave."""
     chargelot_muster_committed_at: float | None = None
     """Game time the first-wave muster committed (see `routines.combat.
     chargelot_attack`/`chargelot_kiting`) - drives the post-commit kite
