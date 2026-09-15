@@ -1,0 +1,101 @@
+# KauKauBot Protoss openings, run by the ares BuildOrderRunner.
+#
+# Ares looks for `<race>_builds.yml` in the repo root, lowercase, and reads
+# whichever one matches `MyBotRace` in config.yml. With `MyBotRace: Protoss`,
+# this file is the live ladder opening list.
+#
+# Forcing an opening locally: set `Debug: True` in config.yml (ares then uses
+# the `test_123` opponent id) and put the opening you want first in the
+# `test_123` cycle below — or use `scripts/smoke_tier.py --build "2base
+# Chargelot All-In"`, which applies race/debug/build overrides in memory
+# without editing this file. See ARCHITECTURE.md gotcha 4.
+
+# Save game opening + result to ./data so ares can switch openings after a loss.
+UseData: True
+# Cycle: keep the opening while it wins, advance to the next one after a defeat.
+BuildSelection: Cycle
+MinGamesWinrateBased: 5
+
+BuildChoices:
+    # Active when `Debug: True` in config.yml.
+    test_123:
+        BotName: LocalDebug
+        Cycle:
+            - 2base Chargelot All-In
+
+    Terran:
+        BotName: TerranRace
+        Cycle:
+            - 2base Chargelot All-In
+
+    Protoss:
+        BotName: ProtossRace
+        Cycle:
+            - 2base Chargelot All-In
+
+    Zerg:
+        BotName: ZergRace
+        Cycle:
+            - 2base Chargelot All-In
+
+    Random:
+        BotName: RandomRace
+        Cycle:
+            - 2base Chargelot All-In
+
+Builds:
+    # Standard PvT-looking opener (gate → gas → nexus → cyber → gas → pylon)
+    # into Twilight / Warp Gate / Charge, then hand off to the dynamic plan
+    # for 8 gates, Robo, Warp Prism, and mass Chargelots. Timings from the
+    # wshadows 2-base Chargelot guide.
+    2base Chargelot All-In:
+        # 23: high enough that AutoSupply does not race Cyber (at ~20-22
+        # it was stealing the 150 minerals and delaying Core ~6s).
+        ConstantWorkerProductionTill: 26
+        AutoSupplyAtSupply: 23
+        OpeningBuildOrder:
+            # Nexus starts the game with 50 energy - chrono is available
+            # immediately, no wait for it to accumulate. First in the list
+            # so it fires at 0:00 without stalling anything after it (the
+            # build order runner processes steps sequentially). This is now
+            # the only nexus/probe chrono in the opening - a second one at
+            # supply 20 used to stall the more important Adept (22 chrono @
+            # gateway) and Charge (26 chrono @ twilightcouncil) casts by
+            # several supply counts each, since energy alone cannot keep up
+            # with 4 chronos crammed into this window.
+            - 12 chrono @ nexus
+            - 14 pylon @ ramp
+            - 15 gate @ ramp
+            # Opening worker scout is owned by `worker_harass` (one Probe only).
+            # Do not use ares `worker_scout` — it would send a second Probe.
+            - 17 gas
+            - 20 expand
+            - 20 core @ ramp
+            # Wall FirstPylon before 2nd gas — powers Gateways 2-3 + Robo in
+            # ThreeByThreesWall. `@ nat` alone often lands too far from the
+            # wall choke.
+            - 20 pylon @ nat_wall
+            - 22 adept
+            - 22 chrono @ gateway
+            # Stalker #1 queues behind the Adept so it starts as soon as the
+            # Gateway frees (~2:25-2:35) - answer to early Reaper harass.
+            - 22 stalker
+            # Twilight before the Zealot so the Council starts while S1 trains
+            # (ares completes unit steps on queue, not on finish).
+            - 22 twilightcouncil
+            # 2nd gas after Adept/S1/Twilight so it does not delay wall Pylon
+            # or the Reaper-window units.
+            - 23 gas
+            # Mineral-only third home body: uses the Gateway as soon as S1
+            # finishes (~3:00) instead of idling until Charge is researched.
+            # Chrono so Zealot frees the Gate early enough for S2 by 4:00.
+            - 24 zealot
+            - 24 chrono @ gateway
+            - 24 warpgateresearch
+            - 26 charge
+            - 26 chrono @ twilightcouncil
+            # Stalker #2 before Warp Gate morph completes - ares will not
+            # train from an idle Gateway once WG finishes until it morphs.
+            - 26 stalker
+            - 28 chrono @ gateway
+            # Stop here — extra units come from spawn_army after the opening.

@@ -1,0 +1,171 @@
+From afb7615054294212ecd7c4fb7fadc58800f1a6d1 Mon Sep 17 00:00:00 2001
+From: Jason Wong <usernameunknown@yahoo.com>
+Date: Sun, 13 Sep 2026 09:50:45 -1000
+Subject: [PATCH 2/3] Prefer Warp Prism power for warp-ins and place beside the
+ field.
+
+Avoid random pylon scatter so Chargelot reinforcements land on the Prism.
+---
+ src/ares/managers/warp_in_manager.py | 105 ++++++++++++++++++---------
+ 1 file changed, 70 insertions(+), 35 deletions(-)
+
+diff --git a/src/ares/managers/warp_in_manager.py b/src/ares/managers/warp_in_manager.py
+index c3723533..478c877f 100644
+--- a/src/ares/managers/warp_in_manager.py
++++ b/src/ares/managers/warp_in_manager.py
+@@ -4,6 +4,7 @@ from collections import defaultdict
+ from collections.abc import Coroutine
+ from typing import TYPE_CHECKING, Any
+ 
++from cython_extensions import cy_towards
+ from cython_extensions.geometry import cy_distance_to_squared
+ from loguru import logger
+ from sc2.ids.ability_id import AbilityId
+@@ -18,6 +19,16 @@ from ares.managers.manager_mediator import IManagerMediator, ManagerMediator
+ if TYPE_CHECKING:
+     from ares import AresBot
+ 
++# Unit type → warpgate train ability (placement query + warp).
++_WARP_ABILITY: dict[UnitTypeId, AbilityId] = {
++    UnitTypeId.ZEALOT: AbilityId.WARPGATETRAIN_ZEALOT,
++    UnitTypeId.STALKER: AbilityId.WARPGATETRAIN_STALKER,
++    UnitTypeId.ADEPT: AbilityId.TRAINWARP_ADEPT,
++    UnitTypeId.SENTRY: AbilityId.WARPGATETRAIN_SENTRY,
++    UnitTypeId.HIGHTEMPLAR: AbilityId.WARPGATETRAIN_HIGHTEMPLAR,
++    UnitTypeId.DARKTEMPLAR: AbilityId.WARPGATETRAIN_DARKTEMPLAR,
++}
++
+ 
+ class WarpInManager(Manager, IManagerMediator):
+     PSIONIC_MATRIX_RANGE_PRISM: float = 3.75
+@@ -80,9 +91,7 @@ class WarpInManager(Manager, IManagerMediator):
+         return self.manager_requests_dict[request](kwargs)
+ 
+     async def update(self, iteration: int) -> None:
+-        """Update worker on route
+-
+-        Bookkeeping is also updated via `on_unit_destroyed` and `on_building_started`.
++        """Clear per-frame warp-in bookkeeping.
+ 
+         Parameters
+         ----------
+@@ -96,11 +105,7 @@ class WarpInManager(Manager, IManagerMediator):
+     def request_warp_in(
+         self, build_from: UnitTypeId, unit_type: UnitTypeId, target: Point2 | None
+     ) -> None:
+-        """
+-        Get a warp in spot closest to target
+-        This is intended as a simulated alternative to example:
+-        `await self.find_placement(AbilityId.WARPGATETRAIN_ZEALOT, position)`
+-        So prevents making query to the game client.
++        """Queue a warp-in; `do_warp_ins` places near Prism / nat-wall pylons.
+ 
+         Parameters
+         ----------
+@@ -108,46 +113,76 @@ class WarpInManager(Manager, IManagerMediator):
+         unit_type
+         target
+ 
+-        Returns
+-        -------
+-
+         """
+         if not target:
+             target = self.ai.start_location
+ 
+         self.requested_warp_ins.append((build_from, unit_type, target))
+ 
+-    async def do_warp_ins(self) -> None:
+-        if not self.requested_warp_ins:
+-            return
+-
++    def _power_sources_for_target(self, target: Point2) -> list[Unit]:
++        """Prefer phasing Prism, then pylons near `target` (usually nat wall)."""
+         own_structures_dict: dict[UnitTypeId, list[Unit]] = (
+             self.manager_mediator.get_own_structures_dict
+         )
+         pylons: list[Unit] = [
+             s for s in own_structures_dict[UnitTypeId.PYLON] if s.is_ready
+         ]
+-        power_sources: list[Unit] = (
+-            pylons
+-            + self.manager_mediator.get_own_army_dict[UnitTypeId.WARPPRISMPHASING]
++        prisms: list[Unit] = [
++            u for u in self.ai.units if u.type_id == UnitTypeId.WARPPRISMPHASING
++        ]
++        # Explicit priority: Prism field first whenever one is phased.
++        if prisms:
++            return sorted(
++                prisms, key=lambda u: cy_distance_to_squared(u.position, target)
++            )
++        if not pylons:
++            return []
++        return sorted(
++            pylons, key=lambda u: cy_distance_to_squared(u.position, target)
+         )
+-        if not power_sources:
+-            logger.warning("Requesting warp in spot, but no power sources found")
++
++    async def do_warp_ins(self) -> None:
++        if not self.requested_warp_ins:
+             return
+ 
+         for build_from, unit_type, target in self.requested_warp_ins:
+-            sorted_power_sources = sorted(
+-                power_sources, key=lambda x: cy_distance_to_squared(x.position, target)
+-            )
+-            for power_source in sorted_power_sources:
+-                if AbilityId.WARPGATETRAIN_STALKER in build_from.abilities:
+-                    placement = await self.ai.find_placement(
+-                        AbilityId.WARPGATETRAIN_STALKER,
+-                        power_source.position.random_on_distance(6.0),
+-                        placement_step=1,
+-                    )
+-                    if placement is None:
+-                        logger.info(f"Can't find placement for {unit_type}")
+-                        return
+-                    build_from.warp_in(unit_type, placement)
+-                    break
++            if not target:
++                target = self.ai.start_location
++
++            power_sources = self._power_sources_for_target(target)
++            if not power_sources:
++                logger.warning("Requesting warp in spot, but no power sources found")
++                return
++
++            ability = _WARP_ABILITY.get(unit_type, AbilityId.WARPGATETRAIN_ZEALOT)
++            if ability not in build_from.abilities:
++                # Gate may only expose the unit we can currently afford/train.
++                for fallback in (
++                    AbilityId.WARPGATETRAIN_ZEALOT,
++                    AbilityId.WARPGATETRAIN_STALKER,
++                    AbilityId.TRAINWARP_ADEPT,
++                ):
++                    if fallback in build_from.abilities:
++                        ability = fallback
++                        break
++                else:
++                    continue
++
++            for power_source in power_sources:
++                # Place beside the power source toward the army/target — not
++                # random_on_distance, which scattered warps around the base.
++                near = power_source.position
++                if cy_distance_to_squared(near, target) > 0.5:
++                    near = Point2(cy_towards(near, target, 1.5))
++                placement = await self.ai.find_placement(
++                    ability,
++                    near,
++                    max_distance=4,
++                    placement_step=1,
++                    random_alternative=False,
++                )
++                if placement is None:
++                    continue
++                build_from.warp_in(unit_type, placement)
++                self.warp_in_positions.add(placement)
++                break
+-- 
+2.22.0.windows.1
+

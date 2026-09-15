@@ -1,0 +1,69 @@
+# Skill: Repeatable Code Cleanup
+
+## When to use
+After a long-coding session, or anytime master has accumulated messy but working code.
+Default assumption: current behavior is correct. This skill cleans; it does not ship features.
+
+## Goal
+Improve hygiene in three risk-ranked passes. Commit after each pass.
+
+## Hard rules
+- Work on a branch off the current default branch: `chore/cleanup-YYYYMMDD`
+- Do not change user-visible behavior, public APIs, routes, schemas, or error messages
+- Do not add features, new dependencies, or architectural rewrites
+- Do not “fix” suspected bugs in this skill; record them in `CLEANUP_NOTES.md`
+- Match existing project style; do not restyle the whole repo
+- Prefer deleting and simplifying over extracting new abstractions
+- If unsure whether a change is safe, treat it as higher risk or skip it
+
+## Risk model
+
+### Low risk (must be mechanical)
+- Unused imports, unused private vars/functions, unused files you can prove are unreferenced
+- Commented-out code
+- Debug leftovers: `console.log`, `print`, `debugger`, leftover `TODO: done`
+- Comments that only narrate what the next line does
+- Placeholder strings / localhost leftovers that are clearly not used
+- Formatting only if the project already has a formatter and you run it as-is
+
+Commit message:
+`chore(cleanup): low-risk hygiene`
+
+### Medium risk (behavior should stay the same, but names/structure move)
+- Rename local variables/functions for consistency with neighboring code
+- Deduplicate obvious copy-paste inside the same file or adjacent files
+- Normalize inconsistent local patterns (error handling style, import style) without changing control flow
+- Remove extra defensive try/catch or type escapes (`any`, ts-ignore) only when surrounding trusted code already assumes validity
+- Delete unused *exported* symbols only after searching the repo
+
+Commit message:
+`chore(cleanup): medium-risk consistency`
+
+### High risk (do not apply without explicit approval)
+- Cross-file moves, new modules, public rename, API shape changes
+- Changing control flow, error handling outcomes, retries, defaults
+- Dependency add/remove that is not a proven-unused package
+- Performance rewrites, concurrency changes, schema/config changes
+- Anything that would require product QA beyond unit tests
+
+Commit message if approved:
+`chore(cleanup): high-risk structure`
+
+## Workflow (repeatable)
+
+1. Create/switch to the cleanup branch from latest default branch.
+2. Scan the agreed scope (default: files/directories touched in recent commits; else `bot/`, `scripts/`, `tests/`).
+3. Produce an inventory grouped by Low / Medium / High:
+
+```text
+LOW
+- path: reason
+
+MEDIUM
+- path: reason | why medium
+
+HIGH
+- path: reason | why high | what could break
+
+SKIP / BUGS
+- path: observation (do not fix)

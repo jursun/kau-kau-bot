@@ -29,13 +29,13 @@ bot/
                        WorkerTask, ProxyCrewPlan
     zerg/              one module per build, each exporting BUILD
     terran/            four_rax_proxy
-    protoss/           empty
+    protoss/           two_base_chargelot_all_in
   steps/
     common.py          race-neutral macro steps
     zerg.py            queens, injects, hatcheries, evo chambers
     terran.py          proxy_crew, claim_z_on_first_scv,
                        continuous_main_depots
-    protoss.py         empty
+    protoss.py         gateways (Gateway + Warp Gate count)
   routines/
     combat.py          release_waves, defend_home, attack_squads,
                        builder_workers_attack
@@ -52,8 +52,8 @@ bot/
 A bot is a single race: `MyBotRace` in `config.yml` decides which
 `<race>_builds.yml` ares reads and which builds can run at all.
 `create_ladder_zip.py` packages whatever race that key names. KauKauBot
-ships as Terran (`Four Rax Proxy`); set `MyBotRace: Zerg` to zip the Zerg
-openings instead. `terran_builds.yml` names the single Terran build in
+ships as Terran (`Four Rax Proxy`); set `MyBotRace: Zerg` or `Protoss` to
+zip those openings instead. Each `<race>_builds.yml` names its openings in
 every `BuildChoices` cycle, so nothing breaks when `Debug` is False.
 
 ## Adding a build

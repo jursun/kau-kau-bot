@@ -15,9 +15,9 @@ Runs under pytest, or standalone with no test dependency:
 from __future__ import annotations
 
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
-from ares.behaviors.combat.group import AMoveGroup, StutterGroupForward
+from ares.behaviors.combat.group import AMoveGroup, KeepGroupSafe, StutterGroupForward
 from ares.behaviors.combat.individual import (
     AMove,
     KeepUnitSafe,
@@ -27,6 +27,7 @@ from ares.behaviors.combat.individual import (
 from ares.consts import UnitRole
 from ares.managers.squad_manager import UnitSquad
 from cython_extensions import cy_distance_to
+from sc2.ids.ability_id import AbilityId
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
 
@@ -55,8 +56,12 @@ def _ctx(wave1_min: int = 6, wave_growth: float = 1.25) -> BotContext:
     # `_maxed_and_ready` is False unless a test deliberately raises these -
     # `already_pending` returning 0 for any argument means "nothing training".
     ctx.bot.supply_used = 100.0
+    ctx.bot.time = 0.0
     ctx.bot.already_pending.return_value = 0
     ctx.bot.calculate_supply_cost.return_value = 1.0
+    # Influence retreat reads these every attack_squads frame.
+    ctx.mediator.get_cached_enemy_army = []
+    ctx.mediator.get_ground_grid = object()
     return ctx
 
 
@@ -245,13 +250,20 @@ def test_squad_stutters_when_outnumbered_without_min_engage_range() -> None:
     try:
         ctx = _ctx()
         units = [_unit(1, Point2((10.0, 10.0)))]  # 1 unit
-        enemies = [_unit(90), _unit(91), _unit(92), _unit(93)]  # badly outnumbered
+        enemies = [
+            _unit(90, Point2((11.0, 10.0))),
+            _unit(91, Point2((11.0, 11.0))),
+            _unit(92, Point2((11.0, 12.0))),
+            _unit(93, Point2((11.0, 13.0))),
+        ]  # badly outnumbered
+        ctx.mediator.get_cached_enemy_army = enemies
         ctx.mediator.get_units_in_range.return_value = [enemies]
         ctx.mediator.get_squads.return_value = [_squad(units)]
 
         combat.attack_squads()(ctx)
 
         registered = ctx.bot.register_behavior.call_args.args[0]
+        assert isinstance(registered.micros[0], KeepGroupSafe)
         amoves = [b for b in registered.micros if isinstance(b, AMoveGroup)]
         assert amoves[0].target == attack
 
@@ -345,6 +357,7 @@ def test_attack_squads_kites_when_outnumbered_and_min_engage_range_is_set() -> N
             _unit(91, Point2((11.0, 11.0))),
             _unit(92, Point2((11.0, 12.0))),
         ]
+        ctx.mediator.get_cached_enemy_army = enemies
         ctx.mediator.get_units_in_range.return_value = [enemies]
         ctx.mediator.get_squads.return_value = [_squad(units)]
 
@@ -353,6 +366,7 @@ def test_attack_squads_kites_when_outnumbered_and_min_engage_range_is_set() -> N
         assert ctx.bot.register_behavior.call_count == 2, "one maneuver per unit"
         registered = [c.args[0] for c in ctx.bot.register_behavior.call_args_list]
         all_micros = [m for maneuver in registered for m in maneuver.micros]
+        assert all(isinstance(m.micros[0], KeepUnitSafe) for m in registered)
         assert not any(isinstance(m, StutterGroupForward) for m in all_micros)
         assert not any(isinstance(m, AMoveGroup) for m in all_micros)
         amoves = [m for m in all_micros if isinstance(m, AMove)]
@@ -377,12 +391,14 @@ def test_attack_squads_stutters_when_ahead_even_with_min_engage_range() -> None:
             _unit(3, Point2((11.0, 12.0))),
         ]
         enemies = [_unit(90, Point2((11.0, 10.0)))]
+        ctx.mediator.get_cached_enemy_army = enemies
         ctx.mediator.get_units_in_range.return_value = [enemies]
         ctx.mediator.get_squads.return_value = [_squad(units)]
 
         combat.attack_squads(min_engage_range=3.0)(ctx)
 
         registered = ctx.bot.register_behavior.call_args.args[0]
+        assert isinstance(registered.micros[0], KeepGroupSafe)
         stutters = [b for b in registered.micros if isinstance(b, StutterGroupForward)]
         assert len(stutters) == 1
         assert stutters[0].enemies == enemies
@@ -407,12 +423,16 @@ def test_structures_do_not_count_as_enemy_force_for_kite_vs_stutter() -> None:
         ctx.bot.calculate_supply_cost.side_effect = (
             lambda t: 10.0 if t == UnitTypeId.HATCHERY else 1.0
         )
+        # Structures are not in the intel army feed — force falls back to
+        # `_enemies_near` and must still stutter, not kite.
+        ctx.mediator.get_cached_enemy_army = []
         ctx.mediator.get_units_in_range.return_value = [[hatch]]
         ctx.mediator.get_squads.return_value = [_squad(units)]
 
         combat.attack_squads(min_engage_range=3.0)(ctx)
 
         registered = ctx.bot.register_behavior.call_args.args[0]
+        assert isinstance(registered.micros[0], KeepGroupSafe)
         assert any(isinstance(b, StutterGroupForward) for b in registered.micros)
     finally:
         _restore_targeting(original)
@@ -658,6 +678,357 @@ def main() -> int:
             print(f"  FAIL  {test.__name__}: {error}")
     print(f"\n{len(tests) - failures}/{len(tests)} passed.")
     return 1 if failures else 0
+
+
+
+
+def test_attack_squads_influence_retreat_runs_before_amove() -> None:
+    """KeepGroupSafe is first so unsafe ground influence wins over AMove."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original = _patch_targeting(rally, attack)
+    try:
+        ctx = _ctx()
+        units = [_unit(1, Point2((10.0, 10.0))), _unit(2, Point2((12.0, 10.0)))]
+        ctx.mediator.get_units_in_range.return_value = [[]]
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+
+        combat.attack_squads()(ctx)
+
+        registered = ctx.bot.register_behavior.call_args.args[0]
+        assert isinstance(registered.micros[0], KeepGroupSafe)
+        assert any(isinstance(b, AMoveGroup) for b in registered.micros)
+    finally:
+        _restore_targeting(original)
+
+
+def test_attack_squads_ignores_workers_in_intel_army_for_force() -> None:
+    """Workers in the cached army must not flip stutter into kite."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original = _patch_targeting(rally, attack)
+    try:
+        ctx = _ctx()
+        units = [
+            _unit(1, Point2((10.0, 10.0))),
+            _unit(2, Point2((12.0, 10.0))),
+            _unit(3, Point2((11.0, 12.0))),
+        ]
+        marine = _unit(90, Point2((11.0, 10.0)))
+        marine.type_id = UnitTypeId.MARINE
+        probes = [
+            _unit(91, Point2((11.0, 11.0))),
+            _unit(92, Point2((11.0, 12.0))),
+            _unit(93, Point2((11.0, 13.0))),
+            _unit(94, Point2((11.0, 14.0))),
+        ]
+        for p in probes:
+            p.type_id = UnitTypeId.PROBE
+        # Cached army includes workers; intel feed strips them → one Marine.
+        ctx.mediator.get_cached_enemy_army = [marine, *probes]
+        ctx.mediator.get_units_in_range.return_value = [[marine, *probes]]
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+
+        combat.attack_squads(min_engage_range=3.0)(ctx)
+
+        registered = ctx.bot.register_behavior.call_args.args[0]
+        assert isinstance(registered.micros[0], KeepGroupSafe)
+        assert any(isinstance(b, StutterGroupForward) for b in registered.micros)
+        assert ctx.bot.register_behavior.call_count == 1
+    finally:
+        _restore_targeting(original)
+
+
+def test_defend_home_assigns_sticky_hold_slots() -> None:
+    """Reordering units or hold points must not bounce defenders between holds."""
+    ctx = _ctx()
+    rally = Point2((40.0, 40.0))
+    minerals = Point2((20.0, 20.0))
+    a = _unit(1, Point2((39.0, 39.0)))
+    b = _unit(2, Point2((21.0, 21.0)))
+    a.type_id = UnitTypeId.ZEALOT
+    b.type_id = UnitTypeId.STALKER
+    a.orders = []
+    b.orders = []
+    a.order_target = None
+    b.order_target = None
+    ctx.mediator.get_units_from_role.return_value = [a, b]
+    ctx.mediator.get_main_ground_threats_near_townhall = []
+    ctx.mediator.get_units_in_range.return_value = [[]]
+    original = targeting.hold_positions
+    targeting.hold_positions = lambda _ctx: [rally, minerals]
+    try:
+        combat.defend_home()(ctx)
+        first = dict(ctx.state.defender_hold)
+        assert set(first) == {1, 2}
+        assert first[1] != first[2]
+
+        # Reverse unit list and hold list — sticky Point2 must stay put.
+        targeting.hold_positions = lambda _ctx: [minerals, rally]
+        ctx.mediator.get_units_from_role.return_value = [b, a]
+        ctx.bot.register_behavior.reset_mock()
+        combat.defend_home()(ctx)
+        assert ctx.state.defender_hold == first
+    finally:
+        targeting.hold_positions = original
+
+
+def test_defend_home_does_not_reissue_when_settled_at_hold() -> None:
+    ctx = _ctx()
+    hold = Point2((40.0, 40.0))
+    unit = _unit(7, Point2((40.5, 40.2)))  # inside ARRIVE
+    unit.type_id = UnitTypeId.ZEALOT
+    unit.orders = []
+    unit.order_target = None
+    ctx.mediator.get_units_from_role.return_value = [unit]
+    ctx.mediator.get_main_ground_threats_near_townhall = []
+    ctx.mediator.get_units_in_range.return_value = [[]]
+    original = targeting.hold_positions
+    targeting.hold_positions = lambda _ctx: [hold]
+    try:
+        combat.defend_home()(ctx)
+        assert ctx.bot.register_behavior.call_count == 0
+    finally:
+        targeting.hold_positions = original
+
+
+def test_defend_home_skips_move_when_already_pathing_to_hold() -> None:
+    ctx = _ctx()
+    hold = Point2((40.0, 40.0))
+    unit = _unit(8, Point2((30.0, 30.0)))  # still walking in
+    unit.type_id = UnitTypeId.STALKER
+    unit.orders = [object()]
+    unit.order_target = Point2((40.0, 40.0))
+    ctx.mediator.get_units_from_role.return_value = [unit]
+    ctx.mediator.get_main_ground_threats_near_townhall = []
+    ctx.mediator.get_units_in_range.return_value = [[]]
+    original = targeting.hold_positions
+    targeting.hold_positions = lambda _ctx: [hold]
+    try:
+        combat.defend_home()(ctx)
+        assert ctx.bot.register_behavior.call_count == 0
+    finally:
+        targeting.hold_positions = original
+
+
+def test_muster_commit_holds_when_not_formed_up() -> None:
+    commit, prism_wait_expired = combat.muster_commit_decision(
+        form_ready=False, prism_ready=False, waiting_since=None, now=100.0
+    )
+    assert (commit, prism_wait_expired) == (False, False)
+
+
+def test_muster_commit_fires_immediately_once_prism_is_ready() -> None:
+    commit, prism_wait_expired = combat.muster_commit_decision(
+        form_ready=True, prism_ready=True, waiting_since=None, now=100.0
+    )
+    assert (commit, prism_wait_expired) == (True, False)
+
+
+def test_muster_commit_holds_while_prism_wait_clock_has_not_started() -> None:
+    # Mirrors the first frame form-up is ready but not yet latched by
+    # `note_muster_waiting_prism`.
+    commit, prism_wait_expired = combat.muster_commit_decision(
+        form_ready=True, prism_ready=False, waiting_since=None, now=100.0
+    )
+    assert (commit, prism_wait_expired) == (False, False)
+
+
+def test_muster_commit_holds_before_prism_timeout_elapses() -> None:
+    commit, prism_wait_expired = combat.muster_commit_decision(
+        form_ready=True,
+        prism_ready=False,
+        waiting_since=100.0,
+        now=100.0 + combat.CHARGELOT_MUSTER_PRISM_TIMEOUT - 1.0,
+    )
+    assert (commit, prism_wait_expired) == (False, False)
+
+
+def test_muster_commit_fires_once_prism_timeout_elapses() -> None:
+    commit, prism_wait_expired = combat.muster_commit_decision(
+        form_ready=True,
+        prism_ready=False,
+        waiting_since=100.0,
+        now=100.0 + combat.CHARGELOT_MUSTER_PRISM_TIMEOUT,
+    )
+    assert (commit, prism_wait_expired) == (True, True), "boundary (>=) should fire"
+
+
+def test_chargelot_kiting_is_false_before_any_commit() -> None:
+    assert combat.chargelot_kiting(committed_at=None, now=100.0) is False
+
+
+def test_chargelot_kiting_is_true_right_after_commit() -> None:
+    assert combat.chargelot_kiting(committed_at=100.0, now=100.0) is True
+
+
+def test_chargelot_kiting_is_true_within_the_window() -> None:
+    assert (
+        combat.chargelot_kiting(
+            committed_at=100.0,
+            now=100.0 + combat.CHARGELOT_KITE_WINDOW_S - 1.0,
+        )
+        is True
+    )
+
+
+def test_chargelot_kiting_ends_once_the_window_elapses() -> None:
+    assert (
+        combat.chargelot_kiting(
+            committed_at=100.0, now=100.0 + combat.CHARGELOT_KITE_WINDOW_S
+        )
+        is False
+    ), "boundary (>=) should end kiting"
+
+
+def test_stalker_target_score_prefers_medivac_over_everything() -> None:
+    medivac = combat.stalker_target_score(
+        is_medivac=True, is_repairing=False, is_worker=False, vital=500.0
+    )
+    low_hp_zealot = combat.stalker_target_score(
+        is_medivac=False, is_repairing=False, is_worker=False, vital=1.0
+    )
+    assert medivac < low_hp_zealot
+
+
+def test_stalker_target_score_prefers_repairing_worker_over_plain_worker() -> None:
+    repairing = combat.stalker_target_score(
+        is_medivac=False, is_repairing=True, is_worker=True, vital=45.0
+    )
+    plain_worker = combat.stalker_target_score(
+        is_medivac=False, is_repairing=False, is_worker=True, vital=1.0
+    )
+    assert repairing < plain_worker
+
+
+def test_stalker_target_score_prefers_any_worker_over_army_unit() -> None:
+    worker = combat.stalker_target_score(
+        is_medivac=False, is_repairing=False, is_worker=True, vital=45.0
+    )
+    army_unit = combat.stalker_target_score(
+        is_medivac=False, is_repairing=False, is_worker=False, vital=1.0
+    )
+    assert worker < army_unit
+
+
+def test_stalker_target_score_falls_back_to_lowest_vital() -> None:
+    lower_hp = combat.stalker_target_score(
+        is_medivac=False, is_repairing=False, is_worker=False, vital=10.0
+    )
+    higher_hp = combat.stalker_target_score(
+        is_medivac=False, is_repairing=False, is_worker=False, vital=50.0
+    )
+    assert lower_hp < higher_hp
+
+
+def test_stalker_pick_target_uses_priority_order_end_to_end() -> None:
+    """`_stalker_pick_target` wires `stalker_target_score` to real units."""
+    stalker = _unit(1)
+    marine = _unit(2)
+    marine.type_id = UnitTypeId.MARINE
+    marine.orders = []
+    marine.health = 5.0
+    marine.shield = 0.0
+    medivac = _unit(3)
+    medivac.type_id = UnitTypeId.MEDIVAC
+    medivac.orders = []
+    medivac.health = 150.0
+    medivac.shield = 0.0
+    original = combat.cy_in_attack_range
+    combat.cy_in_attack_range = lambda _stalker, enemies: enemies
+    try:
+        picked = combat._stalker_pick_target(stalker, [marine, medivac])
+    finally:
+        combat.cy_in_attack_range = original
+    assert picked is medivac, "Medivac must outrank a low-HP Marine"
+
+
+def test_stalker_retreat_point_backs_away_from_single_crowder() -> None:
+    stalker = _unit(1, Point2((100.0, 100.0)))
+    crowder = _unit(90, Point2((101.0, 100.0)))  # 1 unit away - melee range
+
+    retreat_to = combat._stalker_retreat_point(stalker, [crowder], 4.0)
+
+    assert round(cy_distance_to(retreat_to, crowder.position), 3) == 4.0
+    assert retreat_to.x < crowder.position.x, "retreats toward the stalker's side"
+
+
+def test_stalker_retreat_point_backs_away_from_crowd_center() -> None:
+    stalker = _unit(1, Point2((100.0, 100.0)))
+    crowder_a = _unit(90, Point2((101.0, 99.0)))
+    crowder_b = _unit(91, Point2((101.0, 101.0)))
+
+    retreat_to = combat._stalker_retreat_point(stalker, [crowder_a, crowder_b], 4.0)
+
+    center = Point2((101.0, 100.0))
+    assert round(cy_distance_to(retreat_to, center), 3) == 4.0
+
+
+def test_attacker_needs_work_when_idle_or_holding() -> None:
+    idle = _unit(1)
+    idle.is_idle = True
+    idle.orders = []
+    assert combat._attacker_needs_work(idle) is True
+
+    holding = _unit(2)
+    holding.is_idle = False
+    order = MagicMock()
+    order.ability = MagicMock()
+    order.ability.id = AbilityId.HOLDPOSITION
+    holding.orders = [order]
+    assert combat._attacker_needs_work(holding) is True
+
+    busy = _unit(3)
+    busy.is_idle = False
+    move = MagicMock()
+    move.ability = MagicMock()
+    move.ability.id = AbilityId.ATTACK
+    busy.orders = [move]
+    assert combat._attacker_needs_work(busy) is False
+
+
+def test_nudge_idle_army_reissues_attack_on_interval() -> None:
+    ctx = _ctx()
+    ctx.bot.time = 400.0
+    ctx.state.chargelot_muster_committed_at = 300.0  # kite window long over
+    idle = _unit(1, Point2((50.0, 50.0)))
+    idle.is_idle = True
+    idle.orders = []
+    ctx.units_in_role = MagicMock(return_value=[idle])
+    ctx.mediator.get_units_from_role.return_value = []
+    dest = Point2((200.0, 200.0))
+
+    with patch.object(combat.targeting, "squad_destination", return_value=dest):
+        combat.nudge_idle_army(interval_s=3.0)(ctx)
+    idle.attack.assert_called_once_with(dest)
+    assert ctx.state.army_idle_check_at == 400.0
+
+    idle.attack.reset_mock()
+    ctx.bot.time = 401.0
+    with patch.object(combat.targeting, "squad_destination", return_value=dest):
+        combat.nudge_idle_army(interval_s=3.0)(ctx)
+    idle.attack.assert_not_called()
+
+    ctx.bot.time = 404.0
+    with patch.object(combat.targeting, "squad_destination", return_value=dest):
+        combat.nudge_idle_army(interval_s=3.0)(ctx)
+    idle.attack.assert_called_once_with(dest)
+
+
+def test_nudge_idle_army_skips_mustering_and_drop_load() -> None:
+    ctx = _ctx()
+    ctx.bot.time = 400.0
+    mustering = _unit(1, Point2((10.0, 10.0)))
+    mustering.is_idle = True
+    mustering.orders = []
+    ctx.state.mustering_tags = {1}
+    ctx.units_in_role = MagicMock(return_value=[mustering])
+    drop = _unit(2)
+    ctx.mediator.get_units_from_role.return_value = [drop]
+
+    combat.nudge_idle_army(interval_s=0.0)(ctx)
+
+    mustering.attack.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,50 @@
+From c64aaa6bc32c76391bf4123b44e49b5dd0bab802 Mon Sep 17 00:00:00 2001
+From: Jason Wong <usernameunknown@yahoo.com>
+Date: Sun, 13 Sep 2026 21:04:29 -1000
+Subject: [PATCH 3/3] Restore pylon+Prism warp power by distance to spawn
+ target.
+
+Prism-only sources blocked home warps whenever a Prism was phased; sort both by target so nat-wall warps use pylons again.
+---
+ src/ares/managers/warp_in_manager.py | 16 ++++++++--------
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/src/ares/managers/warp_in_manager.py b/src/ares/managers/warp_in_manager.py
+index 478c877f..7dd7cf2b 100644
+--- a/src/ares/managers/warp_in_manager.py
++++ b/src/ares/managers/warp_in_manager.py
+@@ -120,7 +120,11 @@ class WarpInManager(Manager, IManagerMediator):
+         self.requested_warp_ins.append((build_from, unit_type, target))
+ 
+     def _power_sources_for_target(self, target: Point2) -> list[Unit]:
+-        """Prefer phasing Prism, then pylons near `target` (usually nat wall)."""
++        """Pylons + phasing Prism, nearest to `target` first.
++
++        Prefers home pylons when `spawn_target` is the nat wall (pre-phase),
++        and the Prism field when the target is the Prism (on station).
++        """
+         own_structures_dict: dict[UnitTypeId, list[Unit]] = (
+             self.manager_mediator.get_own_structures_dict
+         )
+@@ -130,15 +134,11 @@ class WarpInManager(Manager, IManagerMediator):
+         prisms: list[Unit] = [
+             u for u in self.ai.units if u.type_id == UnitTypeId.WARPPRISMPHASING
+         ]
+-        # Explicit priority: Prism field first whenever one is phased.
+-        if prisms:
+-            return sorted(
+-                prisms, key=lambda u: cy_distance_to_squared(u.position, target)
+-            )
+-        if not pylons:
++        sources = pylons + prisms
++        if not sources:
+             return []
+         return sorted(
+-            pylons, key=lambda u: cy_distance_to_squared(u.position, target)
++            sources, key=lambda u: cy_distance_to_squared(u.position, target)
+         )
+ 
+     async def do_warp_ins(self) -> None:
+-- 
+2.22.0.windows.1
+

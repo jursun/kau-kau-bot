@@ -23,4 +23,5 @@ class FourRaxProxyValidator(BaseValidator):
         }
         wave_label = self.ctx.build.combat.wave_stage_label
         stages[f"Stage 4: {wave_label}"] = self._validate_waves()
+        stages["Stage 5: Combat QA"] = self._validate_combat_qa()
         return stages

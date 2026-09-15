@@ -1,6 +1,8 @@
 from subprocess import run
 
 if __name__ == "__main__":
+    # After this script bumps ares, re-apply (or refresh) patches:
+    #   python scripts/apply_ares_patches.py
     run(["git", "submodule", "deinit", "-f", "."])
     run(["git", "submodule", "update", "--init"])
     run(["git", "submodule", "update", "--init", "--recursive", "--remote"])

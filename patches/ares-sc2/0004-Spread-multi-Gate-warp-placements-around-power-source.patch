@@ -1,0 +1,86 @@
+diff --git a/src/ares/managers/warp_in_manager.py b/src/ares/managers/warp_in_manager.py
+index 7dd7cf2..c52b64b 100644
+--- a/src/ares/managers/warp_in_manager.py
++++ b/src/ares/managers/warp_in_manager.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import math
+ from collections import defaultdict
+ from collections.abc import Coroutine
+ from typing import TYPE_CHECKING, Any
+@@ -29,6 +30,12 @@ _WARP_ABILITY: dict[UnitTypeId, AbilityId] = {
+     UnitTypeId.DARKTEMPLAR: AbilityId.WARPGATETRAIN_DARKTEMPLAR,
+ }
+ 
++# Ring offsets around a power source so a multi-Gate wave does not all ask
++# find_placement for the same cell.
++_WARP_PLACE_RADII: tuple[float, ...] = (1.5, 2.5, 3.25)
++_WARP_PLACE_ANGLES: int = 8
++_WARP_PLACE_MIN_SEP2: float = 0.85 * 0.85  # ~zealot footprint
++
+ 
+ class WarpInManager(Manager, IManagerMediator):
+     PSIONIC_MATRIX_RANGE_PRISM: float = 3.75
+@@ -168,21 +175,44 @@ class WarpInManager(Manager, IManagerMediator):
+                 else:
+                     continue
+ 
++            placed = False
+             for power_source in power_sources:
+-                # Place beside the power source toward the army/target — not
+-                # random_on_distance, which scattered warps around the base.
+-                near = power_source.position
+-                if cy_distance_to_squared(near, target) > 0.5:
+-                    near = Point2(cy_towards(near, target, 1.5))
+-                placement = await self.ai.find_placement(
+-                    ability,
+-                    near,
+-                    max_distance=4,
+-                    placement_step=1,
+-                    random_alternative=False,
+-                )
+-                if placement is None:
+-                    continue
+-                build_from.warp_in(unit_type, placement)
+-                self.warp_in_positions.add(placement)
+-                break
++                origin = power_source.position
++                # Anchor toward the army/target, then walk a ring of offsets so
++                # successive warps in the same frame get distinct cells.
++                anchor = origin
++                if cy_distance_to_squared(origin, target) > 0.5:
++                    anchor = Point2(cy_towards(origin, target, 1.5))
++                candidates: list[Point2] = [anchor]
++                for radius in _WARP_PLACE_RADII:
++                    for i in range(_WARP_PLACE_ANGLES):
++                        ang = (2.0 * math.pi * i) / _WARP_PLACE_ANGLES
++                        candidates.append(
++                            Point2(
++                                (
++                                    origin.x + radius * math.cos(ang),
++                                    origin.y + radius * math.sin(ang),
++                                )
++                            )
++                        )
++                for near in candidates:
++                    placement = await self.ai.find_placement(
++                        ability,
++                        near,
++                        max_distance=2,
++                        placement_step=1,
++                        random_alternative=False,
++                    )
++                    if placement is None:
++                        continue
++                    if any(
++                        cy_distance_to_squared(placement, p) < _WARP_PLACE_MIN_SEP2
++                        for p in self.warp_in_positions
++                    ):
++                        continue
++                    build_from.warp_in(unit_type, placement)
++                    self.warp_in_positions.add(placement)
++                    placed = True
++                    break
++                if placed:
++                    break

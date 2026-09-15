@@ -23,6 +23,13 @@ from bot.common.log import log_event
 from bot.core import BotContext, CombatEngine, MacroEngine, RunState, roles
 from bot.core.registry import UnknownBuild, default_build, get_build
 
+# Team policy (Jason via CoS): local + validate end at 7:00 game time via
+# `run_game(..., game_time_limit=...)`. Ladder never passes the limit.
+# Extending past 7:00 needs explicit Jason confirmation via CoS — never silently.
+# Do NOT call `client.leave()` mid-step — ares `_after_step` then hits
+# ProtocolError: Not in a game.
+LOCAL_GAME_TIME_LIMIT_SECONDS: float = 7 * 60
+
 # Structures worth a line in the timeline log.
 LOGGED_STRUCTURES: frozenset[UnitTypeId] = frozenset(
     {
@@ -38,6 +45,26 @@ LOGGED_STRUCTURES: frozenset[UnitTypeId] = frozenset(
         UnitTypeId.COMMANDCENTER,
         UnitTypeId.SUPPLYDEPOT,
         UnitTypeId.BARRACKS,
+        UnitTypeId.NEXUS,
+        UnitTypeId.PYLON,
+        UnitTypeId.GATEWAY,
+        UnitTypeId.WARPGATE,
+        UnitTypeId.ASSIMILATOR,
+        UnitTypeId.CYBERNETICSCORE,
+        UnitTypeId.TWILIGHTCOUNCIL,
+        UnitTypeId.ROBOTICSFACILITY,
+        UnitTypeId.SHIELDBATTERY,
+    }
+)
+
+# Army / tech units worth a timeline line (Chargelot timing checks, etc.).
+LOGGED_UNITS: frozenset[UnitTypeId] = frozenset(
+    {
+        UnitTypeId.ADEPT,
+        UnitTypeId.STALKER,
+        UnitTypeId.ZEALOT,
+        UnitTypeId.WARPPRISM,
+        UnitTypeId.OBSERVER,
     }
 )
 
@@ -53,6 +80,15 @@ def _completion_message(logged: set[int], unit: Unit, count: int) -> str | None:
         return None
     logged.add(unit.tag)
     return f"COMPLETE {unit.type_id.name.lower()} ({count})"
+
+
+def _structure_log_count(bot: "KauKauBot", unit_type: UnitTypeId) -> int:
+    """Ready count for timeline logs. Gateways include Warp Gates so the
+    running total does not drop when ares morphs them."""
+    count = bot.structures(unit_type).amount
+    if unit_type == UnitTypeId.GATEWAY:
+        count += bot.structures(UnitTypeId.WARPGATE).amount
+    return count
 
 
 class KauKauBot(AresBot):
@@ -99,19 +135,28 @@ class KauKauBot(AresBot):
 
         self.macro.execute(self.ctx)
         self.combat.execute(self.ctx)
+        if self.ctx.build.on_step is not None:
+            self.ctx.build.on_step(self.ctx)
 
     async def on_end(self, game_result: Result) -> None:
         await super(KauKauBot, self).on_end(game_result)
         log_event(self, f"END result={game_result}")
+        if self.ctx is not None and self.ctx.build.on_end is not None:
+            self.ctx.build.on_end(self.ctx)
 
     # --- roles -----------------------------------------------------------
 
     async def on_unit_created(self, unit: Unit) -> None:
         await super(KauKauBot, self).on_unit_created(unit)
         roles.assign_on_created(self.ctx, unit)
+        if unit.type_id in LOGGED_UNITS:
+            count = self.units(unit.type_id).amount
+            log_event(self, f"TRAINED {unit.type_id.name.lower()} ({count})")
 
     async def on_unit_destroyed(self, unit_tag: int) -> None:
         await super(KauKauBot, self).on_unit_destroyed(unit_tag)
+        if self.ctx is not None and self.ctx.build.on_unit_destroyed is not None:
+            self.ctx.build.on_unit_destroyed(self.ctx, unit_tag)
         roles.forget_destroyed(self.ctx, unit_tag)
 
     # --- logging ---------------------------------------------------------
@@ -121,7 +166,9 @@ class KauKauBot(AresBot):
         await super(KauKauBot, self).on_building_construction_complete(unit)
 
         message = _completion_message(
-            self._logged_completions, unit, self.structures(unit.type_id).amount
+            self._logged_completions,
+            unit,
+            _structure_log_count(self, unit.type_id),
         )
         if message is not None:
             log_event(self, message)
@@ -130,3 +177,5 @@ class KauKauBot(AresBot):
         # AresBot does not override this python-sc2 hook, so there is no
         # super() implementation to chain into.
         log_event(self, f"COMPLETE upgrade {upgrade.name}")
+        if self.ctx is not None and self.ctx.build.on_upgrade_complete is not None:
+            self.ctx.build.on_upgrade_complete(self.ctx, upgrade)

@@ -6,7 +6,7 @@
 MyBotName: KauKauBot
 # Which `<race>_builds.yml` ares reads (and which race the ladder zip is).
 # Flip to `Zerg` to ship the Zerg openings instead.
-MyBotRace: Terran
+MyBotRace: Protoss
 
 # Auto-upload to https://aiarena.net/ on push to `main`.
 # Requires UPLOAD_API_TOKEN / UPLOAD_BOT_ID repo secrets — see README.
@@ -20,7 +20,7 @@ BotDataEnabled: True
 # which is how you force a specific opening locally (see terran_builds.yml /
 # zerg_builds.yml). MUST be False for a ladder zip — create_ladder_zip.py
 # asserts on it.
-Debug: False
+Debug: True
 
 UseData: False  # overwritten by `UseData:` in <race>_builds.yml
 GameStep: 2
@@ -61,7 +61,13 @@ LocalGame:
         - PylonAIE_v4
         - TorchesAIE_v4
         - UltraloveAIE_v2
-    OpponentRace: Terran
+    OpponentRace: Protoss
     # VeryEasy .. VeryHard, plus CheatVision / CheatMoney / CheatInsane
     OpponentDifficulty: VeryHard
-    Realtime: False
+    Realtime: True
+    # Tiny corner window when Realtime is False (faster GPU). Ignored if Realtime.
+    FastWindow: True
+    WindowWidth: 256
+    WindowHeight: 256
+    WindowX: 0
+    WindowY: 0
