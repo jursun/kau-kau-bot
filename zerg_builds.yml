@@ -49,11 +49,10 @@ Builds:
         ConstantWorkerProductionTill: 34
         AutoSupplyAtSupply: 19
         OpeningBuildOrder:
-            - 12 overlord
-            - 12 gas
-            - 15 expand
+            - 13 overlord
+            - 16 expand
+            - 18 gas
             - 17 spawningpool
-            - 17 gas
             - 19 overlord
             - 19 queen *2
             - 23 zergling *4

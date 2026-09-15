@@ -1,8 +1,20 @@
-"""Macro Zerg — 15 Hatch / 17 Pool into Roach -> Swarm Host.
+"""Macro Zerg — 16 Hatch / 17 Pool into Roach -> Swarm Host.
 
-Opening: `Macro Zerg` in `zerg_builds.yml` — 12 overlord, 12 gas, 15 hatch
-before pool, 17 pool, 17 gas, 19 overlord, double queen, 4 lings, speed,
-overlord, 3rd hatch, overlord, 3rd queen.
+Opening: `Macro Zerg` in `zerg_builds.yml` — 13 overlord, 16 hatch before
+pool, 18 gas, 17 pool, 19 overlord, double queen, 4 lings, speed, overlord,
+3rd hatch, overlord, 3rd queen. Gas is listed before pool on purpose even
+though its own supply number is higher: morphing a drone into the
+Extractor drops `supply_used` by 1 the instant it's commanded (every Zerg
+structure eats the drone that builds it), so triggering gas at real supply
+18 lands pool's own supply-17 threshold immediately after, with no extra
+drone-production gap - reversing the order would send pool first (dropping
+supply to 16) and make gas wait for supply to climb back past 18 again.
+
+No explicit drone steps: `ConstantWorkerProductionTill: 34` alone drives
+worker production for the whole opening - mixing it with explicit drone
+steps in the same early range let the two race each other for larva,
+delaying steps that were listed earlier (the Overlord at 13 firing late
+relative to real supply was the symptom).
 
 After the opening, macro steps take Roach Warren (Roach is the frontline),
 then tech toward Infestation Pit (Swarm Host — cheap, passive map-control
@@ -58,11 +70,11 @@ BUILD = BuildDefinition(
             UpgradeId.TUNNELINGCLAWS,  # full use of burrowed Roach regen
         ),
     ),
-    # Hatch (15) comes before pool (17) by design (see the opening above), so
-    # the pool lands at a deterministic 1:36 rather than the ~15-20s of an
-    # immediate-pool opening; the default `pool_deadline` assumes the
-    # latter, so this build states its own with buffer in line with the
-    # ratio Upgrade Rush used for the same "hatch before pool" shape.
+    # Hatch (16) comes before pool (17) by design (see the opening above), so
+    # the pool lands well past the ~15-20s of an immediate-pool opening; the
+    # default `pool_deadline` assumes the latter, so this build states its
+    # own with buffer in line with the ratio Upgrade Rush used for the same
+    # "hatch before pool" shape.
     pool_deadline=110.0,
     combat=Combat(
         routines=(
