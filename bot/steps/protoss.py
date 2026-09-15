@@ -9,15 +9,17 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ares.consts import BuildingSize
-from cython_extensions import cy_distance_to
+from cython_extensions import cy_closest_to, cy_distance_to
 from sc2.ids.unit_typeid import UnitTypeId
 
 from bot.behaviors.protoss import (
     ProtossAutoSupply,
     ProtossBuildStructure,
+    ProtossChronoBoost,
     ProtossExpansionController,
     ProtossGasBuildingController,
 )
+from bot.behaviors.protoss.chrono_boost import CHRONO_DURATION_S, CHRONO_ENERGY_COST
 from bot.builds.definition import _always
 from bot.core.types import Gate, MacroStep
 
@@ -112,6 +114,80 @@ def auto_supply(gate: Gate = _always) -> MacroStep:
         if not gate(ctx):
             return None
         return ProtossAutoSupply(ctx.production_location)
+
+    return step
+
+
+def chrono_boost_army(gate: Gate = _always) -> MacroStep:
+    """Spend Nexus energy on Chrono Boost, in priority order: the natural
+    Nexus boosting its own probe production (once it exists and is
+    training), then Robo (Prism/Observer), then a Warp Gate (faster
+    warp-in cycling) once Robo no longer needs it.
+
+    Belongs in `always`: unlike `macro_steps`, `always` entries are each
+    registered independently (see `core.macro_engine.MacroEngine.execute` -
+    no first-acts-wins collapsing across the tuple), so this never competes
+    with Pylon/Gateway spending for priority - only for Nexus energy, a
+    separate resource.
+
+    Gated on `ctx.build_completed` so it never fires during the opening,
+    which has its own scripted `chrono @ ...` build-order steps (Nexus for
+    probes, Gateway for the opening Adept, Twilight Council for Charge) that
+    must get first claim on that energy - see `protoss_builds.yml`.
+
+    Target selection happens here (not in `ProtossChronoBoost.execute()`)
+    because it needs `ctx.state` to track each target's own cooldown -
+    `has_buff` alone was observed to miss a just-issued cast on the very
+    next frame, re-targeting the same structures every frame for a full
+    minute before this existed.
+    """
+
+    def step(ctx: "BotContext"):
+        if not ctx.build_completed or not gate(ctx):
+            return None
+
+        townhalls = list(ctx.bot.townhalls.ready)
+        if not townhalls:
+            return None
+
+        now = ctx.bot.time
+        cooldowns = ctx.state.chrono_target_cooldowns
+
+        def _ready(tag: int) -> bool:
+            last = cooldowns.get(tag)
+            return last is None or now - last >= CHRONO_DURATION_S
+
+        # Priority 1: the natural boosts its own probe production, using
+        # only its own energy - never borrows from the main.
+        natural = cy_closest_to(ctx.mediator.get_own_nat, townhalls)
+        if (
+            natural.orders
+            and natural.energy >= CHRONO_ENERGY_COST
+            and _ready(natural.tag)
+        ):
+            cooldowns[natural.tag] = now
+            return ProtossChronoBoost(caster=natural, target=natural)
+
+        casters = [n for n in townhalls if n.energy >= CHRONO_ENERGY_COST]
+        if not casters:
+            return None
+
+        robos = [
+            r
+            for r in ctx.bot.structures(UnitTypeId.ROBOTICSFACILITY).ready
+            if r.orders and _ready(r.tag)
+        ]
+        warpgates = [
+            w
+            for w in ctx.bot.structures(UnitTypeId.WARPGATE).ready
+            if _ready(w.tag)
+        ]
+        target = robos[0] if robos else (warpgates[0] if warpgates else None)
+        if target is None:
+            return None
+
+        cooldowns[target.tag] = now
+        return ProtossChronoBoost(caster=casters[0], target=target)
 
     return step
 

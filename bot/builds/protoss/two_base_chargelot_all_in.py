@@ -36,9 +36,14 @@ GATEWAY_COUNT = 8
 # Opening Gate + 2 nat-wall Gates before Robotics Facility (wall trio).
 WALL_GATEWAY_COUNT = 3
 
-# Two bases mining; probe chrono on both nexi during the opening aims for
-# roughly this before minerals dump into Gates / Zealots.
-WORKER_TARGET = 26
+# Full saturation: 16 minerals/base x 2 bases + 4 gas (2 geysers x 2
+# workers, this build's steady-state gas count per `chargelot_gas_workers`'s
+# 3->1->2 schedule). BotContext.worker_target is min(WORKER_TARGET,
+# workers_per_base * base_count) - both must agree on 36, or the min()
+# silently re-clips to whatever workers_per_base * 2 gives. This used to be
+# 26 (with workers_per_base=16, capping at 32 even after raising this),
+# stalling production well short of full saturation.
+WORKER_TARGET = 36
 
 # Leave across the map at 5:20 once Charge is done and a Zealot ball exists;
 # guide hit on the enemy base is ~5:45. Clock + Charge both required so we
@@ -64,7 +69,7 @@ BUILD = BuildDefinition(
     race=Race.Protoss,
     economy=Economy(
         worker_target=WORKER_TARGET,
-        workers_per_base=16,
+        workers_per_base=18,  # 36 / max_bases - see WORKER_TARGET above.
         max_bases=2,
         gas_per_base=2,
         max_gas=2,
@@ -111,6 +116,9 @@ BUILD = BuildDefinition(
         c.mining(),
         # Gas schedule 3 → 1 → 2 (Charge bank / Prism / Stalkers).
         c.chargelot_gas_workers(),
+        # Once the opening's own scripted chronos are done, keep spending
+        # Nexus energy on Robo (Prism/Observer) then Warp Gates (flood speed).
+        p.chrono_boost_army(),
     ),
     on_step=chargelot_metrics.update_chargelot_metrics,
     on_end=chargelot_metrics.on_game_end,

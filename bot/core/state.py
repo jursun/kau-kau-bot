@@ -189,4 +189,10 @@ class RunState:
     """Expansions already checked during a post-main hunt. Latched on
     vision or army arrival so fog of war after leaving a base cannot send
     the army back there (the natural ↔ third oscillation)."""
+    chrono_target_cooldowns: dict[int, float] = field(default_factory=dict)
+    """Tag -> game time last Chrono Boosted (see `steps.protoss.
+    chrono_boost_army`). Tracked here rather than trusting `has_buff` alone,
+    which was observed not to reliably reflect a just-issued Chrono Boost on
+    the very next frame - reading it live re-targeted the same handful of
+    structures every frame for a full minute before this existed."""
     log_once: LogOnce = field(default_factory=LogOnce)
