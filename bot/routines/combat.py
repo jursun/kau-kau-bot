@@ -36,6 +36,7 @@ from bot.core.types import CombatRoutine, Gate, PointLocator
 from bot.intel import chargelot_metrics, enemy_army
 from bot.routines import targeting
 from bot.routines.protoss_support import (
+    CHARGELOT_KITE_WINDOW_S,
     CHARGELOT_MUSTER_RADIUS,
     PRISM_ENEMY_PHASE_RANGE,
     chargelot_staging,
@@ -85,12 +86,11 @@ as units peel off from wherever they were defending."""
 CHARGELOT_MUSTER_PRISM_TIMEOUT: float = 55.0
 """If form-up is ready but Prism never reaches enemy-nat range, commit anyway.
 Long enough for a late Prism (~6:00) to fly from Robo to staging after leave."""
-CHARGELOT_KITE_WINDOW_S: float = 5.0
-"""After the first-wave muster commits, hold at the staging point in kite
-mode (fight what's near, but don't push toward the real attack objective)
-for this long before switching to full onslaught - gives units still
-closing on the muster point time to catch up instead of the wave
-committing to a fight and immediately diving deeper alone."""
+# CHARGELOT_KITE_WINDOW_S lives in protoss_support (shared with Prism depart).
+ARMY_IDLE_CHECK_INTERVAL_S: float = 3.0
+"""How often `nudge_idle_army` scans ATTACKING units for idle / HoldPosition
+and re-issues an attack-move - catches Zealots that AMove's success radius
+left sitting at the ramp bottom with nothing to do."""
 
 BUILDER_CLAIM_RADIUS: float = 30.0
 """How close to the proxy a worker has to be for `builder_workers_attack`
@@ -859,6 +859,8 @@ def chargelot_attack(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
 
             # Zealots: never KeepUnitSafe — overwhelm. While mustering, only
             # path to staging (no AttackTarget short-circuit into the nat).
+            # After commit, keep re-issuing AMove (success_at_distance=0) so
+            # arriving near staging/objective does not leave them idle.
             for zealot in zealots:
                 maneuver = CombatManeuver()
                 near = _enemies_near(ctx, zealot.position, SQUAD_ENGAGE_RANGE)
@@ -875,7 +877,9 @@ def chargelot_attack(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
                                 ),
                             )
                         )
-                    maneuver.add(AMove(unit=zealot, target=target))
+                    maneuver.add(
+                        AMove(unit=zealot, target=target, success_at_distance=0.0)
+                    )
                 ctx.bot.register_behavior(maneuver)
 
             # Stalkers: while mustering, stick with the ball; after commit,
@@ -962,6 +966,64 @@ def chargelot_attack(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
                     f"ENGAGE near enemy nat={closest_enemy:.0f} "
                     f"z={total_z} s={total_s}"
                 )
+
+    return routine
+
+
+def _attacker_needs_work(unit: Unit) -> bool:
+    """True when an ATTACKING unit has no useful order (idle or HoldPosition)."""
+    if getattr(unit, "is_idle", False) or not unit.orders:
+        return True
+    ability_id = getattr(getattr(unit.orders[0], "ability", None), "id", None)
+    return ability_id in (AbilityId.HOLDPOSITION, AbilityId.HOLDPOSITION_HOLD)
+
+
+def nudge_idle_army(
+    interval_s: float = ARMY_IDLE_CHECK_INTERVAL_S,
+) -> CombatRoutine:
+    """Periodic safety net: re-engage ATTACKING units that went idle.
+
+    `AMove`'s default `success_at_distance` stops issuing once a unit is near
+    its point - Zealots at staging / ramp bottom then sit with empty orders
+    until something else wakes them. Every few seconds, scan and attack-move
+    stragglers toward the current army destination.
+
+    Skips first-wave mustering tags and Prism drop-load peels (intentional
+    HoldPosition while boarding).
+    """
+
+    def routine(ctx: "BotContext") -> None:
+        last = ctx.state.army_idle_check_at
+        if last is not None and ctx.bot.time - last < interval_s:
+            return
+        ctx.state.army_idle_check_at = ctx.bot.time
+
+        protected = set(ctx.state.mustering_tags)
+        for unit in ctx.mediator.get_units_from_role(
+            role=UnitRole.DROP_UNITS_TO_LOAD
+        ):
+            protected.add(unit.tag)
+
+        idle = [
+            u
+            for u in ctx.units_in_role(UnitRole.ATTACKING)
+            if u.tag not in protected and _attacker_needs_work(u)
+        ]
+        if not idle:
+            return
+
+        still_mustering = bool(ctx.state.mustering_tags)
+        kiting = chargelot_kiting(
+            ctx.state.chargelot_muster_committed_at, ctx.bot.time
+        )
+        if still_mustering or kiting:
+            dest = chargelot_staging(ctx)
+        else:
+            dest = targeting.squad_destination(ctx, Point2(cy_center(idle)))
+
+        for unit in idle:
+            unit.attack(dest)
+        ctx.log(f"ARMY_IDLE nudged {len(idle)} -> ({dest.x:.0f},{dest.y:.0f})")
 
     return routine
 

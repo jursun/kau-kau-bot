@@ -70,6 +70,10 @@ CHARGELOT_MUSTER_RADIUS: float = 7.0
 Owned here (not `routines.combat`, which imports it) so the drop-harass
 squad-pick below can reuse the exact same "at the muster" radius without
 `protoss_support` importing from `combat` (which itself imports from here)."""
+CHARGELOT_KITE_WINDOW_S: float = 5.0
+"""After muster commit, the ground ball still holds at staging this long
+(kite/fight-in-place) before the real push. Owned here so Prism drop
+depart timing can share the same clock without a combat↔support cycle."""
 
 # One-shot Prism drop-harass: the instant the first wave commits ("attack
 # timing" - `chargelot_attack`'s `chargelot_muster_committed_at`), peel a
@@ -85,6 +89,13 @@ PRISM_DROP_ABORT_THREATS: int = 1
 """Abort once more than this many distinct threats are near the Prism
 during the drop attempt - unload on the spot and resume escort."""
 PRISM_DROP_ARRIVE_DIST: float = 3.0
+"""Pathing success radius toward the pick-point while still en route."""
+PRISM_DROP_MAIN_RADIUS: float = 18.0
+"""Unload once within this of the enemy start *and* on that plateau —
+do not wait for the exact pick-point."""
+PRISM_DROP_RAMP_CLEARANCE: float = 7.0
+"""Prefer a high-ground lip at least this far laterally from the ramp-top
+edge - the ramp itself is where defenders stack."""
 PRISM_DROP_REPHASE_TIMEOUT_S: float = 15.0
 """Give up trying to re-phase in the enemy base after this long under
 threat, and resume normal escort duty instead of stalling forever."""
@@ -93,10 +104,16 @@ PRISM_DROP_BASE_HOLD_S: float = 8.0
 before handing control back to normal escort duty - long enough for one
 production wave to land there."""
 PRISM_DROP_DEPART_DELAY_S: float = 3.0
-"""After muster commit, wait this long before the loaded Prism flies into
-the enemy main - the ground ball engages first and draws attention."""
+"""After the post-commit kite window ends, wait this long before the
+loaded Prism flies into the enemy main - the ground ball must leave
+staging and start the nat fight first. Total hold after commit is
+`CHARGELOT_KITE_WINDOW_S + PRISM_DROP_DEPART_DELAY_S`."""
 PRISM_DROP_LOAD_TIMEOUT_S: float = 20.0
 """Abort recruiting/loading if the Prism cannot fill in this long."""
+PRISM_DROP_FLY_TIMEOUT_S: float = 12.0
+"""If still flying with cargo this long, force an unload toward the main."""
+PRISM_DROP_UNLOAD_TIMEOUT_S: float = 6.0
+"""If DropCargo keeps failing on the plateau this long, escalate to force unload."""
 PRISM_DROP_PICK_RADIUS: float = CHARGELOT_MUSTER_RADIUS + 6.0
 """How far from staging a unit may be and still get peeled for the drop."""
 FORWARD_PYLON_NEAR: float = 8.0
@@ -262,20 +279,99 @@ def _drop_threats_near(ctx: "BotContext", pos: Point2) -> int:
     return len(seen)
 
 
-def _drop_pick_point(ctx: "BotContext") -> Point2:
-    """High-ground point in the enemy main, at the edge nearest their
-    natural - minimizes how long the Prism spends exposed crossing the
-    plateau to get there and back."""
-    main = ctx.bot.enemy_start_locations[0]
-    nat = ctx.mediator.get_enemy_nat
-    main_height = ctx.bot.get_terrain_height(main)
+def _drop_on_height(ctx: "BotContext", pos: Point2, height: int) -> bool:
+    return ctx.bot.get_terrain_height(pos) == height
+
+
+def _drop_near_cliff(
+    ctx: "BotContext", pos: Point2, height: int, probe: float = 2.5
+) -> bool:
+    """True when a nearby sample drops off the plateau - i.e. this is a lip."""
+    for deg in range(0, 360, 45):
+        rad = math.radians(deg)
+        neighbor = Point2(
+            (pos.x + probe * math.cos(rad), pos.y + probe * math.sin(rad))
+        )
+        if not _drop_on_height(ctx, neighbor, height):
+            return True
+    return False
+
+
+def _drop_ramp_edge(
+    ctx: "BotContext", main: Point2, nat: Point2, height: int
+) -> Point2:
+    """Outermost high-ground cell on the main→nat line (top of the ramp)."""
     point = Point2((main.x, main.y))
     for offset in range(2, 14, 2):
         candidate = Point2(cy_towards(main, nat, offset))
-        if ctx.bot.get_terrain_height(candidate) != main_height:
+        if not _drop_on_height(ctx, candidate, height):
             break
         point = candidate
     return point
+
+
+def _drop_pick_point(ctx: "BotContext") -> Point2:
+    """High-ground lip in the enemy main, offset along the cliff from the ramp.
+
+    The old pick walked straight at the natural and parked on the ramp top -
+    where defenders sit. Prefer a point still on the plateau edge, but
+    laterally clear of that choke.
+    """
+    main = ctx.bot.enemy_start_locations[0]
+    nat = ctx.mediator.get_enemy_nat
+    height = ctx.bot.get_terrain_height(main)
+    ramp = _drop_ramp_edge(ctx, main, nat, height)
+
+    dx = nat.x - main.x
+    dy = nat.y - main.y
+    length = math.hypot(dx, dy) or 1.0
+    # Perpendiculars ≈ along the cliff line past the ramp.
+    perps = ((-dy / length, dx / length), (dy / length, -dx / length))
+
+    best = ramp
+    best_score = -1.0
+    for px, py in perps:
+        for offset in range(2, 18, 2):
+            base = Point2((ramp.x + px * offset, ramp.y + py * offset))
+            if not _drop_on_height(ctx, base, height):
+                break  # walked off the plateau sideways
+
+            # Snap outward from main onto the lip at this lateral.
+            lip = base
+            radial = cy_distance_to(main, base)
+            for extra in range(0, 8, 2):
+                outward = Point2(cy_towards(main, base, radial + extra))
+                if _drop_on_height(ctx, outward, height):
+                    lip = outward
+                else:
+                    break
+
+            if cy_distance_to(lip, main) > PRISM_DROP_MAIN_RADIUS:
+                continue
+            if not _drop_near_cliff(ctx, lip, height):
+                continue
+
+            clearance = cy_distance_to(lip, ramp)
+            # Only commit to a lateral lip once it's clear of the ramp;
+            # otherwise keep the ramp-edge fallback (narrow plateaus).
+            if clearance < PRISM_DROP_RAMP_CLEARANCE:
+                continue
+            if clearance > best_score:
+                best_score = clearance
+                best = lip
+
+    return best
+
+
+def _drop_on_enemy_highground(ctx: "BotContext", pos: Point2) -> bool:
+    """True once the Prism is on the enemy main plateau inside the base.
+
+    Unload as soon as this is true - do not wait for the exact pick-point.
+    """
+    main = ctx.bot.enemy_start_locations[0]
+    if cy_distance_to(pos, main) > PRISM_DROP_MAIN_RADIUS:
+        return False
+    return ctx.bot.get_terrain_height(pos) == ctx.bot.get_terrain_height(main)
 
 
 def _pick_muster_squad(ctx: "BotContext", count: int = PRISM_DROP_SQUAD_SIZE) -> list:
@@ -360,36 +456,94 @@ def _drop_return_all_to_attacking(ctx: "BotContext") -> None:
 
 
 def _drop_abort_unload(ctx: "BotContext", prism, grid, maneuver) -> None:
-    """Cannot reach the main safely: dump cargo here, rejoin army, resume escort.
+    """Cannot finish the planned drop: dump cargo, rejoin army, resume escort.
 
-    Escort then parks the Prism behind the ball and phases for warp-ins.
+    Prefer `_drop_force_unload` so KeepUnitSafe / DropCargo pathing gates
+    cannot leave passengers stuck aboard.
     """
+    _drop_force_unload(ctx, prism, grid, maneuver, reason="abort")
+
+
+def _drop_issue_unload(ctx: "BotContext", prism) -> None:
+    """Fire every unload channel we have - Ares DropCargo alone no-ops when
+    the Prism is not over walkable ground."""
+    if AbilityId.UNLOADALLAT_WARPPRISM in prism.abilities:
+        prism(AbilityId.UNLOADALLAT_WARPPRISM, prism.position)
+    elif AbilityId.UNLOADALL_WARPPRISM in prism.abilities:
+        prism(AbilityId.UNLOADALL_WARPPRISM)
+    # Queued for end-of-step; works even when DropCargo's pathing check fails.
+    ctx.bot.do_unload_container(prism.tag)
+
+
+def _drop_force_unload(
+    ctx: "BotContext", prism, grid, maneuver, *, reason: str
+) -> None:
+    """Dump cargo by any means and drift toward a pathable spot in the main.
+
+    Do not lead with KeepUnitSafe - influence flee blocked unload every frame.
+    """
+    main = ctx.bot.enemy_start_locations[0]
     if prism.type_id == UnitTypeId.WARPPRISMPHASING:
         if AbilityId.MORPH_WARPPRISMTRANSPORTMODE in prism.abilities:
-            maneuver.add(UseAbility(AbilityId.MORPH_WARPPRISMTRANSPORTMODE, prism))
-    if prism.cargo_used > 0:
-        maneuver.add(DropCargo(unit=prism, target=prism.position))
+            maneuver.add(
+                UseAbility(AbilityId.MORPH_WARPPRISMTRANSPORTMODE, prism)
+            )
         ctx.state.prism_drop_phase = "aborting"
+        ctx.log_once(
+            f"prism_drop_force_{reason}",
+            f"PRISM_DROP force unload ({reason}) - morphing to transport",
+        )
         return
+
+    if prism.cargo_used > 0:
+        _drop_issue_unload(ctx, prism)
+        maneuver.add(DropCargo(unit=prism, target=prism.position))
+        # Main start is reliably pathable; the plateau-edge pick point is not.
+        maneuver.add(
+            MoveToSafeTarget(
+                unit=prism,
+                grid=grid,
+                target=main,
+                sense_danger=False,
+                success_at_distance=1.0,
+            )
+        )
+        ctx.state.prism_drop_phase = "aborting"
+        ctx.log_once(
+            f"prism_drop_force_{reason}",
+            f"PRISM_DROP force unload ({reason}) cargo={prism.cargo_used}",
+        )
+        return
+
     _drop_return_all_to_attacking(ctx)
     ctx.state.prism_drop_phase = "done"
-    ctx.log("PRISM_DROP abort - unloaded, rejoining main force / escort")
+    ctx.log(f"PRISM_DROP unloaded ({reason}), rejoining main force / escort")
 
 
 def _drop_depart_ready(ctx: "BotContext") -> bool:
-    """True once the main force has had `PRISM_DROP_DEPART_DELAY_S` to engage."""
+    """True once the army has left staging and had a beat to engage.
+
+    Muster commit is not "army leaves" - the ball still kites at staging
+    for `CHARGELOT_KITE_WINDOW_S`. Flying during that window is what made
+    the Prism leave the muster before the army.
+    """
     committed = ctx.state.chargelot_muster_committed_at
     if committed is None:
         return True
-    return ctx.bot.time >= committed + PRISM_DROP_DEPART_DELAY_S
+    leave_staging_at = committed + CHARGELOT_KITE_WINDOW_S
+    return ctx.bot.time >= leave_staging_at + PRISM_DROP_DEPART_DELAY_S
 
 
 def _run_prism_drop(ctx: "BotContext", prism, grid) -> None:
-    """Drive the one-shot drop-harass state machine for `prism`."""
+    """Drive the one-shot drop-harass state machine for `prism`.
+
+    `CombatManeuver` stops at the first behavior that returns True, so
+    KeepUnitSafe must not lead during fly-in/drop or the Prism never
+    reaches unload (it flees influence every frame instead).
+    """
     phase = ctx.state.prism_drop_phase
 
     maneuver = CombatManeuver()
-    maneuver.add(KeepUnitSafe(unit=prism, grid=grid))
     phased = prism.type_id == UnitTypeId.WARPPRISMPHASING
 
     if phase == "loading":
@@ -402,72 +556,169 @@ def _run_prism_drop(ctx: "BotContext", prism, grid) -> None:
             if not unit.orders:
                 unit.hold_position()
         if phased:
+            maneuver.add(KeepUnitSafe(unit=prism, grid=grid))
             maneuver.add(
                 UseAbility(AbilityId.MORPH_WARPPRISMTRANSPORTMODE, prism)
             )
         else:
             staging = chargelot_staging(ctx)
-            # Stay near muster while loading / waiting out the depart delay.
-            if cy_distance_to(prism.position, staging) > 4.0:
-                maneuver.add(
-                    MoveToSafeTarget(unit=prism, grid=grid, target=staging)
-                )
-            maneuver.add(
-                PickUpCargo(
-                    unit=prism,
-                    grid=grid,
-                    pickup_targets=squad,
-                    cargo_switch_to_role=UnitRole.DROP_UNITS_ATTACKING,
-                )
-            )
             loaded = _prism_passenger_count(prism)
-            if (
-                loaded >= PRISM_DROP_SQUAD_SIZE
-                and _drop_depart_ready(ctx)
-            ):
+            full = loaded >= PRISM_DROP_SQUAD_SIZE
+            depart_ready = _drop_depart_ready(ctx)
+
+            if full and depart_ready:
+                # Depart now - no more pickup/chase this frame.
                 ctx.state.prism_drop_target = _drop_pick_point(ctx)
                 ctx.state.prism_drop_phase = "flying_in"
+                ctx.state.prism_drop_phase_entered_at = ctx.bot.time
                 ctx.log(
                     f"PRISM_DROP loaded {loaded}, flying to "
                     f"{ctx.state.prism_drop_target}"
+                )
+                maneuver.add(
+                    MoveToSafeTarget(
+                        unit=prism,
+                        grid=grid,
+                        target=ctx.state.prism_drop_target,
+                        sense_danger=False,
+                        success_at_distance=PRISM_DROP_ARRIVE_DIST,
+                    )
+                )
+            elif full and not depart_ready:
+                # Hold at staging only. PickUpCargo would chase stragglers
+                # and look like an early leave; KeepUnitSafe can flee home.
+                # Always re-issue a park order: otherwise the last pickup
+                # chase keeps running while this maneuver adds nothing.
+                if cy_distance_to(prism.position, staging) > 2.0:
+                    maneuver.add(
+                        MoveToSafeTarget(
+                            unit=prism,
+                            grid=grid,
+                            target=staging,
+                            sense_danger=False,
+                        )
+                    )
+                else:
+                    prism.hold_position()
+                remaining = (
+                    (ctx.state.chargelot_muster_committed_at or 0.0)
+                    + CHARGELOT_KITE_WINDOW_S
+                    + PRISM_DROP_DEPART_DELAY_S
+                    - ctx.bot.time
+                )
+                ctx.log_once(
+                    "prism_drop_depart_wait",
+                    f"PRISM_DROP loaded {loaded}, waiting "
+                    f"{max(0.0, remaining):.1f}s before fly-in",
                 )
             elif ctx.bot.time - entered >= PRISM_DROP_LOAD_TIMEOUT_S:
                 ctx.log(
                     f"PRISM_DROP load timeout with {loaded}/"
                     f"{PRISM_DROP_SQUAD_SIZE} aboard - abort"
                 )
-                _drop_abort_unload(ctx, prism, grid, maneuver)
+                _drop_force_unload(ctx, prism, grid, maneuver, reason="load_timeout")
+            else:
+                # Still filling seats - stay near muster and pick up.
+                maneuver.add(KeepUnitSafe(unit=prism, grid=grid))
+                if cy_distance_to(prism.position, staging) > 4.0:
+                    maneuver.add(
+                        MoveToSafeTarget(unit=prism, grid=grid, target=staging)
+                    )
+                maneuver.add(
+                    PickUpCargo(
+                        unit=prism,
+                        grid=grid,
+                        pickup_targets=squad,
+                        cargo_switch_to_role=UnitRole.DROP_UNITS_ATTACKING,
+                    )
+                )
 
     elif phase == "flying_in":
-        if _drop_threats_near(ctx, prism.position) > PRISM_DROP_ABORT_THREATS:
+        # Commit the run: no KeepUnitSafe (it blocked DropCargo/Move near AA).
+        entered = ctx.state.prism_drop_phase_entered_at or ctx.bot.time
+        main = ctx.bot.enemy_start_locations[0]
+        drop_anchor = ctx.state.prism_drop_target or main
+        if prism.cargo_used == 0:
+            ctx.state.prism_drop_phase = "rephasing"
+            ctx.state.prism_drop_phase_entered_at = ctx.bot.time
+            ctx.log("PRISM_DROP offloaded during fly-in")
+        elif _drop_threats_near(ctx, prism.position) > PRISM_DROP_ABORT_THREATS:
             ctx.log("PRISM_DROP abort - threats while flying in")
-            _drop_abort_unload(ctx, prism, grid, maneuver)
+            _drop_force_unload(ctx, prism, grid, maneuver, reason="threats_fly")
+        elif ctx.bot.time - entered >= PRISM_DROP_FLY_TIMEOUT_S:
+            # Never reached a clean unload tile - dump toward the main.
+            _drop_force_unload(ctx, prism, grid, maneuver, reason="fly_timeout")
+        elif _drop_on_enemy_highground(ctx, prism.position):
+            # Unload as soon as we are on the main plateau - do not wait
+            # for the exact pick-point. Also issue ability unload in case
+            # DropCargo's walkable-ground check no-ops.
+            ctx.state.prism_drop_phase = "dropping"
+            ctx.state.prism_drop_phase_entered_at = ctx.bot.time
+            ctx.log("PRISM_DROP on main high ground - unloading")
+            _drop_issue_unload(ctx, prism)
+            maneuver.add(DropCargo(unit=prism, target=prism.position))
+            if prism.cargo_used > 0:
+                maneuver.add(
+                    MoveToSafeTarget(
+                        unit=prism,
+                        grid=grid,
+                        target=main,
+                        sense_danger=False,
+                        success_at_distance=1.0,
+                    )
+                )
         else:
-            target = ctx.state.prism_drop_target
-            if cy_distance_to(prism.position, target) <= PRISM_DROP_ARRIVE_DIST:
-                ctx.state.prism_drop_phase = "dropping"
-            else:
-                maneuver.add(MoveToSafeTarget(unit=prism, grid=grid, target=target))
+            # Direct path into the base; sense_danger=False so we do not
+            # orbit a "safe" pocket short of the plateau.
+            maneuver.add(
+                MoveToSafeTarget(
+                    unit=prism,
+                    grid=grid,
+                    target=drop_anchor,
+                    sense_danger=False,
+                    success_at_distance=PRISM_DROP_ARRIVE_DIST,
+                )
+            )
 
     elif phase == "dropping":
-        if (
-            prism.cargo_used > 0
-            and _drop_threats_near(ctx, prism.position) > PRISM_DROP_ABORT_THREATS
-        ):
+        # Unload immediately on high ground - do not KeepUnitSafe-first.
+        entered = ctx.state.prism_drop_phase_entered_at or ctx.bot.time
+        main = ctx.bot.enemy_start_locations[0]
+        if prism.cargo_used == 0:
+            ctx.state.prism_drop_phase = "rephasing"
+            ctx.state.prism_drop_phase_entered_at = ctx.bot.time
+            ctx.log("PRISM_DROP offloaded")
+        elif _drop_threats_near(ctx, prism.position) > PRISM_DROP_ABORT_THREATS:
             ctx.log("PRISM_DROP abort - threats before offload")
-            _drop_abort_unload(ctx, prism, grid, maneuver)
+            _drop_force_unload(ctx, prism, grid, maneuver, reason="threats_drop")
+        elif ctx.bot.time - entered >= PRISM_DROP_UNLOAD_TIMEOUT_S:
+            _drop_force_unload(ctx, prism, grid, maneuver, reason="unload_timeout")
         else:
-            maneuver.add(DropCargo(unit=prism, target=ctx.state.prism_drop_target))
-            if prism.cargo_used == 0:
-                ctx.state.prism_drop_phase = "rephasing"
-                ctx.state.prism_drop_phase_entered_at = ctx.bot.time
-                ctx.log("PRISM_DROP offloaded")
+            # DropCargo returns False when not over walkable ground - ability
+            # unload + nudge toward the main mineral line (pathable).
+            _drop_issue_unload(ctx, prism)
+            maneuver.add(DropCargo(unit=prism, target=prism.position))
+            maneuver.add(
+                MoveToSafeTarget(
+                    unit=prism,
+                    grid=grid,
+                    target=main,
+                    sense_danger=False,
+                    success_at_distance=1.0,
+                )
+            )
 
     elif phase == "aborting":
-        # Finish dumping cargo from an abort, then hand back to escort.
-        _drop_abort_unload(ctx, prism, grid, maneuver)
+        # Keep dumping - never KeepUnitSafe-first or cargo stays aboard.
+        if prism.cargo_used > 0:
+            _drop_force_unload(ctx, prism, grid, maneuver, reason="aborting")
+        else:
+            _drop_return_all_to_attacking(ctx)
+            ctx.state.prism_drop_phase = "done"
+            ctx.log("PRISM_DROP abort complete, rejoining escort")
 
     elif phase == "rephasing":
+        maneuver.add(KeepUnitSafe(unit=prism, grid=grid))
         entered = ctx.state.prism_drop_phase_entered_at or ctx.bot.time
         if _drop_threats_near(ctx, prism.position) == 0:
             if AbilityId.MORPH_WARPPRISMPHASINGMODE in prism.abilities:
@@ -483,6 +734,7 @@ def _run_prism_drop(ctx: "BotContext", prism, grid) -> None:
             ctx.log("PRISM_DROP rephase timed out, resuming escort")
 
     elif phase == "phased_in_base":
+        maneuver.add(KeepUnitSafe(unit=prism, grid=grid))
         entered = ctx.state.prism_drop_phase_entered_at or ctx.bot.time
         if _drop_threats_near(ctx, prism.position) > PRISM_DROP_ABORT_THREATS:
             if phased:

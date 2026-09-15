@@ -91,6 +91,7 @@ BUILD = BuildDefinition(
             combat.release_first_wave_then_stream(muster=True),
             combat.defend_home(),
             combat.chargelot_attack(),
+            combat.nudge_idle_army(),
             ps.forward_muster_pylon(),
             ps.escort_warp_prism(),
             ps.drop_squad_harass(),

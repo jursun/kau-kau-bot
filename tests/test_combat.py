@@ -15,7 +15,7 @@ Runs under pytest, or standalone with no test dependency:
 from __future__ import annotations
 
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from ares.behaviors.combat.group import AMoveGroup, KeepGroupSafe, StutterGroupForward
 from ares.behaviors.combat.individual import (
@@ -27,6 +27,7 @@ from ares.behaviors.combat.individual import (
 from ares.consts import UnitRole
 from ares.managers.squad_manager import UnitSquad
 from cython_extensions import cy_distance_to
+from sc2.ids.ability_id import AbilityId
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
 
@@ -961,6 +962,73 @@ def test_stalker_retreat_point_backs_away_from_crowd_center() -> None:
 
     center = Point2((101.0, 100.0))
     assert round(cy_distance_to(retreat_to, center), 3) == 4.0
+
+
+def test_attacker_needs_work_when_idle_or_holding() -> None:
+    idle = _unit(1)
+    idle.is_idle = True
+    idle.orders = []
+    assert combat._attacker_needs_work(idle) is True
+
+    holding = _unit(2)
+    holding.is_idle = False
+    order = MagicMock()
+    order.ability = MagicMock()
+    order.ability.id = AbilityId.HOLDPOSITION
+    holding.orders = [order]
+    assert combat._attacker_needs_work(holding) is True
+
+    busy = _unit(3)
+    busy.is_idle = False
+    move = MagicMock()
+    move.ability = MagicMock()
+    move.ability.id = AbilityId.ATTACK
+    busy.orders = [move]
+    assert combat._attacker_needs_work(busy) is False
+
+
+def test_nudge_idle_army_reissues_attack_on_interval() -> None:
+    ctx = _ctx()
+    ctx.bot.time = 400.0
+    ctx.state.chargelot_muster_committed_at = 300.0  # kite window long over
+    idle = _unit(1, Point2((50.0, 50.0)))
+    idle.is_idle = True
+    idle.orders = []
+    ctx.units_in_role = MagicMock(return_value=[idle])
+    ctx.mediator.get_units_from_role.return_value = []
+    dest = Point2((200.0, 200.0))
+
+    with patch.object(combat.targeting, "squad_destination", return_value=dest):
+        combat.nudge_idle_army(interval_s=3.0)(ctx)
+    idle.attack.assert_called_once_with(dest)
+    assert ctx.state.army_idle_check_at == 400.0
+
+    idle.attack.reset_mock()
+    ctx.bot.time = 401.0
+    with patch.object(combat.targeting, "squad_destination", return_value=dest):
+        combat.nudge_idle_army(interval_s=3.0)(ctx)
+    idle.attack.assert_not_called()
+
+    ctx.bot.time = 404.0
+    with patch.object(combat.targeting, "squad_destination", return_value=dest):
+        combat.nudge_idle_army(interval_s=3.0)(ctx)
+    idle.attack.assert_called_once_with(dest)
+
+
+def test_nudge_idle_army_skips_mustering_and_drop_load() -> None:
+    ctx = _ctx()
+    ctx.bot.time = 400.0
+    mustering = _unit(1, Point2((10.0, 10.0)))
+    mustering.is_idle = True
+    mustering.orders = []
+    ctx.state.mustering_tags = {1}
+    ctx.units_in_role = MagicMock(return_value=[mustering])
+    drop = _unit(2)
+    ctx.mediator.get_units_from_role.return_value = [drop]
+
+    combat.nudge_idle_army(interval_s=0.0)(ctx)
+
+    mustering.attack.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -15,7 +15,12 @@ from __future__ import annotations
 import sys
 from unittest.mock import MagicMock, patch
 
+from ares.behaviors.combat import CombatManeuver
+from ares.behaviors.combat.individual import DropCargo, MoveToSafeTarget
 from ares.consts import UnitRole
+from cython_extensions import cy_distance_to
+from sc2.ids.ability_id import AbilityId
+from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
 
 from bot.core.context import BotContext
@@ -204,11 +209,59 @@ def test_prism_passenger_count_uses_passengers_not_cargo_supply() -> None:
     assert ps._prism_passenger_count(prism) == 2
 
 
-def test_drop_depart_ready_waits_three_seconds_after_commit() -> None:
+def test_drop_issue_unload_fires_ability_and_ares_unload() -> None:
+    ctx = _drop_ctx()
+    prism = MagicMock()
+    prism.abilities = {AbilityId.UNLOADALLAT_WARPPRISM}
+    prism.position = Point2((1.0, 2.0))
+    prism.tag = 42
+
+    ps._drop_issue_unload(ctx, prism)
+
+    prism.assert_called_once_with(
+        AbilityId.UNLOADALLAT_WARPPRISM, prism.position
+    )
+    ctx.bot.do_unload_container.assert_called_once_with(42)
+
+
+def test_drop_force_unload_moves_toward_main_while_cargo_remains() -> None:
+    ctx = _drop_ctx()
+    ctx.bot.enemy_start_locations = [Point2((100.0, 100.0))]
+    prism = MagicMock()
+    prism.type_id = UnitTypeId.WARPPRISM
+    prism.cargo_used = 4
+    prism.abilities = {AbilityId.UNLOADALLAT_WARPPRISM}
+    prism.position = Point2((90.0, 90.0))
+    prism.tag = 7
+    maneuver = CombatManeuver()
+
+    ps._drop_force_unload(ctx, prism, grid=MagicMock(), maneuver=maneuver, reason="test")
+
+    assert ctx.state.prism_drop_phase == "aborting"
+    assert any(isinstance(b, DropCargo) for b in maneuver.micros)
+    assert any(isinstance(b, MoveToSafeTarget) for b in maneuver.micros)
+    move = next(b for b in maneuver.micros if isinstance(b, MoveToSafeTarget))
+    assert move.target == Point2((100.0, 100.0))
+    assert move.sense_danger is False
+
+
+def test_drop_depart_ready_waits_for_kite_window_then_engage_delay() -> None:
+    """Army still holds staging for the kite window after commit - Prism
+    must not fly during that, then waits the engage beat after."""
     ctx = _drop_ctx(muster_committed_at=300.0)
-    ctx.bot.time = 302.0
+    kite = ps.CHARGELOT_KITE_WINDOW_S
+    engage = ps.PRISM_DROP_DEPART_DELAY_S
+
+    ctx.bot.time = 300.0 + kite - 0.1
+    assert ps._drop_depart_ready(ctx) is False, "still inside kite window"
+
+    ctx.bot.time = 300.0 + kite
+    assert ps._drop_depart_ready(ctx) is False, "army just leaving; engage delay"
+
+    ctx.bot.time = 300.0 + kite + engage - 0.1
     assert ps._drop_depart_ready(ctx) is False
-    ctx.bot.time = 303.0
+
+    ctx.bot.time = 300.0 + kite + engage
     assert ps._drop_depart_ready(ctx) is True
 
 
@@ -230,14 +283,76 @@ def _height_ctx(main_height: int, heights: dict) -> BotContext:
     return ctx
 
 
-def test_drop_pick_point_stops_at_the_edge_of_the_plateau() -> None:
-    # Same height until 8 units south, then the ramp drops off.
-    low_ground = {(100.0, 108.0): 5}
-    ctx = _height_ctx(main_height=10, heights=low_ground)
+def _plateau_ctx(*, cliff_y: float = 107.0, half_width: float = 16.0) -> BotContext:
+    """Rectangular high ground south of main with a east-west cliff lip.
+
+    Main (100, 100), nat (100, 130). Anything with y >= cliff_y is low
+    ground (ramp/nat side); |x-100| > half_width is also low.
+    """
+    bot = MagicMock()
+    bot.enemy_start_locations = [Point2((100.0, 100.0))]
+
+    def _get_height(point):
+        if point.y >= cliff_y:
+            return 5
+        if abs(point.x - 100.0) > half_width:
+            return 5
+        return 10
+
+    bot.get_terrain_height.side_effect = _get_height
+    ctx = BotContext(bot=bot, build=MagicMock(), state=RunState())
+    ctx.mediator.get_enemy_nat = Point2((100.0, 130.0))
+    return ctx
+
+
+def test_drop_on_enemy_highground_requires_plateau_inside_main() -> None:
+    # Outside main radius even if same height as main (default heights).
+    far = _height_ctx(main_height=10, heights={})
+    assert ps._drop_on_enemy_highground(far, Point2((100.0, 125.0))) is False
+
+    # Inside radius but low ground.
+    low = _height_ctx(main_height=10, heights={(100.0, 105.0): 4})
+    assert ps._drop_on_enemy_highground(low, Point2((100.0, 105.0))) is False
+
+    # On the plateau inside the base.
+    high = _height_ctx(main_height=10, heights={})
+    assert ps._drop_on_enemy_highground(high, Point2((100.0, 105.0))) is True
+    assert ps._drop_on_enemy_highground(high, Point2((100.0, 100.0))) is True
+
+
+def test_drop_ramp_edge_stops_at_the_lip_toward_the_natural() -> None:
+    ctx = _plateau_ctx(cliff_y=107.0)
+    ramp = ps._drop_ramp_edge(
+        ctx, Point2((100.0, 100.0)), Point2((100.0, 130.0)), height=10
+    )
+    assert round(ramp.x, 1) == 100.0
+    assert round(ramp.y, 1) == 106.0
+
+
+def test_drop_pick_point_offsets_along_the_cliff_away_from_the_ramp() -> None:
+    ctx = _plateau_ctx(cliff_y=107.0)
+    ramp = ps._drop_ramp_edge(
+        ctx, Point2((100.0, 100.0)), Point2((100.0, 130.0)), height=10
+    )
 
     point = ps._drop_pick_point(ctx)
 
-    assert round(point.y, 1) == 106.0, "last point still on the high ground"
+    assert round(point.y, 0) == 106.0, "still on the south lip"
+    assert abs(point.x - 100.0) >= ps.PRISM_DROP_RAMP_CLEARANCE - 0.5, (
+        "laterally clear of the ramp top"
+    )
+    assert cy_distance_to(point, ramp) >= ps.PRISM_DROP_RAMP_CLEARANCE - 0.5
+
+
+def test_drop_pick_point_falls_back_to_ramp_when_plateau_is_narrow() -> None:
+    # Too narrow for lateral clearance - keep the ramp lip rather than
+    # walking off the plateau.
+    ctx = _plateau_ctx(cliff_y=107.0, half_width=3.0)
+
+    point = ps._drop_pick_point(ctx)
+
+    assert round(point.x, 1) == 100.0
+    assert round(point.y, 1) == 106.0
 
 
 def test_drop_pick_point_falls_back_to_main_when_edge_is_immediate() -> None:

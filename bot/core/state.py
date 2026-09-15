@@ -242,4 +242,6 @@ class RunState:
     """True once the muster-forward pylon build was issued."""
     chargelot_forward_pylon_done: bool = False
     """True once a pylon exists near Chargelot staging."""
+    army_idle_check_at: float | None = None
+    """Last game time `nudge_idle_army` scanned ATTACKING units."""
     log_once: LogOnce = field(default_factory=LogOnce)
