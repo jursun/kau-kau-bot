@@ -63,6 +63,15 @@ def _chargelot_home_rally(ctx):
     )
 
 
+def _chargelot_on_unit_created(ctx, unit):
+    """`chargelot_metrics` is pure observability; the drop-harass claim is
+    the one thing here that has to run synchronously on creation (see
+    `ps.claim_drop_squad_unit`'s docstring) - `BuildDefinition` only has
+    one `on_unit_created` slot, so both are called from here."""
+    chargelot_metrics.note_unit_created(ctx, unit)
+    ps.claim_drop_squad_unit(ctx, unit)
+
+
 BUILD = BuildDefinition(
     name="2base Chargelot All-In",
     label="2base Chargelot All-In",
@@ -92,6 +101,7 @@ BUILD = BuildDefinition(
             combat.defend_home(),
             combat.chargelot_attack(),
             ps.escort_warp_prism(),
+            ps.drop_squad_harass(),
             ps.escort_observer(),
             ps.harassing_adept(),
             worker_harass(),
@@ -122,7 +132,7 @@ BUILD = BuildDefinition(
     ),
     on_step=chargelot_metrics.update_chargelot_metrics,
     on_end=chargelot_metrics.on_game_end,
-    on_unit_created=chargelot_metrics.note_unit_created,
+    on_unit_created=_chargelot_on_unit_created,
     on_unit_destroyed=chargelot_metrics.note_unit_destroyed,
     on_upgrade_complete=chargelot_metrics.note_upgrade_complete,
     macro_steps=(
