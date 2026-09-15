@@ -94,7 +94,16 @@ BUILD = BuildDefinition(
         wave_growth=1.15,
         wave_stage_label="Roach Pushes",
     ),
-    always=(c.mining(), c.gas_workers(), z.inject_larva()),
+    always=(
+        c.mining(),
+        # Don't over-mine gas once there's a buffer to spend from: pulls off
+        # at 100 banked, and un-latches (resumes mining) once that's spent
+        # back down - a continuous throttle, not a one-time bank-and-forget
+        # (unlike a single all-in upgrade purchase, this build always has
+        # something gas-hungry queued: Roach, Swarm Host, Corruptor, upgrades).
+        c.gas_workers(pull_off=gates.vespene_at_least(100)),
+        z.inject_larva(),
+    ),
     macro_steps=(
         c.auto_supply(),
         # One queen per base for injects, plus one to spare for creep spread.
