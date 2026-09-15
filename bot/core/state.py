@@ -100,6 +100,14 @@ class ChargelotMetrics:
     nat_nexus_ready: bool = False
     max_minerals_after_nat: int = 0
     max_gas_after_nat: int = 0
+    probes_trained: int = 0
+    """Cumulative Probes trained (never decremented on death)."""
+    time_last_probe: float | None = None
+    """Game time the most recently completed Probe finished training -
+    overwritten on every one, not just the first (unlike the other
+    trained-unit timestamps here), so it reads as "when did worker
+    production last happen" - useful for spotting when it capped out at
+    `WORKER_TARGET` vs stalled early."""
 
 
 @dataclass

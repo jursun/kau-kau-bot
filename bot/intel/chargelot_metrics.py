@@ -105,10 +105,13 @@ def update_chargelot_metrics(ctx: "BotContext") -> None:
 
 
 def note_unit_created(ctx: "BotContext", unit: "Unit") -> None:
-    """Count Adept/Stalker/Zealot/Prism/Observer production, and warp-ins
-    (Prism field vs home Pylon)."""
+    """Count Adept/Stalker/Zealot/Prism/Observer/Probe production, and
+    warp-ins (Prism field vs home Pylon)."""
     m = ctx.state.chargelot_metrics
-    if unit.type_id == UnitTypeId.ADEPT:
+    if unit.type_id == UnitTypeId.PROBE:
+        m.probes_trained += 1
+        m.time_last_probe = ctx.bot.time
+    elif unit.type_id == UnitTypeId.ADEPT:
         m.adept_produced += 1
     elif unit.type_id == UnitTypeId.STALKER:
         m.stalkers_trained += 1
@@ -301,6 +304,10 @@ def snapshot(ctx: "BotContext") -> dict[str, Any]:
         "max_minerals_after_nat": m.max_minerals_after_nat,
         "max_gas_after_nat": m.max_gas_after_nat,
         "nat_nexus_ready": m.nat_nexus_ready,
+        "probes_trained": m.probes_trained,
+        "time_last_probe": (
+            None if m.time_last_probe is None else round(m.time_last_probe, 1)
+        ),
     }
 
 
@@ -329,7 +336,9 @@ def on_game_end(ctx: "BotContext") -> None:
         f"pylon_warps={snap['pylon_warps']} "
         f"supply_block={snap['auto_supply_block_frames']} "
         f"float={snap['max_minerals_after_nat']}/"
-        f"{snap['max_gas_after_nat']}",
+        f"{snap['max_gas_after_nat']} "
+        f"probes={snap['probes_trained']}/"
+        f"last@{snap['time_last_probe']}",
     )
     log_event(
         bot,

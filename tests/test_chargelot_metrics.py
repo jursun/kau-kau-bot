@@ -136,6 +136,19 @@ def test_note_unit_created_still_counts_adept_produced() -> None:
     assert ctx.state.chargelot_metrics.adept_produced == 1
 
 
+def test_note_unit_created_tracks_probe_count_and_last_trained_time() -> None:
+    ctx = _ctx(time=20.0)
+    m = ctx.state.chargelot_metrics
+    cm.note_unit_created(ctx, _unit(UnitTypeId.PROBE, tag=1))
+    assert m.probes_trained == 1
+    assert m.time_last_probe == 20.0
+
+    ctx.bot.time = 400.0
+    cm.note_unit_created(ctx, _unit(UnitTypeId.PROBE, tag=2))
+    assert m.probes_trained == 2
+    assert m.time_last_probe == 400.0, "unlike other milestones, this overwrites"
+
+
 # --- note_unit_destroyed -----------------------------------------------------
 
 
@@ -243,6 +256,18 @@ def test_snapshot_pass_fail_is_none_when_game_ended_before_deadline() -> None:
     assert snap["zealots_6_by_510"] is None  # 200 < 310
     assert snap["prism_by_525"] is None  # 200 < 325
     assert snap["observer_by_545"] is None  # 200 < 345
+
+
+def test_snapshot_reports_probe_training() -> None:
+    ctx = _ctx(time=500.0)
+    cm.note_unit_created(ctx, _unit(UnitTypeId.PROBE, tag=1))
+    ctx.bot.time = 512.3
+    cm.note_unit_created(ctx, _unit(UnitTypeId.PROBE, tag=2))
+
+    snap = cm.snapshot(ctx)
+
+    assert snap["probes_trained"] == 2
+    assert snap["time_last_probe"] == 512.3
 
 
 def main() -> int:
