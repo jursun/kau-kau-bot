@@ -853,6 +853,33 @@ def test_muster_commit_fires_once_prism_timeout_elapses() -> None:
     assert (commit, prism_wait_expired) == (True, True), "boundary (>=) should fire"
 
 
+def test_chargelot_kiting_is_false_before_any_commit() -> None:
+    assert combat.chargelot_kiting(committed_at=None, now=100.0) is False
+
+
+def test_chargelot_kiting_is_true_right_after_commit() -> None:
+    assert combat.chargelot_kiting(committed_at=100.0, now=100.0) is True
+
+
+def test_chargelot_kiting_is_true_within_the_window() -> None:
+    assert (
+        combat.chargelot_kiting(
+            committed_at=100.0,
+            now=100.0 + combat.CHARGELOT_KITE_WINDOW_S - 1.0,
+        )
+        is True
+    )
+
+
+def test_chargelot_kiting_ends_once_the_window_elapses() -> None:
+    assert (
+        combat.chargelot_kiting(
+            committed_at=100.0, now=100.0 + combat.CHARGELOT_KITE_WINDOW_S
+        )
+        is False
+    ), "boundary (>=) should end kiting"
+
+
 def test_stalker_target_score_prefers_medivac_over_everything() -> None:
     medivac = combat.stalker_target_score(
         is_medivac=True, is_repairing=False, is_worker=False, vital=500.0

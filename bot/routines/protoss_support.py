@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 
 # Timings (game seconds) — Jason Chargelot brief 2026-09-12.
 ADEPT_NATURAL_HARASS_TIME: float = 3 * 60
-ARMY_LEAVE_TIME: float = 5 * 60 + 20
+ARMY_LEAVE_TIME: float = 5 * 60 + 15
 """When Prism leaves home rally for chargelot staging (matches build wave_gate)."""
 
 PRISM_STANDOFF: float = 6.0
@@ -49,12 +49,18 @@ PRISM_PHASE_APPROACH: float = 10.0
 """Phase for warps once within this of the army pocket."""
 PRISM_REPOSITION_DIST: float = 16.0
 """Unphase to catch up only beyond this (hysteresis vs PHASE_APPROACH)."""
-PRISM_ENEMY_PHASE_RANGE: float = 24.0
-"""Prism must be within this of the enemy natural before phasing."""
+PRISM_ENEMY_PHASE_RANGE: float = 28.0
+"""Prism must be within this of the enemy natural before phasing. Kept at
+CHARGELOT_STAGING_OFFSET + PRISM_PHASE_APPROACH so a Prism approaching
+staging from directly behind (the home side) is never rejected as
+"not near_enemy" while still counting as "near_staging"."""
 OBS_FOLLOW_RADIUS: float = 3.0
 """How tightly the Observer hugs the army destination / center."""
-CHARGELOT_STAGING_OFFSET: float = 14.0
-"""Pull-back from enemy natural toward our start for the pre-attack muster."""
+CHARGELOT_STAGING_OFFSET: float = 18.0
+"""Pull-back from enemy natural toward our start for the pre-attack muster -
+far enough that the ball forms up out of range of nat defenses before
+committing. See PRISM_ENEMY_PHASE_RANGE for why this and
+PRISM_PHASE_APPROACH must stay in sync."""
 
 # Adept shade — lifetime ~7s. Always wait until 6.5s before CANCEL
 # (0.5s remaining). While pathing, cast shade ahead toward the destination.

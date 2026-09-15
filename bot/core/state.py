@@ -148,6 +148,12 @@ class RunState:
     nearest, not list index — townhall iteration order is unstable)."""
     chargelot_wave_gate_ready_since: float | None = None
     """When wave_gate first passed while under wave1_min (force-leave clock)."""
+    chargelot_muster_committed_at: float | None = None
+    """Game time the first-wave muster committed (see `routines.combat.
+    chargelot_attack`/`chargelot_kiting`) - drives the post-commit kite
+    window before full onslaught. Kept separate from `chargelot_metrics.
+    muster_commit_time` (pure observability) so metrics stay free to change
+    independent of behavior."""
     proxy_crew: ProxyCrewState = field(default_factory=ProxyCrewState)
     supply_depot_builder_tag: int | None = None
     """SCV claimed by `steps.terran.continuous_main_depots` - stays off the

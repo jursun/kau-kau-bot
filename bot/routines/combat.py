@@ -86,6 +86,12 @@ CHARGELOT_MUSTER_RADIUS: float = 7.0
 CHARGELOT_MUSTER_PRISM_TIMEOUT: float = 55.0
 """If form-up is ready but Prism never reaches enemy-nat range, commit anyway.
 Long enough for a late Prism (~6:00) to fly from Robo to staging after leave."""
+CHARGELOT_KITE_WINDOW_S: float = 5.0
+"""After the first-wave muster commits, hold at the staging point in kite
+mode (fight what's near, but don't push toward the real attack objective)
+for this long before switching to full onslaught - gives units still
+closing on the muster point time to catch up instead of the wave
+committing to a fight and immediately diving deeper alone."""
 
 BUILDER_CLAIM_RADIUS: float = 30.0
 """How close to the proxy a worker has to be for `builder_workers_attack`
@@ -677,7 +683,7 @@ def _prism_near_enemy_for_muster(ctx: "BotContext") -> bool:
 
     If a Prism (or Robo → Prism) is still coming, return False so muster
     holds. Soft-unlock only when there is no Robo path at all — otherwise
-    Wave 1 commits at ~5:45 while Prism finishes at ~6:00 and never phases.
+    Wave 1 commits at ~5:40 while Prism finishes at ~6:00 and never phases.
     """
     prisms = [
         u
@@ -728,6 +734,19 @@ def muster_commit_decision(
     return prism_wait_expired, prism_wait_expired
 
 
+def chargelot_kiting(
+    committed_at: float | None,
+    now: float,
+    window: float = CHARGELOT_KITE_WINDOW_S,
+) -> bool:
+    """True while the first-wave muster is inside its post-commit kite
+    window - see `chargelot_attack`. `committed_at` is `None` before the
+    muster has ever committed."""
+    if committed_at is None:
+        return False
+    return now - committed_at < window
+
+
 def chargelot_attack(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
     """Chargelot all-in micro: Zealots commit, Stalkers snipe the backline.
 
@@ -737,7 +756,10 @@ def chargelot_attack(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
 
     The first wave musters at `chargelot_staging` (in front of the enemy
     natural) as one ball before committing — not the home `rally_point`,
-    so defenders stay home until WAVE 1 leaves.
+    so defenders stay home until WAVE 1 leaves. After committing, it holds
+    at staging for `CHARGELOT_KITE_WINDOW_S` more (fighting anything that
+    comes to it, but not pushing further in) before switching to full
+    onslaught — see `chargelot_kiting`.
     """
 
     _last_sig: dict[str, object] = {"sig": None}
@@ -784,6 +806,7 @@ def chargelot_attack(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
                     f"dist={muster_center_dist:.0f} reason={reason}"
                 )
                 chargelot_metrics.note_muster_commit(ctx)
+                ctx.state.chargelot_muster_committed_at = ctx.bot.time
                 ctx.state.mustering_tags.clear()
                 mustering_units = []
             elif form_ready and not prism_ready:
@@ -794,6 +817,9 @@ def chargelot_attack(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
                 )
 
         still_mustering = bool(ctx.state.mustering_tags)
+        kiting = chargelot_kiting(
+            ctx.state.chargelot_muster_committed_at, ctx.bot.time
+        )
 
         squads = ctx.mediator.get_squads(
             role=UnitRole.ATTACKING, squad_radius=squad_radius
@@ -811,10 +837,14 @@ def chargelot_attack(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
             position = squad.squad_position
             # Whole attack force holds at staging until the first-wave muster
             # commits — streamers must not dive past the ball into the base.
+            # For CHARGELOT_KITE_WINDOW_S after commit, still hold at staging
+            # (fighting anything that comes to it) instead of pushing to the
+            # real objective, so units still closing on the muster point have
+            # time to catch up rather than the wave committing alone.
             squad_mustering = still_mustering
             target = (
                 staging
-                if squad_mustering
+                if squad_mustering or kiting
                 else targeting.squad_destination(ctx, position)
             )
             closest_enemy = min(closest_enemy, cy_distance_to(position, enemy_nat))
@@ -908,6 +938,7 @@ def chargelot_attack(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
             total_s,
             int(closest_enemy // 5),
             mustering_n > 0,
+            kiting,
             None if muster_center_dist is None else int(muster_center_dist // 5),
         )
         if _last_sig["sig"] != sig:
@@ -918,6 +949,14 @@ def chargelot_attack(squad_radius: float = SQUAD_RADIUS) -> CombatRoutine:
                     f"centerDist={muster_center_dist:.0f} "
                     f"near={muster_near_frac:.0%} "
                     f"enemyNat={closest_enemy:.0f}"
+                )
+            elif kiting:
+                remaining = CHARGELOT_KITE_WINDOW_S - (
+                    ctx.bot.time - ctx.state.chargelot_muster_committed_at
+                )
+                ctx.log(
+                    f"KITE remaining={remaining:.0f} "
+                    f"enemyNat={closest_enemy:.0f} z={total_z} s={total_s}"
                 )
             elif closest_enemy < 40:
                 ctx.log(

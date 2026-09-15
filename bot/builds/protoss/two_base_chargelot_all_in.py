@@ -10,7 +10,7 @@ Gateways, Robotics Facility → Warp Prism (+ Observer when gas allows), and
 flood Chargelots. Gas workers peel off once Charge is paid for so minerals
 go into Gates and Zealots; leave a trickle for Stalkers / Prism / Obs.
 
-Intended hit: leave ~5:20, on the enemy base ~5:45 with Warp Prism
+Intended hit: leave ~5:15, on the enemy base ~5:40 with Warp Prism
 phasing behind the ball, Observer overhead, and a few Stalkers (wshadows
 PvT guide). Opening worker harasses until ~1:48; Adept shades and hits the
 natural at 3:00. Around 3:30, Gateways 2-3 and the Robotics Facility fill
@@ -45,11 +45,11 @@ WALL_GATEWAY_COUNT = 3
 # stalling production well short of full saturation.
 WORKER_TARGET = 36
 
-# Leave across the map at 5:20 once Charge is done and a Zealot ball exists;
-# guide hit on the enemy base is ~5:45. Clock + Charge both required so we
-# do not trickle out early without Charge, or sit home after 5:20.
+# Leave across the map at 5:15 once Charge is done and a Zealot ball exists;
+# guide hit on the enemy base is ~5:40. Clock + Charge both required so we
+# do not trickle out early without Charge, or sit home after 5:15.
 FIRST_WAVE = 12
-ARMY_LEAVE_TIME = 5 * 60 + 20
+ARMY_LEAVE_TIME = 5 * 60 + 15
 
 CHARGE = UpgradeId.CHARGE
 WARPGATE = UpgradeId.WARPGATERESEARCH
@@ -96,7 +96,7 @@ BUILD = BuildDefinition(
             ps.harassing_adept(),
             worker_harass(),
         ),
-        # Charge done AND 5:20 — army on the map by then, base hit ~5:45.
+        # Charge done AND 5:15 — army on the map by then, base hit ~5:40.
         wave_gate=gates.all_of(
             gates.upgrade_done(CHARGE),
             gates.after_time(ARMY_LEAVE_TIME),
@@ -138,7 +138,7 @@ BUILD = BuildDefinition(
         # also spawn_army(stalkers < 2) here — that double-queued #3.
         # MacroPlan short-circuits on the first successful spend. Build the
         # wall trio (Gate 1+2 + Robo) before dumping minerals into Gates 4-8,
-        # otherwise Robo/Prism slip past the 5:20 leave timing.
+        # otherwise Robo/Prism slip past the 5:15 leave timing.
         # Opening Gateway 1 is in main (@ ramp). Gates 2-3 take nat wall 3x3
         # slots (~3:30); Robo prefers a third wall slot, else falls back to main.
         # GateKeeper gap stays open for exit. See protoss_building_placements.yml.

@@ -167,7 +167,7 @@ def _chargelot_spawn(ctx: "BotContext") -> SpawnController | None:
     until the first Prism is pending/live; dump mineral surplus into Zealots.
 
     Hard Prism bank only for the *first* Prism — death must not freeze warps.
-    After Prism: freeflow Stalker+Zealot (BO warps Stalkers ~5:54 at the fight).
+    After Prism: freeflow Stalker+Zealot (BO warps Stalkers ~5:49 at the fight).
     """
     spawn_target = _warp_spawn_target(ctx)
     has_prism = _chargelot_has_prism(ctx)
@@ -249,8 +249,8 @@ def _chargelot_spawn(ctx: "BotContext") -> SpawnController | None:
             else:
                 result = _spawn_zealot_only(spawn_target)
     else:
-        # Prism secured. BO keeps Zealot-warping through the leave (~5:20);
-        # Stalker warps land with the Prism field (~5:54). Until the Prism
+        # Prism secured. BO keeps Zealot-warping through the leave (~5:15);
+        # Stalker warps land with the Prism field (~5:49). Until the Prism
         # is phasing, dump minerals into Zealots — freeflow Stalker priority
         # was eating the Zealot flood the moment Prism started.
         units = ctx.bot.units
