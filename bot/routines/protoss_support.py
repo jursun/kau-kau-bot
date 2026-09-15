@@ -95,14 +95,56 @@ def _army_anchor(ctx: "BotContext") -> Point2 | None:
     return None
 
 
+WARP_WAVE_MIN: int = 4
+"""Hold warp-ins until at least this many Warp Gates are idle at once (or
+all of them, if fewer exist) - see `warp_wave_ready`. Batching into waves
+instead of warping the instant each Gate comes off cooldown lets the Prism
+actually reposition between drops rather than trickling reinforcements in
+one at a time while pinned in place by a warp field that never empties."""
+
+WARP_WAVE_PREPHASE_MARGIN: int = 1
+"""`warp_wave_imminent` fires this many Gates early so the Prism's
+phase-mode morph has time to finish before `warp_wave_ready` actually
+releases the wave (see `steps.common._chargelot_spawn`)."""
+
+
+def _ready_warpgates(ctx: "BotContext") -> list:
+    """Warp Gates currently off cooldown (a TRAINWARP_* ability is up)."""
+    return [
+        gate
+        for gate in ctx.bot.structures(UnitTypeId.WARPGATE).ready
+        if any(a.name.startswith("TRAINWARP") for a in gate.abilities)
+    ]
+
+
 def _warpgates_ready_to_warp(ctx: "BotContext") -> bool:
     """True when at least one Warp Gate can currently train-warp."""
-    for gate in ctx.bot.structures(UnitTypeId.WARPGATE).ready:
-        abilities = gate.abilities
-        # Any TRAINWARP_* means a warp-in slot is open this frame.
-        if any(a.name.startswith("TRAINWARP") for a in abilities):
-            return True
-    return False
+    return bool(_ready_warpgates(ctx))
+
+
+def warp_wave_ready(ctx: "BotContext") -> bool:
+    """True once enough Warp Gates are idle at once to release a wave.
+
+    The threshold is `min(WARP_WAVE_MIN, total warp gates)`, so this can't
+    stall production below `WARP_WAVE_MIN` total Gates - early on on when we
+    only have 1-2, it fires on whatever's ready, same as before batching
+    existed. A Gate held back doesn't lose its readiness (cooldown only
+    starts on its next cast), so idle Gates just accumulate here until the
+    threshold is met.
+    """
+    total = ctx.bot.structures(UnitTypeId.WARPGATE).ready.amount
+    if total == 0:
+        return False
+    return len(_ready_warpgates(ctx)) >= min(WARP_WAVE_MIN, total)
+
+
+def warp_wave_imminent(ctx: "BotContext") -> bool:
+    """True slightly before `warp_wave_ready` - see `WARP_WAVE_PREPHASE_MARGIN`."""
+    total = ctx.bot.structures(UnitTypeId.WARPGATE).ready.amount
+    if total == 0:
+        return False
+    threshold = max(min(WARP_WAVE_MIN, total) - WARP_WAVE_PREPHASE_MARGIN, 1)
+    return len(_ready_warpgates(ctx)) >= threshold
 
 
 def _incomplete_warps_near(ctx: "BotContext", pos: Point2) -> int:
@@ -232,11 +274,14 @@ def escort_warp_prism():
             )
 
             # Phase when near the enemy natural and either the army pocket or
-            # Chargelot staging (prepositioned Prism before the ball arrives).
-            # Do NOT gate on warpgate readiness — TRAINWARP ability flicker was
-            # flipping hold_phase off and MoveToSafeTarget cancelled morph.
+            # Chargelot staging (prepositioned Prism before the ball arrives)
+            # AND the next warp wave is imminent - not just because we are in
+            # position. Phasing pins the Prism in place, so holding phase
+            # open just for being "on station" never gave it a chance to
+            # reposition between waves; only an in-progress warp (incomplete)
+            # or an about-to-fire wave should keep the field up.
             on_station = near_enemy and (near_army or near_staging)
-            hold_phase = incomplete > 0 or on_station
+            hold_phase = incomplete > 0 or (on_station and warp_wave_imminent(ctx))
 
             if hold_phase:
                 if not phased:
@@ -272,18 +317,21 @@ def escort_warp_prism():
                             )
                         )
             else:
-                # Not on station: fly with the army (and unphase if we drifted
-                # past hysteresis).
-                mode = "escort" if not near_enemy or far_from_pocket else "hold_transport"
-                if phased and (incomplete == 0) and (
-                    not near_enemy or far_from_pocket
-                ):
+                # Between waves (or genuinely off station): drop phase mode
+                # if we're still holding it, then fly to keep up with the
+                # army - `behind` is recomputed from the live army position
+                # every frame, so this is how the Prism actually repositions.
+                if phased and incomplete == 0:
                     mode = "reposition"
                     maneuver.add(
                         UseAbility(
                             AbilityId.MORPH_WARPPRISMTRANSPORTMODE, prism
                         )
                     )
+                elif on_station:
+                    mode = "between_waves"
+                else:
+                    mode = "escort"
                 maneuver.add(
                     MoveToSafeTarget(unit=prism, grid=grid, target=behind)
                 )

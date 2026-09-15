@@ -32,6 +32,7 @@ from bot.builds.definition import _always
 from bot.consts import CHARGELOT_COMP, CHARGELOT_FLOOD_COMP
 from bot.core.types import Gate, MacroStep
 from bot.routines import gates as gate_fns
+from bot.routines.protoss_support import warp_wave_ready
 
 if TYPE_CHECKING:
     from bot.core.context import BotContext
@@ -49,6 +50,24 @@ _CHARGELOT_OPENING_STALKERS: int = 2
 _STALKER_MINERALS: int = 125
 _STALKER_GAS: int = 50
 _ZEALOT_MINERALS: int = 100
+
+# Only the mass-production flood paths get batched into warp waves.
+# "opening_stalker2"/"pre_prism_stalker2"/"pre_prism_zealot" etc. are
+# time-critical recovery/banking paths for a specific small count (Robo is
+# gated on 2 Stalkers existing; the Prism bank wants its Zealot the moment
+# minerals allow) - holding those for an unrelated Gate to sync up would
+# push back their own timing for no benefit, since there's nothing to
+# "wave" when you only need 1-2 units.
+_WAVE_GATED_PATHS: frozenset[str] = frozenset(
+    {
+        "flood_zealots",
+        "flood_after_prism_dead",
+        "post_prism_obs_zealot",
+        "post_prism_zealot",
+        "post_prism_obs_flood",
+        "post_prism_flood",
+    }
+)
 
 _SPAWN_LOG_PATHS: frozenset[str] = frozenset(
     {
@@ -287,14 +306,33 @@ def _chargelot_spawn(ctx: "BotContext") -> SpawnController | None:
                 freeflow_mode=True,
             )
 
+    # Batch Zealot/Stalker warp-ins into waves instead of firing the instant
+    # each Warp Gate comes off cooldown - see `warp_wave_ready`. Held-back
+    # Gates just stay idle (no cooldown ticks while unused), so this cannot
+    # starve production, only bunch it up. Scoped to the flood paths only -
+    # see `_WAVE_GATED_PATHS`. Also requires Warp Gate research to have
+    # actually finished: `build_completed` can go true while research is
+    # still in progress (it's an earlier BO step, not the last one), and
+    # `warp_wave_ready` would otherwise see 0 Warp Gate structures and hold
+    # forever even though plain Gateways are still training normally.
+    held_for_wave = (
+        isinstance(result, SpawnController)
+        and path in _WAVE_GATED_PATHS
+        and UpgradeId.WARPGATERESEARCH in ctx.bot.state.upgrades
+        and not warp_wave_ready(ctx)
+    )
+    if held_for_wave:
+        result = None
+    log_path = f"{path}_hold_wave" if held_for_wave else path
+
     if (
         ctx.bot.time >= 150.0
         and path in _SPAWN_LOG_PATHS
-        and _last_spawn_path["path"] != path
+        and _last_spawn_path["path"] != log_path
     ):
-        _last_spawn_path["path"] = path
+        _last_spawn_path["path"] = log_path
         ctx.log(
-            f"SPAWN {path} stalkers={stalkers} "
+            f"SPAWN {log_path} stalkers={stalkers} "
             f"min={minerals} gas={gas}"
         )
     return result
