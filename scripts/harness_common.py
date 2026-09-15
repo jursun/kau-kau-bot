@@ -2,12 +2,12 @@
 
 Four fixed tiers, run via their own thin wrapper scripts:
 
-    Debug      1 game vs Protoss, Easy          — python scripts/debug_tier.py
+    Quick      1 game, random map/race, Medium  — python scripts/quick_tier.py
     Smoke      1 map per race (3 games), Easy   — python scripts/smoke_tier.py
     Sanity     1 race per map (7 games), Medium — python scripts/sanity_tier.py
     Regression every map x every race (21), Hard — python scripts/regression_tier.py
 
-Each takes the same three parameters:
+Each takes the same parameters:
 
     --build NAME       Opening to force, e.g. "2base Chargelot All-In".
                         The opponent race is resolved automatically from
@@ -23,6 +23,12 @@ Each takes the same three parameters:
                         LOCAL_GAME_TIME_LIMIT_SECONDS team-policy default —
                         passing something larger is a deliberate call, not
                         a silent extension of that policy.
+    --map NAME          Force a specific map instead of a tier's random
+                        pick(s) — targeted testing (e.g. Quick against one
+                        known-tricky map).
+    --opponent RACE     Force a specific opponent race (Terran/Zerg/Protoss)
+                        instead of a tier's random/all pick — targeted
+                        testing (e.g. Quick against one known-tricky race).
 
 Always stepped (Realtime: False) with the FastWindow corner client
 (FastWindow: True) for the quickest possible execution — there is no
@@ -94,16 +100,17 @@ class TierSpec:
     instead of silently going stale; a mismatch is logged, not fatal."""
     races: tuple[Race, ...] | None = None
     """Opponent race pool override; `None` means the usual `ALL_RACES`.
-    Only `DEBUG` sets this, to pin a single fast game to one race instead
-    of one game per `ALL_RACES` entry — see `run_tier`."""
+    Lets a tier pin its random opponent pick to fewer races than
+    `ALL_RACES` — see `run_tier`'s `--opponent` override for the CLI side
+    of the same knob."""
 
 
-DEBUG = TierSpec(
-    "debug", "random", "all", Difficulty.Easy, 1, races=(Race.Protoss,)
-)
-"""One quick game (random map, Protoss, Easy) - for iterating on a change
-before spending the time on a full smoke/sanity/regression run. See
-`debug_tier.py`."""
+QUICK = TierSpec("quick", "random", "random", Difficulty.Medium, 1)
+"""One quick game (random map, random race, Medium) - for iterating on a
+change before spending the time on a full smoke/sanity/regression run.
+`--map`/`--opponent`/`--difficulty` narrow it to targeted testing (e.g. one
+known-tricky map or race) without losing the fast, 1-game default. See
+`quick_tier.py`."""
 SMOKE = TierSpec("smoke", "random", "all", Difficulty.Easy, len(ALL_RACES))
 SANITY = TierSpec("sanity", "all", "random", Difficulty.Medium, 7)
 REGRESSION = TierSpec("regression", "all", "all", Difficulty.Hard, 7 * len(ALL_RACES))
@@ -131,6 +138,10 @@ def build_game_plan(
     if tier.map_strategy == "random" and tier.opponent_strategy == "all":
         picks = _pick_distinct(maps, len(races), rng)
         return list(zip(picks, races, strict=True))
+
+    if tier.map_strategy == "random" and tier.opponent_strategy == "random":
+        picks = _pick_distinct(maps, tier.expected_games, rng)
+        return [(m, rng.choice(races)) for m in picks]
 
     if tier.map_strategy == "all" and tier.opponent_strategy == "random":
         return [(m, rng.choice(races)) for m in maps]
@@ -354,6 +365,25 @@ def add_tier_args(parser: argparse.ArgumentParser, tier: TierSpec) -> None:
         help=f"Override this tier's default ({tier.difficulty.name}).",
     )
     parser.add_argument(
+        "--map",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Force a specific map instead of this tier's random pick(s) — "
+            "targeted testing."
+        ),
+    )
+    parser.add_argument(
+        "--opponent",
+        default=None,
+        metavar="RACE",
+        choices=[r.name for r in ALL_RACES],
+        help=(
+            "Force a specific opponent race instead of this tier's "
+            "random/all pick — targeted testing."
+        ),
+    )
+    parser.add_argument(
         "--validate",
         action="store_true",
         help="Attach the build's rush validator (report at each game end).",
@@ -404,9 +434,10 @@ def run_tier(tier: TierSpec, argv: list[str] | None = None) -> int:
     )
     local_cfg = local_game_cfg_for_testing(config)
     maps_path = local_cfg.get("MapPath")
-    maps = resolve_map_list(local_cfg)
+    maps = [args.map] if args.map else resolve_map_list(local_cfg)
+    races = (Race[args.opponent],) if args.opponent else (tier.races or ALL_RACES)
 
-    plan = build_game_plan(tier, maps, tier.races or ALL_RACES, rng)
+    plan = build_game_plan(tier, maps, races, rng)
     if len(plan) != tier.expected_games:
         logger.warning(
             f"{tier.name}: computed {len(plan)} games from a "

@@ -1,4 +1,4 @@
-"""Tests for the 3-tier local test harness (scripts/harness_common.py).
+"""Tests for the 4-tier local test harness (scripts/harness_common.py).
 
 The harness itself launches real StarCraft II matches, which these tests
 don't touch — only the pure planning/reporting logic (game-plan
@@ -48,11 +48,29 @@ def test_smoke_plan_repeats_maps_when_pool_smaller_than_race_count() -> None:
     assert all(m == "OnlyOneMap" for m, _ in plan)
 
 
-def test_debug_plan_is_a_single_game_vs_protoss() -> None:
-    plan = hc.build_game_plan(hc.DEBUG, MAPS_7, hc.DEBUG.races, random.Random(1))
+def test_quick_plan_is_a_single_game_on_a_random_map_and_race() -> None:
+    plan = hc.build_game_plan(hc.QUICK, MAPS_7, RACES_3, random.Random(1))
 
-    assert plan == [(plan[0][0], Race.Protoss)]
-    assert plan[0][0] in MAPS_7
+    assert len(plan) == 1
+    map_name, race = plan[0]
+    assert map_name in MAPS_7
+    assert race in RACES_3
+
+
+def test_quick_plan_race_choice_is_random_not_fixed() -> None:
+    plan_a = hc.build_game_plan(hc.QUICK, MAPS_7, RACES_3, random.Random(1))
+    plan_b = hc.build_game_plan(hc.QUICK, MAPS_7, RACES_3, random.Random(2))
+
+    assert plan_a != plan_b, (
+        "two different seeds should not coincidentally pick an identical "
+        "(map, race) pair"
+    )
+
+
+def test_quick_plan_honors_a_races_override_for_targeted_testing() -> None:
+    plan = hc.build_game_plan(hc.QUICK, MAPS_7, (Race.Zerg,), random.Random(1))
+
+    assert plan == [(plan[0][0], Race.Zerg)]
 
 
 def test_sanity_plan_has_one_game_per_map_exactly() -> None:
@@ -98,7 +116,10 @@ def test_build_game_plan_rejects_empty_races() -> None:
 
 
 def test_build_game_plan_rejects_unsupported_strategy_combo() -> None:
-    weird_tier = replace(hc.SMOKE, map_strategy="random", opponent_strategy="random")
+    # All 4 (map_strategy, opponent_strategy) combos the Literal types allow
+    # are supported - this has to reach for a value outside those Literals
+    # to exercise the fallback at all.
+    weird_tier = replace(hc.SMOKE, map_strategy="diagonal")
     try:
         hc.build_game_plan(weird_tier, MAPS_7, RACES_3, random.Random(1))
         assert False, "expected ValueError"
@@ -202,19 +223,20 @@ def test_game_row_ok_is_false_after_a_crash() -> None:
 
 
 def test_tier_specs_match_the_documented_counts() -> None:
-    assert hc.DEBUG.expected_games == 1
+    assert hc.QUICK.expected_games == 1
     assert hc.SMOKE.expected_games == 3
     assert hc.SANITY.expected_games == 7
     assert hc.REGRESSION.expected_games == 21
-    assert hc.DEBUG.difficulty is Difficulty.Easy
+    assert hc.QUICK.difficulty is Difficulty.Medium
     assert hc.SMOKE.difficulty is Difficulty.Easy
     assert hc.SANITY.difficulty is Difficulty.Medium
     assert hc.REGRESSION.difficulty is Difficulty.Hard
 
 
-def test_debug_tier_pins_the_opponent_race_to_protoss() -> None:
-    assert hc.DEBUG.races == (Race.Protoss,)
-    assert hc.SMOKE.races is None, "other tiers still default to ALL_RACES"
+def test_quick_tier_defaults_to_random_map_and_race() -> None:
+    assert hc.QUICK.map_strategy == "random"
+    assert hc.QUICK.opponent_strategy == "random"
+    assert hc.QUICK.races is None, "no fixed race - random across ALL_RACES"
 
 
 def main() -> int:
