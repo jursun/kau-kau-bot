@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 from sc2.data import Race
 from sc2.ids.unit_typeid import UnitTypeId
+from sc2.position import Point2
 
 
 class _Counted:
@@ -27,15 +28,31 @@ class _Counted:
 
 
 class _FakeUnit:
-    def __init__(self, tag: int, type_id=UnitTypeId.ZERGLING):
+    def __init__(
+        self,
+        tag: int,
+        type_id=UnitTypeId.ZERGLING,
+        position: Point2 | None = None,
+        assigned_harvesters: int = 0,
+    ):
         self.tag = tag
         self.type_id = type_id
+        self.position = position if position is not None else Point2((0.0, 0.0))
+        self.assigned_harvesters = assigned_harvesters
 
 
 class _FakeUnits(list):
-    """Stands in for python-sc2's `Units`: just the `.tags_in` the validator
-    needs to pick the newly-released wave's actual unit objects back out of
-    the current ATTACKING group."""
+    """Stands in for python-sc2's `Units`: `.amount`, plus the `.tags_in` the
+    validator needs to pick the newly-released wave's actual unit objects
+    back out of the current ATTACKING group. Also stands in for
+    `ai.gas_buildings` when a test needs real per-structure
+    `.assigned_harvesters` rather than just a count - `ai.gas_buildings`
+    defaults to a plain `_Counted` (see `FakeAI`), so only assign a
+    `_FakeUnits` there when a test actually cares about harvester counts."""
+
+    @property
+    def amount(self) -> int:
+        return len(self)
 
     def tags_in(self, tags) -> "_FakeUnits":
         return _FakeUnits(u for u in self if u.tag in tags)
@@ -132,6 +149,7 @@ class FakeAI:
         self.supply_used = 14
         self.workers = _Counted(12)
         self.gas_buildings = _Counted(0)
+        self.start_location = Point2((100.0, 100.0))
         # `.get_cached_enemy_army` is a plain attribute here (a test sets it
         # directly), standing in for ares' real `ManagerMediator` property.
         self.mediator = SimpleNamespace(get_cached_enemy_army=[])
@@ -150,11 +168,15 @@ class FakeAI:
         self._pending_counts: dict = {}
         self._pending_upgrades: set = set()
         self._affordable: set = set()
+        self._units: dict = {}
 
     def structures(self, unit_type) -> _Counted:
         amount = self._structure_counts.get(unit_type, 0)
         ready = self._structure_ready_counts.get(unit_type, amount)
         return _Counted(amount, ready)
+
+    def units(self, unit_type) -> _FakeUnits:
+        return _FakeUnits(self._units.get(unit_type, []))
 
     def already_pending(self, unit_type) -> int:
         return self._pending_counts.get(unit_type, 0)

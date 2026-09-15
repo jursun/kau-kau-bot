@@ -105,6 +105,14 @@ def build_bot_ai(validate: bool):
         """
 
         validator = None
+        validation_metrics: dict = {}
+        """Populated at game end from `self.validator.metrics_snapshot()` -
+        every check across every stage, flattened to CSV-friendly columns.
+        Lets `scripts/harness_common.py`'s `--metrics validation_metrics`
+        capture validator pass/fail across a whole tier run (many games),
+        not just one game's own printed report - same mechanism as
+        `--metrics chargelot_regression_metrics`, just build-agnostic since
+        it reads off whichever validator `validator_for_build` resolved."""
 
         async def on_start(self) -> None:
             await KauKauBot.on_start(self)
@@ -117,6 +125,7 @@ def build_bot_ai(validate: bool):
 
         async def on_end(self, game_result) -> None:
             self.validator.on_end()
+            self.validation_metrics = self.validator.metrics_snapshot()
             await KauKauBot.on_end(self, game_result)
 
     logger.info("Rush validation ENABLED - report prints at game end.")

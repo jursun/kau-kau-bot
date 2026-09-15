@@ -60,6 +60,7 @@ Usage, from `run.py`::
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
@@ -71,6 +72,15 @@ from sc2.dicts.unit_research_abilities import RESEARCH_INFO
 from sc2.dicts.upgrade_researched_from import UPGRADE_RESEARCHED_FROM
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
+
+
+def _slugify(text: str) -> str:
+    """CSV/attribute-friendly column name: lowercase, non-alphanumerics
+    collapsed to a single underscore, no leading/trailing underscore. Used
+    by `BaseValidator.metrics_snapshot` to turn a stage/check name like
+    "Stage 2: Opening Timing" / "3rd Queen @ Main" into a safe key."""
+    return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
+
 
 # ── Step result ─────────────────────────────────────────────────────────────
 
@@ -831,9 +841,9 @@ class BaseValidator:
 
         width = 52
         print()
-        print("═" * width)
+        print("=" * width)
         print(self.REPORT_TITLE)
-        print("═" * width)
+        print("=" * width)
 
         for stage_name, steps in stages.items():
             print(f"\n  {stage_name}")
@@ -846,10 +856,10 @@ class BaseValidator:
                 print(line)
 
         print()
-        print("═" * width)
+        print("=" * width)
         pct = (total_passed / total_steps * 100) if total_steps else 0
         print(f"  {total_passed}/{total_steps} passed  ({pct:.1f}%)")
-        print("═" * width)
+        print("=" * width)
         print()
 
     def get_score(self) -> Dict[str, int]:
@@ -867,3 +877,21 @@ class BaseValidator:
             "steps_passed": passed,
             "steps_failed": total - passed,
         }
+
+    def metrics_snapshot(self) -> Dict[str, bool | int]:
+        """Every check across every stage, flattened to CSV-friendly
+        columns - lets `scripts/harness_common.py`'s `--metrics` flag
+        capture this validator's pass/fail per milestone across many games
+        in one tier run, the same way `chargelot_metrics` exposes its own
+        dict for `--metrics chargelot_regression_metrics`. `get_score()`'s
+        aggregate pass/total is folded in too; the per-check columns are
+        prefixed by the stage they came from (slugified) since a check name
+        can repeat across stages with a different meaning each time (e.g.
+        "Roach Warren" is both an Opening Timing deadline and a generic
+        Tech Structures "did it ever start" tracker)."""
+        snapshot: Dict[str, bool | int] = dict(self.get_score())
+        for stage_name, steps in self.validate().items():
+            prefix = _slugify(stage_name)
+            for step in steps:
+                snapshot[f"{prefix}_{_slugify(step.name)}"] = step.passed
+        return snapshot

@@ -4,8 +4,9 @@ report shape is each concrete validator's own test file instead.
 
 Drives `on_step` against the duck-typed fakes in `_fakes.py`, then inspects
 the tracking output. Most tests construct `BaseValidator` directly; a few
-needing a Stage 2/3/4 key use `MacroZergValidator` as a convenient
-four-stage concrete class.
+needing a Stage 3/4/5 key (Tech Structures/Upgrades/Attack Waves) use
+`MacroZergValidator` as a convenient concrete class - its own Stage 2
+(Opening Timing) is specific to that one build and untouched here.
 """
 
 from __future__ import annotations
@@ -310,7 +311,7 @@ def test_wave_release_records_size_time_and_next_expected_minimum() -> None:
     assert wave2.gap == 120.0
 
     result = validator.validate()
-    wave_results = {r.name: r for r in result["Stage 4: Attack Waves"]}
+    wave_results = {r.name: r for r in result["Stage 5: Attack Waves"]}
     assert wave_results["Wave 1"].passed
     assert wave_results["Wave 2"].passed
 
@@ -340,7 +341,7 @@ def test_wave_records_our_supply_against_enemy_army_supply() -> None:
 
     result = validator.validate()
     wave1_result = next(
-        r for r in result["Stage 4: Attack Waves"] if r.name == "Wave 1"
+        r for r in result["Stage 5: Attack Waves"] if r.name == "Wave 1"
     )
     assert "supply us=10 vs enemy=8" in wave1_result.detail
 
@@ -351,6 +352,49 @@ def test_no_wave_ever_released_fails_stage_4() -> None:
     validator.on_step(0)
 
     result = validator.validate()
-    assert result["Stage 4: Attack Waves"] == [
-        r for r in result["Stage 4: Attack Waves"] if not r.passed
+    assert result["Stage 5: Attack Waves"] == [
+        r for r in result["Stage 5: Attack Waves"] if not r.passed
     ]
+
+
+# ── metrics_snapshot: --metrics bridge for the test harness ─────────────────
+
+
+def test_metrics_snapshot_includes_the_aggregate_score() -> None:
+    ai = FakeAI(upgrades=())
+    validator = MacroZergValidator(ai)
+    validator.on_step(0)
+
+    snapshot = validator.metrics_snapshot()
+    score = validator.get_score()
+    assert snapshot["steps_total"] == score["steps_total"]
+    assert snapshot["steps_passed"] == score["steps_passed"]
+    assert snapshot["steps_failed"] == score["steps_failed"]
+
+
+def test_metrics_snapshot_flattens_every_check_to_a_slugified_bool_column() -> None:
+    ai = FakeAI(upgrades=())
+    ai._structure_counts[UnitTypeId.SPAWNINGPOOL] = 1
+    validator = MacroZergValidator(ai)
+    validator.on_step(0)
+
+    snapshot = validator.metrics_snapshot()
+    # "Stage 2: Opening Timing" / "Spawning Pool" -> one slugified column.
+    assert snapshot["stage_2_opening_timing_spawning_pool"] is True
+    assert isinstance(snapshot["stage_2_opening_timing_spawning_pool"], bool)
+
+
+def test_metrics_snapshot_disambiguates_a_check_name_that_repeats_across_stages() -> None:
+    """"Roach Warren" appears in both Stage 2 (Opening Timing, a deadline
+    check) and Stage 3 (Tech Structures, a generic "did it ever start"
+    tracker) - these must land in two distinct columns, not overwrite each
+    other, since they mean different things."""
+    ai = FakeAI(upgrades=(UpgradeId.BURROW,))
+    validator = MacroZergValidator(ai)
+    ai.time = 500.0  # well past Opening Timing's 217s deadline
+    ai._structure_counts[UnitTypeId.ROACHWARREN] = 1
+    validator.on_step(0)
+
+    snapshot = validator.metrics_snapshot()
+    assert snapshot["stage_2_opening_timing_roach_warren"] is False  # missed deadline
+    assert snapshot["stage_3_tech_structures_roach_warren"] is True  # started at all
