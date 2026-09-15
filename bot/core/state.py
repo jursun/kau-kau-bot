@@ -219,10 +219,9 @@ class RunState:
     """One-shot Prism drop-harass state machine (see `routines.
     protoss_support.escort_warp_prism`/`_drop_maybe_start`). `None` until
     the main wave commits; then "loading" -> "flying_in" -> "dropping" ->
-    "rephasing" -> "phased_in_base", with "retreating" as the abort path
-    back to "done". "done" and (unused, reserved) "aborted" are terminal -
-    normal escort resumes either way, and this never re-enters since it is
-    a once-per-game maneuver."""
+    "rephasing" -> "phased_in_base", with "aborting" dumping cargo on the
+    spot before "done". "done" is terminal - normal escort resumes and
+    this never re-enters (once-per-game)."""
     prism_drop_squad_tags: set[int] = field(default_factory=set)
     """Zealots/Stalkers peeled off the muster for the drop-harass squad -
     see `_drop_maybe_start`."""
@@ -231,5 +230,9 @@ class RunState:
     (`_drop_pick_point`) and reused for the rest of the sequence."""
     prism_drop_phase_entered_at: float | None = None
     """Game time the current `prism_drop_phase` was entered - drives the
-    "rephasing" and "phased_in_base" timeouts."""
+    "rephasing" / "phased_in_base" / load timeouts."""
+    chargelot_forward_pylon_ordered: bool = False
+    """True once the muster-forward pylon build was issued."""
+    chargelot_forward_pylon_done: bool = False
+    """True once a pylon exists near Chargelot staging."""
     log_once: LogOnce = field(default_factory=LogOnce)

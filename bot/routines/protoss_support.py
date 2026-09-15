@@ -81,8 +81,8 @@ PRISM_DROP_THREAT_RANGE: float = 8.0
 no direct "who is currently hitting me" API, so this approximates it as
 distinct nearby anti-air-capable enemies."""
 PRISM_DROP_ABORT_THREATS: int = 1
-"""Abort/retreat once more than this many distinct threats are near the
-Prism during the drop attempt."""
+"""Abort once more than this many distinct threats are near the Prism
+during the drop attempt - unload on the spot and resume escort."""
 PRISM_DROP_ARRIVE_DIST: float = 3.0
 PRISM_DROP_REPHASE_TIMEOUT_S: float = 15.0
 """Give up trying to re-phase in the enemy base after this long under
@@ -91,6 +91,17 @@ PRISM_DROP_BASE_HOLD_S: float = 8.0
 """How long to stay phased in the enemy base warping in reinforcements
 before handing control back to normal escort duty - long enough for one
 production wave to land there."""
+PRISM_DROP_DEPART_DELAY_S: float = 3.0
+"""After muster commit, wait this long before the loaded Prism flies into
+the enemy main - the ground ball engages first and draws attention."""
+PRISM_DROP_LOAD_TIMEOUT_S: float = 20.0
+"""Abort recruiting/loading if the Prism cannot fill in this long."""
+PRISM_DROP_PICK_RADIUS: float = CHARGELOT_MUSTER_RADIUS + 6.0
+"""How far from staging a unit may be and still get peeled for the drop."""
+FORWARD_PYLON_NEAR: float = 8.0
+"""A pylon within this of staging counts as the forward muster pylon."""
+FORWARD_PYLON_BUILD_RANGE: float = 5.0
+"""Builder must be this close to staging before issuing the pylon build."""
 
 # Adept shade — lifetime ~7s. Always wait until 6.5s before CANCEL
 # (0.5s remaining). While pathing, cast shade ahead toward the destination.
@@ -274,59 +285,106 @@ def _pick_muster_squad(ctx: "BotContext", count: int = PRISM_DROP_SQUAD_SIZE) ->
     near = [
         u
         for u in ctx.units_in_role(UnitRole.ATTACKING)
-        if cy_distance_to(u.position, staging) <= CHARGELOT_MUSTER_RADIUS + 3.0
+        if cy_distance_to(u.position, staging) <= PRISM_DROP_PICK_RADIUS
     ]
     near.sort(key=lambda u: cy_distance_to(u.position, staging))
     return near[:count]
 
 
-def _drop_maybe_start(ctx: "BotContext") -> None:
-    """The instant the first wave commits ("attack timing" - see
-    `chargelot_attack`'s `chargelot_muster_committed_at`), peel
-    `PRISM_DROP_SQUAD_SIZE` units already standing at the muster into the
-    one-shot drop-harass squad instead of letting them march out with the
-    rest - see module docstring above `PRISM_DROP_SQUAD_SIZE`.
+def _prism_passenger_count(prism) -> int:
+    """How many units are aboard - `cargo_used` is supply slots (Zealot=2),
+    not headcount. Requiring `cargo_used >= 4` used to depart with only two
+    Zealots loaded."""
+    passengers = getattr(prism, "passengers", None)
+    if passengers is not None:
+        return len(passengers)
+    # Fallback: Zealot/Stalker are both 2 supply.
+    return int(prism.cargo_used // 2)
 
-    Used to instead wait for freshly-*warped* units to trickle in one at a
-    time before the squad could even start loading. Taking already-
-    mustered units at the commit instant means there's nothing left to
-    wait for, and the squad's departure can never race ahead of or lag
-    behind the main wave's own attack timing - they're the same event.
+
+def _drop_recruit_more(ctx: "BotContext") -> None:
+    """Keep peeling nearby ATTACKING units until the squad is full."""
+    have = len(ctx.state.prism_drop_squad_tags)
+    need = PRISM_DROP_SQUAD_SIZE - have
+    if need <= 0:
+        return
+    for unit in _pick_muster_squad(ctx, count=need + have):
+        if unit.tag in ctx.state.prism_drop_squad_tags:
+            continue
+        unit.hold_position()
+        ctx.state.prism_drop_squad_tags.add(unit.tag)
+        ctx.mediator.assign_role(tag=unit.tag, role=UnitRole.DROP_UNITS_TO_LOAD)
+        need -= 1
+        if need <= 0:
+            return
+
+
+def _drop_maybe_start(ctx: "BotContext") -> None:
+    """The instant the first wave commits, begin loading a drop squad.
+
+    Peels whatever is already at the muster and keeps recruiting until
+    `PRISM_DROP_SQUAD_SIZE` are aboard (or load timeout). Does not skip to
+    "done" on a short muster - that left the Prism flying empty/partial.
     """
     if ctx.state.prism_drop_phase is not None:
         return
     if ctx.state.chargelot_muster_committed_at is None:
         return
     squad = _pick_muster_squad(ctx)
-    if len(squad) < PRISM_DROP_SQUAD_SIZE:
-        ctx.state.prism_drop_phase = "done"
-        ctx.log(f"PRISM_DROP skipped - only {len(squad)} at muster to pick from")
-        return
+    if not squad:
+        # Commit fired but nobody left near staging yet - wait briefly via
+        # loading with an empty squad and keep recruiting each frame.
+        ctx.log("PRISM_DROP waiting to peel squad at muster")
     for unit in squad:
         unit.hold_position()
         ctx.state.prism_drop_squad_tags.add(unit.tag)
         ctx.mediator.assign_role(tag=unit.tag, role=UnitRole.DROP_UNITS_TO_LOAD)
     ctx.state.prism_drop_phase = "loading"
     ctx.state.prism_drop_phase_entered_at = ctx.bot.time
-    ctx.log(f"PRISM_DROP peeled {PRISM_DROP_SQUAD_SIZE} from the muster, loading")
+    ctx.log(
+        f"PRISM_DROP loading ({len(ctx.state.prism_drop_squad_tags)}/"
+        f"{PRISM_DROP_SQUAD_SIZE} peeled)"
+    )
 
 
-def _drop_return_squad_home(ctx: "BotContext") -> None:
-    """Give the still-held squad back to the main assault force - used when
-    the Prism retreats with them still aboard (abort mid-flight) and drops
-    them back off near staging instead of in the enemy base. They came
-    from the ATTACKING muster, not a fresh DEFENDING warp-in, so they
-    rejoin the attack rather than heading home."""
-    for tag in ctx.state.prism_drop_squad_tags:
+def _drop_return_all_to_attacking(ctx: "BotContext") -> None:
+    """Return drop-squad units (ground or just unloaded) to the main assault."""
+    tags = set(ctx.state.prism_drop_squad_tags)
+    for role in (UnitRole.DROP_UNITS_TO_LOAD, UnitRole.DROP_UNITS_ATTACKING):
+        for unit in ctx.mediator.get_units_from_role(role=role):
+            tags.add(unit.tag)
+    for tag in tags:
         ctx.mediator.assign_role(tag=tag, role=UnitRole.ATTACKING)
     ctx.state.prism_drop_squad_tags.clear()
 
 
+def _drop_abort_unload(ctx: "BotContext", prism, grid, maneuver) -> None:
+    """Cannot reach the main safely: dump cargo here, rejoin army, resume escort.
+
+    Escort then parks the Prism behind the ball and phases for warp-ins.
+    """
+    if prism.type_id == UnitTypeId.WARPPRISMPHASING:
+        if AbilityId.MORPH_WARPPRISMTRANSPORTMODE in prism.abilities:
+            maneuver.add(UseAbility(AbilityId.MORPH_WARPPRISMTRANSPORTMODE, prism))
+    if prism.cargo_used > 0:
+        maneuver.add(DropCargo(unit=prism, target=prism.position))
+        ctx.state.prism_drop_phase = "aborting"
+        return
+    _drop_return_all_to_attacking(ctx)
+    ctx.state.prism_drop_phase = "done"
+    ctx.log("PRISM_DROP abort - unloaded, rejoining main force / escort")
+
+
+def _drop_depart_ready(ctx: "BotContext") -> bool:
+    """True once the main force has had `PRISM_DROP_DEPART_DELAY_S` to engage."""
+    committed = ctx.state.chargelot_muster_committed_at
+    if committed is None:
+        return True
+    return ctx.bot.time >= committed + PRISM_DROP_DEPART_DELAY_S
+
+
 def _run_prism_drop(ctx: "BotContext", prism, grid) -> None:
-    """Drive the one-shot drop-harass state machine for `prism`. Takes full
-    control of the unit for every phase - the squad is picked and claimed
-    in one shot by `_drop_maybe_start`, so there is no longer a waiting
-    phase where normal escort logic shares control of the Prism."""
+    """Drive the one-shot drop-harass state machine for `prism`."""
     phase = ctx.state.prism_drop_phase
 
     maneuver = CombatManeuver()
@@ -334,6 +392,8 @@ def _run_prism_drop(ctx: "BotContext", prism, grid) -> None:
     phased = prism.type_id == UnitTypeId.WARPPRISMPHASING
 
     if phase == "loading":
+        entered = ctx.state.prism_drop_phase_entered_at or ctx.bot.time
+        _drop_recruit_more(ctx)
         squad = list(
             ctx.mediator.get_units_from_role(role=UnitRole.DROP_UNITS_TO_LOAD)
         )
@@ -345,6 +405,12 @@ def _run_prism_drop(ctx: "BotContext", prism, grid) -> None:
                 UseAbility(AbilityId.MORPH_WARPPRISMTRANSPORTMODE, prism)
             )
         else:
+            staging = chargelot_staging(ctx)
+            # Stay near muster while loading / waiting out the depart delay.
+            if cy_distance_to(prism.position, staging) > 4.0:
+                maneuver.add(
+                    MoveToSafeTarget(unit=prism, grid=grid, target=staging)
+                )
             maneuver.add(
                 PickUpCargo(
                     unit=prism,
@@ -353,15 +419,28 @@ def _run_prism_drop(ctx: "BotContext", prism, grid) -> None:
                     cargo_switch_to_role=UnitRole.DROP_UNITS_ATTACKING,
                 )
             )
-            if prism.cargo_used >= PRISM_DROP_SQUAD_SIZE:
+            loaded = _prism_passenger_count(prism)
+            if (
+                loaded >= PRISM_DROP_SQUAD_SIZE
+                and _drop_depart_ready(ctx)
+            ):
                 ctx.state.prism_drop_target = _drop_pick_point(ctx)
                 ctx.state.prism_drop_phase = "flying_in"
-                ctx.log(f"PRISM_DROP loaded, flying to {ctx.state.prism_drop_target}")
+                ctx.log(
+                    f"PRISM_DROP loaded {loaded}, flying to "
+                    f"{ctx.state.prism_drop_target}"
+                )
+            elif ctx.bot.time - entered >= PRISM_DROP_LOAD_TIMEOUT_S:
+                ctx.log(
+                    f"PRISM_DROP load timeout with {loaded}/"
+                    f"{PRISM_DROP_SQUAD_SIZE} aboard - abort"
+                )
+                _drop_abort_unload(ctx, prism, grid, maneuver)
 
     elif phase == "flying_in":
         if _drop_threats_near(ctx, prism.position) > PRISM_DROP_ABORT_THREATS:
-            ctx.state.prism_drop_phase = "retreating"
-            ctx.log("PRISM_DROP abort - multiple threats while flying in")
+            ctx.log("PRISM_DROP abort - threats while flying in")
+            _drop_abort_unload(ctx, prism, grid, maneuver)
         else:
             target = ctx.state.prism_drop_target
             if cy_distance_to(prism.position, target) <= PRISM_DROP_ARRIVE_DIST:
@@ -374,14 +453,18 @@ def _run_prism_drop(ctx: "BotContext", prism, grid) -> None:
             prism.cargo_used > 0
             and _drop_threats_near(ctx, prism.position) > PRISM_DROP_ABORT_THREATS
         ):
-            ctx.state.prism_drop_phase = "retreating"
-            ctx.log("PRISM_DROP abort - multiple threats before offload")
+            ctx.log("PRISM_DROP abort - threats before offload")
+            _drop_abort_unload(ctx, prism, grid, maneuver)
         else:
             maneuver.add(DropCargo(unit=prism, target=ctx.state.prism_drop_target))
             if prism.cargo_used == 0:
                 ctx.state.prism_drop_phase = "rephasing"
                 ctx.state.prism_drop_phase_entered_at = ctx.bot.time
                 ctx.log("PRISM_DROP offloaded")
+
+    elif phase == "aborting":
+        # Finish dumping cargo from an abort, then hand back to escort.
+        _drop_abort_unload(ctx, prism, grid, maneuver)
 
     elif phase == "rephasing":
         entered = ctx.state.prism_drop_phase_entered_at or ctx.bot.time
@@ -411,21 +494,72 @@ def _run_prism_drop(ctx: "BotContext", prism, grid) -> None:
             ctx.state.prism_drop_phase = "done"
             ctx.log("PRISM_DROP base window done, resuming escort")
 
-    elif phase == "retreating":
-        home_point = chargelot_staging(ctx)
-        if prism.cargo_used == 0:
-            ctx.state.prism_drop_phase = "done"
-            ctx.log("PRISM_DROP retreat complete, resuming escort")
-        elif cy_distance_to(prism.position, home_point) <= PRISM_DROP_ARRIVE_DIST:
-            maneuver.add(DropCargo(unit=prism, target=home_point))
-            if prism.cargo_used == 0:
-                _drop_return_squad_home(ctx)
-                ctx.state.prism_drop_phase = "done"
-                ctx.log("PRISM_DROP recovered squad, resuming escort")
-        else:
-            maneuver.add(MoveToSafeTarget(unit=prism, grid=grid, target=home_point))
-
     ctx.bot.register_behavior(maneuver)
+
+
+def forward_muster_pylon():
+    """Send the macro builder with the 5:15 wave to plant a pylon at staging.
+
+    Gives a warp-in / power foothold at the muster so home Gates can reinforce
+    the fight without waiting on the Prism field alone.
+    """
+
+    def routine(ctx: "BotContext") -> None:
+        if ctx.bot.time < ARMY_LEAVE_TIME:
+            return
+        if ctx.state.chargelot_forward_pylon_done:
+            return
+
+        staging = chargelot_staging(ctx)
+        for pylon in ctx.bot.structures(UnitTypeId.PYLON):
+            if cy_distance_to(pylon.position, staging) <= FORWARD_PYLON_NEAR:
+                ctx.state.chargelot_forward_pylon_done = True
+                ctx.log("FORWARD_PYLON online at muster")
+                return
+
+        from bot.behaviors.protoss.builder import ensure_protoss_builder
+
+        builder = ensure_protoss_builder(ctx.bot, ctx.mediator, staging)
+        if builder is None:
+            return
+
+        if cy_distance_to(builder.position, staging) > FORWARD_PYLON_BUILD_RANGE:
+            builder.move(staging)
+            return
+
+        if ctx.state.chargelot_forward_pylon_ordered:
+            return
+        if not ctx.bot.can_afford(UnitTypeId.PYLON):
+            return
+
+        # Prefer a free placement cell near staging (toward our nat = safer).
+        home = ctx.mediator.get_own_nat
+        candidates = [Point2(cy_towards(staging, home, 2.0)), staging]
+        for radius in (2.0, 3.0, 4.0):
+            for i in range(6):
+                ang = (2.0 * math.pi * i) / 6.0
+                candidates.append(
+                    Point2(
+                        (
+                            staging.x + radius * math.cos(ang),
+                            staging.y + radius * math.sin(ang),
+                        )
+                    )
+                )
+        for pos in candidates:
+            if not ctx.bot.in_placement_grid(pos):
+                continue
+            if ctx.mediator.build_with_specific_worker(
+                worker=builder,
+                structure_type=UnitTypeId.PYLON,
+                pos=pos,
+                assign_role=False,
+            ):
+                ctx.state.chargelot_forward_pylon_ordered = True
+                ctx.log(f"FORWARD_PYLON ordered at {pos}")
+                return
+
+    return routine
 
 
 def escort_warp_prism():

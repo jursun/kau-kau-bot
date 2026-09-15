@@ -181,15 +181,35 @@ def test_drop_maybe_start_peels_the_squad_off_the_muster_on_commit() -> None:
     ctx.mediator.assign_role.assert_any_call(tag=3, role=UnitRole.DROP_UNITS_TO_LOAD)
 
 
-def test_drop_maybe_start_skips_the_maneuver_if_too_few_units_are_mustered() -> None:
+def test_drop_maybe_start_keeps_loading_when_muster_is_short() -> None:
+    """Do not skip the drop - keep recruiting until 4 are aboard."""
     ctx = _drop_ctx(muster_committed_at=300.0)
     ctx.units_in_role = MagicMock(return_value=[_attacker(1, 0.0)])
 
     with _staging_at_origin():
         ps._drop_maybe_start(ctx)
 
-    assert ctx.state.prism_drop_squad_tags == set()
-    assert ctx.state.prism_drop_phase == "done", "not enough units - skip, don't wait"
+    assert ctx.state.prism_drop_squad_tags == {1}
+    assert ctx.state.prism_drop_phase == "loading"
+
+
+def test_prism_passenger_count_uses_passengers_not_cargo_supply() -> None:
+    prism = MagicMock()
+    prism.passengers = [MagicMock(), MagicMock(), MagicMock(), MagicMock()]
+    prism.cargo_used = 8  # 4 zealots × 2 supply
+    assert ps._prism_passenger_count(prism) == 4
+
+    prism.passengers = [MagicMock(), MagicMock()]
+    prism.cargo_used = 4  # only 2 units - old bug treated this as "full"
+    assert ps._prism_passenger_count(prism) == 2
+
+
+def test_drop_depart_ready_waits_three_seconds_after_commit() -> None:
+    ctx = _drop_ctx(muster_committed_at=300.0)
+    ctx.bot.time = 302.0
+    assert ps._drop_depart_ready(ctx) is False
+    ctx.bot.time = 303.0
+    assert ps._drop_depart_ready(ctx) is True
 
 
 def _height_ctx(main_height: int, heights: dict) -> BotContext:
