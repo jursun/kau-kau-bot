@@ -54,6 +54,16 @@ Builds:
         ConstantWorkerProductionTill: 26
         AutoSupplyAtSupply: 23
         OpeningBuildOrder:
+            # Nexus starts the game with 50 energy - chrono is available
+            # immediately, no wait for it to accumulate. First in the list
+            # so it fires at 0:00 without stalling anything after it (the
+            # build order runner processes steps sequentially). This is now
+            # the only nexus/probe chrono in the opening - a second one at
+            # supply 20 used to stall the more important Adept (22 chrono @
+            # gateway) and Charge (26 chrono @ twilightcouncil) casts by
+            # several supply counts each, since energy alone cannot keep up
+            # with 4 chronos crammed into this window.
+            - 12 chrono @ nexus
             - 14 pylon @ ramp
             - 15 gate @ ramp
             # Opening worker scout is owned by `worker_harass` (one Probe only).
@@ -61,7 +71,6 @@ Builds:
             - 17 gas
             - 20 expand
             - 20 core @ ramp
-            - 20 chrono @ nexus
             - 21 gas
             # Wall FirstPylon — powers Gateways 2-3 + Robo in ThreeByThreesWall.
             # `@ nat` alone often lands too far from the wall choke.
@@ -78,4 +87,10 @@ Builds:
             # step can stall the opening. Queue #2 here while the Gate still
             # trains, so Robo (gated on 2 Stalkers) is not delayed to ~202s.
             - 28 stalker
+            # Boosts this Stalker's Gateway. Adds ~20-25s to when the opening
+            # completes (build_completed, so also macro_steps/Robo) - the
+            # 3rd chrono in a row this late outruns energy regen a bit.
+            # Verified: no cascading effect on Adept/Charge since this is the
+            # last step, not one they wait behind.
+            - 28 chrono @ gateway
             # Stop here — extra units come from spawn_army after the opening.
