@@ -48,6 +48,13 @@ def test_smoke_plan_repeats_maps_when_pool_smaller_than_race_count() -> None:
     assert all(m == "OnlyOneMap" for m, _ in plan)
 
 
+def test_debug_plan_is_a_single_game_vs_protoss() -> None:
+    plan = hc.build_game_plan(hc.DEBUG, MAPS_7, hc.DEBUG.races, random.Random(1))
+
+    assert plan == [(plan[0][0], Race.Protoss)]
+    assert plan[0][0] in MAPS_7
+
+
 def test_sanity_plan_has_one_game_per_map_exactly() -> None:
     plan = hc.build_game_plan(hc.SANITY, MAPS_7, RACES_3, random.Random(2))
 
@@ -195,12 +202,19 @@ def test_game_row_ok_is_false_after_a_crash() -> None:
 
 
 def test_tier_specs_match_the_documented_counts() -> None:
+    assert hc.DEBUG.expected_games == 1
     assert hc.SMOKE.expected_games == 3
     assert hc.SANITY.expected_games == 7
     assert hc.REGRESSION.expected_games == 21
+    assert hc.DEBUG.difficulty is Difficulty.Easy
     assert hc.SMOKE.difficulty is Difficulty.Easy
     assert hc.SANITY.difficulty is Difficulty.Medium
     assert hc.REGRESSION.difficulty is Difficulty.Hard
+
+
+def test_debug_tier_pins_the_opponent_race_to_protoss() -> None:
+    assert hc.DEBUG.races == (Race.Protoss,)
+    assert hc.SMOKE.races is None, "other tiers still default to ALL_RACES"
 
 
 def main() -> int:

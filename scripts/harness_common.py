@@ -1,7 +1,8 @@
-"""Shared engine for the 3-tier local test harness.
+"""Shared engine for the local test harness.
 
-Three fixed tiers, run via their own thin wrapper scripts:
+Four fixed tiers, run via their own thin wrapper scripts:
 
+    Debug      1 game vs Protoss, Easy          — python scripts/debug_tier.py
     Smoke      1 map per race (3 games), Easy   — python scripts/smoke_tier.py
     Sanity     1 race per map (7 games), Medium — python scripts/sanity_tier.py
     Regression every map x every race (21), Hard — python scripts/regression_tier.py
@@ -91,8 +92,18 @@ class TierSpec:
     LocalGame.MapPool — informational. The real count is always derived
     from the live pool + race list, so a map-pool change scales the run
     instead of silently going stale; a mismatch is logged, not fatal."""
+    races: tuple[Race, ...] | None = None
+    """Opponent race pool override; `None` means the usual `ALL_RACES`.
+    Only `DEBUG` sets this, to pin a single fast game to one race instead
+    of one game per `ALL_RACES` entry — see `run_tier`."""
 
 
+DEBUG = TierSpec(
+    "debug", "random", "all", Difficulty.Easy, 1, races=(Race.Protoss,)
+)
+"""One quick game (random map, Protoss, Easy) - for iterating on a change
+before spending the time on a full smoke/sanity/regression run. See
+`debug_tier.py`."""
 SMOKE = TierSpec("smoke", "random", "all", Difficulty.Easy, len(ALL_RACES))
 SANITY = TierSpec("sanity", "all", "random", Difficulty.Medium, 7)
 REGRESSION = TierSpec("regression", "all", "all", Difficulty.Hard, 7 * len(ALL_RACES))
@@ -395,7 +406,7 @@ def run_tier(tier: TierSpec, argv: list[str] | None = None) -> int:
     maps_path = local_cfg.get("MapPath")
     maps = resolve_map_list(local_cfg)
 
-    plan = build_game_plan(tier, maps, ALL_RACES, rng)
+    plan = build_game_plan(tier, maps, tier.races or ALL_RACES, rng)
     if len(plan) != tier.expected_games:
         logger.warning(
             f"{tier.name}: computed {len(plan)} games from a "
