@@ -63,12 +63,17 @@ CHARGELOT_STAGING_OFFSET: float = 18.0
 far enough that the ball forms up out of range of nat defenses before
 committing. See PRISM_ENEMY_PHASE_RANGE for why this and
 PRISM_PHASE_APPROACH must stay in sync."""
+CHARGELOT_MUSTER_RADIUS: float = 7.0
+"""Wider muster for the ~12 Zealot first wave so it commits as one squad.
+Owned here (not `routines.combat`, which imports it) so the drop-harass
+squad-pick below can reuse the exact same "at the muster" radius without
+`protoss_support` importing from `combat` (which itself imports from here)."""
 
-# One-shot Prism drop-harass: while the ball is still forming up at staging
-# (before it commits and starts relying on the Prism for warp-ins), peel off
-# a small squad, sneak it into the enemy main while their army is held up at
-# the natural/ramp, and use the Prism as a second warp-in point on the high
-# ground there. See `escort_warp_prism`/`claim_drop_squad_unit`.
+# One-shot Prism drop-harass: the instant the first wave commits ("attack
+# timing" - `chargelot_attack`'s `chargelot_muster_committed_at`), peel a
+# small squad off the muster, sneak it into the enemy main while their army
+# is held up at the natural/ramp, and use the Prism as a second warp-in
+# point on the high ground there. See `escort_warp_prism`/`_drop_maybe_start`.
 PRISM_DROP_SQUAD_SIZE: int = 4
 PRISM_DROP_THREAT_RANGE: float = 8.0
 """Radius used to count "sources of damage" near the drop Prism. There is
@@ -237,71 +242,68 @@ def _drop_pick_point(ctx: "BotContext") -> Point2:
     return point
 
 
-def claim_drop_squad_unit(ctx: "BotContext", unit) -> None:
-    """Claim up to `PRISM_DROP_SQUAD_SIZE` freshly-warped Zealots/Stalkers
-    for the one-shot Prism drop-harass squad (see `escort_warp_prism`).
-
-    Must run synchronously inside `on_unit_created` - `roles.
-    assign_on_created` puts every fresh Zealot/Stalker into DEFENDING
-    first, and `defend_home`/`release_first_wave_then_stream` would sweep
-    it up on the very next combat tick, before a separate routine ever got
-    a chance to re-claim it.
-    """
-    if ctx.state.prism_drop_phase != "waiting_for_squad":
-        return
-    if unit.type_id not in (UnitTypeId.ZEALOT, UnitTypeId.STALKER):
-        return
-    if len(ctx.state.prism_drop_squad_tags) >= PRISM_DROP_SQUAD_SIZE:
-        return
-    ctx.mediator.assign_role(tag=unit.tag, role=UnitRole.DROP_UNITS_TO_LOAD)
-    ctx.state.prism_drop_squad_tags.add(unit.tag)
-    unit.hold_position()
-    if len(ctx.state.prism_drop_squad_tags) >= PRISM_DROP_SQUAD_SIZE:
-        ctx.state.prism_drop_phase = "loading"
-        ctx.state.prism_drop_phase_entered_at = ctx.bot.time
-        ctx.log(f"PRISM_DROP squad ready n={PRISM_DROP_SQUAD_SIZE}")
+def _pick_muster_squad(ctx: "BotContext", count: int = PRISM_DROP_SQUAD_SIZE) -> list:
+    """Up to `count` ATTACKING units closest to the muster point - used to
+    peel the drop-harass squad off the first wave at the exact moment it
+    commits (see `_drop_maybe_start`)."""
+    staging = chargelot_staging(ctx)
+    near = [
+        u
+        for u in ctx.units_in_role(UnitRole.ATTACKING)
+        if cy_distance_to(u.position, staging) <= CHARGELOT_MUSTER_RADIUS + 3.0
+    ]
+    near.sort(key=lambda u: cy_distance_to(u.position, staging))
+    return near[:count]
 
 
-def _drop_maybe_start(ctx: "BotContext", army_exists: bool) -> None:
-    """As soon as Wave 1 is promoted to ATTACKING and starts marching, opt
-    into the one-shot drop-harass sequence if the main wave hasn't
-    committed yet - see module docstring above `PRISM_DROP_SQUAD_SIZE`.
+def _drop_maybe_start(ctx: "BotContext") -> None:
+    """The instant the first wave commits ("attack timing" - see
+    `chargelot_attack`'s `chargelot_muster_committed_at`), peel
+    `PRISM_DROP_SQUAD_SIZE` units already standing at the muster into the
+    one-shot drop-harass squad instead of letting them march out with the
+    rest - see module docstring above `PRISM_DROP_SQUAD_SIZE`.
 
-    This has to fire on the *promotion* signal, not "Prism reached staging
-    phased and on-station" (which was the first cut) - `chargelot_attack`'s
-    own muster-commit check only needs the Prism within
-    `PRISM_ENEMY_PHASE_RANGE`, a wider/earlier condition than "phased and
-    on-station", and it runs before `escort_warp_prism` in `Combat.
-    routines` every frame. So by the time this Prism reaches on-station,
-    the main wave has *already* committed on that same frame in every
-    single observed game - there was never a real window there at all.
+    Used to instead wait for freshly-*warped* units to trickle in one at a
+    time before the squad could even start loading. Taking already-
+    mustered units at the commit instant means there's nothing left to
+    wait for, and the squad's departure can never race ahead of or lag
+    behind the main wave's own attack timing - they're the same event.
     """
     if ctx.state.prism_drop_phase is not None:
         return
-    if ctx.state.chargelot_muster_committed_at is not None:
+    if ctx.state.chargelot_muster_committed_at is None:
         return
-    if not army_exists:
+    squad = _pick_muster_squad(ctx)
+    if len(squad) < PRISM_DROP_SQUAD_SIZE:
+        ctx.state.prism_drop_phase = "done"
+        ctx.log(f"PRISM_DROP skipped - only {len(squad)} at muster to pick from")
         return
-    ctx.state.prism_drop_phase = "waiting_for_squad"
-    ctx.log("PRISM_DROP waiting for squad")
+    for unit in squad:
+        unit.hold_position()
+        ctx.state.prism_drop_squad_tags.add(unit.tag)
+        ctx.mediator.assign_role(tag=unit.tag, role=UnitRole.DROP_UNITS_TO_LOAD)
+    ctx.state.prism_drop_phase = "loading"
+    ctx.state.prism_drop_phase_entered_at = ctx.bot.time
+    ctx.log(f"PRISM_DROP peeled {PRISM_DROP_SQUAD_SIZE} from the muster, loading")
 
 
 def _drop_return_squad_home(ctx: "BotContext") -> None:
-    """Give the still-held squad back to the normal DEFENDING pool - used
-    when the drop is abandoned before ever taking off with cargo."""
+    """Give the still-held squad back to the main assault force - used when
+    the Prism retreats with them still aboard (abort mid-flight) and drops
+    them back off near staging instead of in the enemy base. They came
+    from the ATTACKING muster, not a fresh DEFENDING warp-in, so they
+    rejoin the attack rather than heading home."""
     for tag in ctx.state.prism_drop_squad_tags:
-        ctx.mediator.assign_role(tag=tag, role=UnitRole.DEFENDING)
+        ctx.mediator.assign_role(tag=tag, role=UnitRole.ATTACKING)
     ctx.state.prism_drop_squad_tags.clear()
 
 
 def _run_prism_drop(ctx: "BotContext", prism, grid) -> None:
     """Drive the one-shot drop-harass state machine for `prism`. Takes full
-    control of the unit for every phase except "waiting_for_squad" (where
-    the normal escort logic keeps it phased/positioned at staging while
-    `claim_drop_squad_unit` fills the squad in the background)."""
+    control of the unit for every phase - the squad is picked and claimed
+    in one shot by `_drop_maybe_start`, so there is no longer a waiting
+    phase where normal escort logic shares control of the Prism."""
     phase = ctx.state.prism_drop_phase
-    if phase == "waiting_for_squad":
-        return
 
     maneuver = CombatManeuver()
     maneuver.add(KeepUnitSafe(unit=prism, grid=grid))
@@ -426,10 +428,10 @@ def escort_warp_prism():
         enemy = ctx.mediator.get_enemy_nat
         can_warp = _warpgates_ready_to_warp(ctx)
         grid = ctx.mediator.get_air_grid
-        _drop_maybe_start(ctx, army is not None)
+        _drop_maybe_start(ctx)
 
         for prism in prisms:
-            if ctx.state.prism_drop_phase not in (None, "waiting_for_squad", "done"):
+            if ctx.state.prism_drop_phase not in (None, "done"):
                 _run_prism_drop(ctx, prism, grid)
                 continue
 

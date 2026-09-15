@@ -2,7 +2,7 @@
 the warp-in wave-batching thresholds `warp_wave_ready` / `warp_wave_imminent`
 (see `steps.common._chargelot_spawn` and `escort_warp_prism` for the two
 call sites this coordinates), and the Prism drop-harass state machine's
-pure/near-pure pieces (`_drop_maybe_start`, `claim_drop_squad_unit`,
+pure/near-pure pieces (`_drop_maybe_start`, `_pick_muster_squad`,
 `_drop_pick_point`, `_drop_threats_near`).
 
 Runs under pytest, or standalone with no test dependency:
@@ -13,10 +13,9 @@ Runs under pytest, or standalone with no test dependency:
 from __future__ import annotations
 
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from ares.consts import UnitRole
-from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
 
 from bot.core.context import BotContext
@@ -109,90 +108,77 @@ def _drop_ctx(*, muster_committed_at: float | None = None) -> BotContext:
     return ctx
 
 
-def _drop_unit(type_id: UnitTypeId = UnitTypeId.ZEALOT, tag: int = 1) -> MagicMock:
+def _attacker(tag: int, x: float) -> MagicMock:
     unit = MagicMock()
-    unit.type_id = type_id
     unit.tag = tag
-    unit.orders = []
+    unit.position = Point2((x, 0.0))
     return unit
 
 
-def test_drop_maybe_start_does_nothing_before_the_army_exists() -> None:
+def _staging_at_origin():
+    return patch.object(ps, "chargelot_staging", return_value=Point2((0.0, 0.0)))
+
+
+def test_pick_muster_squad_returns_the_closest_units_to_staging() -> None:
     ctx = _drop_ctx()
-    ps._drop_maybe_start(ctx, army_exists=False)
+    attackers = [_attacker(i, float(i)) for i in range(6)]
+    ctx.units_in_role = MagicMock(return_value=attackers)
+
+    with _staging_at_origin():
+        squad = ps._pick_muster_squad(ctx)
+
+    assert [u.tag for u in squad] == [0, 1, 2, 3], "closest 4, nearest first"
+
+
+def test_pick_muster_squad_ignores_units_far_from_staging() -> None:
+    ctx = _drop_ctx()
+    ctx.units_in_role = MagicMock(return_value=[_attacker(1, 999.0)])
+
+    with _staging_at_origin():
+        squad = ps._pick_muster_squad(ctx)
+
+    assert squad == []
+
+
+def test_drop_maybe_start_does_nothing_before_the_muster_commits() -> None:
+    ctx = _drop_ctx()
+    ps._drop_maybe_start(ctx)
     assert ctx.state.prism_drop_phase is None
 
 
-def test_drop_maybe_start_does_nothing_once_muster_has_committed() -> None:
-    ctx = _drop_ctx(muster_committed_at=280.0)
-    ps._drop_maybe_start(ctx, army_exists=True)
-    assert ctx.state.prism_drop_phase is None, "unsafe once the main wave committed"
-
-
-def test_drop_maybe_start_begins_waiting_for_squad_when_eligible() -> None:
-    ctx = _drop_ctx()
-    ps._drop_maybe_start(ctx, army_exists=True)
-    assert ctx.state.prism_drop_phase == "waiting_for_squad"
-
-
 def test_drop_maybe_start_never_restarts_once_already_decided() -> None:
-    ctx = _drop_ctx()
+    ctx = _drop_ctx(muster_committed_at=300.0)
     ctx.state.prism_drop_phase = "done"
-    ps._drop_maybe_start(ctx, army_exists=True)
+    ps._drop_maybe_start(ctx)
     assert ctx.state.prism_drop_phase == "done", "a one-shot maneuver never re-enters"
 
 
-def test_claim_drop_squad_unit_ignores_wrong_phase() -> None:
-    ctx = _drop_ctx()
-    ctx.state.prism_drop_phase = None
-    ps.claim_drop_squad_unit(ctx, _drop_unit())
-    assert ctx.state.prism_drop_squad_tags == set()
+def test_drop_maybe_start_peels_the_squad_off_the_muster_on_commit() -> None:
+    ctx = _drop_ctx(muster_committed_at=300.0)
+    attackers = [_attacker(i, float(i)) for i in range(6)]
+    ctx.units_in_role = MagicMock(return_value=attackers)
 
+    with _staging_at_origin():
+        ps._drop_maybe_start(ctx)
 
-def test_claim_drop_squad_unit_ignores_non_army_types() -> None:
-    ctx = _drop_ctx()
-    ctx.state.prism_drop_phase = "waiting_for_squad"
-    ps.claim_drop_squad_unit(ctx, _drop_unit(UnitTypeId.PROBE))
-    assert ctx.state.prism_drop_squad_tags == set()
-
-
-def test_claim_drop_squad_unit_holds_and_claims_zealots_and_stalkers() -> None:
-    ctx = _drop_ctx()
-    ctx.state.prism_drop_phase = "waiting_for_squad"
-    unit = _drop_unit(UnitTypeId.STALKER, tag=7)
-
-    ps.claim_drop_squad_unit(ctx, unit)
-
-    assert ctx.state.prism_drop_squad_tags == {7}
-    unit.hold_position.assert_called_once()
-    ctx.mediator.assign_role.assert_called_once_with(
-        tag=7, role=UnitRole.DROP_UNITS_TO_LOAD
-    )
-    assert ctx.state.prism_drop_phase == "waiting_for_squad", "not full yet"
-
-
-def test_claim_drop_squad_unit_transitions_to_loading_once_full() -> None:
-    ctx = _drop_ctx()
-    ctx.state.prism_drop_phase = "waiting_for_squad"
-
-    for tag in range(ps.PRISM_DROP_SQUAD_SIZE):
-        ps.claim_drop_squad_unit(ctx, _drop_unit(tag=tag))
-
-    assert len(ctx.state.prism_drop_squad_tags) == ps.PRISM_DROP_SQUAD_SIZE
+    assert ctx.state.prism_drop_squad_tags == {0, 1, 2, 3}
     assert ctx.state.prism_drop_phase == "loading"
     assert ctx.state.prism_drop_phase_entered_at == 300.0
+    for unit in attackers[:4]:
+        unit.hold_position.assert_called_once()
+    ctx.mediator.assign_role.assert_any_call(tag=0, role=UnitRole.DROP_UNITS_TO_LOAD)
+    ctx.mediator.assign_role.assert_any_call(tag=3, role=UnitRole.DROP_UNITS_TO_LOAD)
 
 
-def test_claim_drop_squad_unit_stops_once_full() -> None:
-    ctx = _drop_ctx()
-    ctx.state.prism_drop_phase = "waiting_for_squad"
-    for tag in range(ps.PRISM_DROP_SQUAD_SIZE):
-        ps.claim_drop_squad_unit(ctx, _drop_unit(tag=tag))
+def test_drop_maybe_start_skips_the_maneuver_if_too_few_units_are_mustered() -> None:
+    ctx = _drop_ctx(muster_committed_at=300.0)
+    ctx.units_in_role = MagicMock(return_value=[_attacker(1, 0.0)])
 
-    # Phase flipped to "loading", so a 5th fresh unit must not be claimed.
-    ps.claim_drop_squad_unit(ctx, _drop_unit(tag=99))
+    with _staging_at_origin():
+        ps._drop_maybe_start(ctx)
 
-    assert 99 not in ctx.state.prism_drop_squad_tags
+    assert ctx.state.prism_drop_squad_tags == set()
+    assert ctx.state.prism_drop_phase == "done", "not enough units - skip, don't wait"
 
 
 def _height_ctx(main_height: int, heights: dict) -> BotContext:

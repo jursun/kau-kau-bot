@@ -36,6 +36,7 @@ from bot.core.types import CombatRoutine, Gate, PointLocator
 from bot.intel import chargelot_metrics, enemy_army
 from bot.routines import targeting
 from bot.routines.protoss_support import (
+    CHARGELOT_MUSTER_RADIUS,
     PRISM_ENEMY_PHASE_RANGE,
     chargelot_staging,
 )
@@ -81,8 +82,6 @@ MUSTER_RADIUS: float = 4.0
 """How tightly a freshly-released wave must cluster at the rally point
 before it is let off to attack, rather than trickling toward the enemy
 as units peel off from wherever they were defending."""
-CHARGELOT_MUSTER_RADIUS: float = 7.0
-"""Wider muster for the ~12 Zealot first wave so it commits as one squad."""
 CHARGELOT_MUSTER_PRISM_TIMEOUT: float = 55.0
 """If form-up is ready but Prism never reaches enemy-nat range, commit anyway.
 Long enough for a late Prism (~6:00) to fly from Robo to staging after leave."""

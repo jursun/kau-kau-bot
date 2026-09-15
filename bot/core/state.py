@@ -211,15 +211,15 @@ class RunState:
     structures every frame for a full minute before this existed."""
     prism_drop_phase: str | None = None
     """One-shot Prism drop-harass state machine (see `routines.
-    protoss_support.escort_warp_prism`/`claim_drop_squad_unit`). `None`
-    until eligible; then "waiting_for_squad" -> "loading" -> "flying_in" ->
-    "dropping" -> "rephasing" -> "phased_in_base", with "retreating" as the
-    abort path back to "done". "done" and (unused, reserved) "aborted" are
-    terminal - normal escort resumes either way, and this never re-enters
-    since it is a once-per-game maneuver."""
+    protoss_support.escort_warp_prism`/`_drop_maybe_start`). `None` until
+    the main wave commits; then "loading" -> "flying_in" -> "dropping" ->
+    "rephasing" -> "phased_in_base", with "retreating" as the abort path
+    back to "done". "done" and (unused, reserved) "aborted" are terminal -
+    normal escort resumes either way, and this never re-enters since it is
+    a once-per-game maneuver."""
     prism_drop_squad_tags: set[int] = field(default_factory=set)
-    """Zealots/Stalkers claimed for the drop-harass squad - see
-    `claim_drop_squad_unit`."""
+    """Zealots/Stalkers peeled off the muster for the drop-harass squad -
+    see `_drop_maybe_start`."""
     prism_drop_target: Point2 | None = None
     """High-ground drop point in the enemy main, picked once
     (`_drop_pick_point`) and reused for the rest of the sequence."""
