@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 
 # Timings (game seconds) — Jason Chargelot brief 2026-09-12.
 ADEPT_NATURAL_HARASS_TIME: float = 3 * 60
+"""Earliest time the Adept focuses enemy-nat workers (after home release)."""
 ARMY_LEAVE_TIME: float = 5 * 60 + 15
 """When Prism leaves home rally for chargelot staging (matches build wave_gate)."""
 
@@ -967,6 +968,10 @@ def _adept_do_stutter(
 def harassing_adept():
     """Shade ahead while pathing; stutter-step while fighting; auto-teleport.
 
+    Holds at the home rally until the first Stalker completes (Reaper window),
+    then leaves for enemy-nat harass. Worker focus at the nat still waits
+    until `ADEPT_NATURAL_HARASS_TIME`.
+
     Cast drops the shade within ability range, then the shade is ordered to
     the Adept's real destination each frame. The Adept teleports when the
     shade expires (~7s). `CANCEL_ADEPTPHASESHIFT` aborts with NO teleport —
@@ -983,10 +988,21 @@ def harassing_adept():
         if not adepts:
             return
 
+        if (
+            not ctx.state.adept_harass_released
+            and ctx.bot.units(UnitTypeId.STALKER).amount >= 1
+        ):
+            ctx.state.adept_harass_released = True
+            _adept_log(ctx, "home release stalker ready")
+
+        hold_home = not ctx.state.adept_harass_released
         natural = ctx.mediator.get_enemy_nat
-        go_natural = ctx.bot.time >= ADEPT_NATURAL_HARASS_TIME
+        go_natural = (
+            not hold_home and ctx.bot.time >= ADEPT_NATURAL_HARASS_TIME
+        )
         grid = ctx.mediator.get_ground_grid
         home = ctx.mediator.get_own_nat
+        rally = targeting.rally_point(ctx)
 
         live_tags = {a.tag for a in adepts}
         for tag in list(ctx.state.adept_shade_cast_at):
@@ -1058,6 +1074,9 @@ def harassing_adept():
             elif chase_target is not None:
                 dest = chase_target.position
                 mode = "chase"
+            elif hold_home:
+                dest = rally
+                mode = "defend"
             else:
                 dest = natural
                 mode = "travel"

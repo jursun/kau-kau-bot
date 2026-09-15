@@ -23,11 +23,13 @@ _WARP_UNIT_TYPES: frozenset[UnitTypeId] = frozenset(
 SCOUT_PROBE_ALIVE_CHECK_S: float = 2 * 60  # 2:00
 ADEPT_ALIVE_CHECK_S: float = 4 * 60 + 30  # 4:30
 CHARGE_DEADLINE_S: float = 5 * 60 + 45  # 5:45
+WARPGATE_DEADLINE_S: float = 5 * 60 + 45  # 5:45
 STALKERS_DEADLINE_S: float = 4 * 60  # 4:00
 STALKERS_TARGET: int = 2
-ZEALOTS_DEADLINE_S: float = 5 * 60 + 10  # 5:10
-ZEALOTS_TARGET: int = 6
-PRISM_DEADLINE_S: float = 5 * 60 + 25  # 5:25
+FIRST_ZEALOT_DEADLINE_S: float = 4 * 60  # 4:00
+ZEALOTS_DEADLINE_S: float = 5 * 60 + 15  # 5:15
+ZEALOTS_TARGET: int = 8
+PRISM_DEADLINE_S: float = 5 * 60 + 15  # 5:15
 OBSERVER_DEADLINE_S: float = 5 * 60 + 45  # 5:45
 
 
@@ -119,8 +121,10 @@ def note_unit_created(ctx: "BotContext", unit: "Unit") -> None:
             m.time_2_stalkers = ctx.bot.time
     elif unit.type_id == UnitTypeId.ZEALOT:
         m.zealots_trained += 1
-        if m.zealots_trained == ZEALOTS_TARGET and m.time_6_zealots is None:
-            m.time_6_zealots = ctx.bot.time
+        if m.zealots_trained == 1 and m.time_first_zealot is None:
+            m.time_first_zealot = ctx.bot.time
+        if m.zealots_trained == ZEALOTS_TARGET and m.time_8_zealots is None:
+            m.time_8_zealots = ctx.bot.time
     elif unit.type_id == UnitTypeId.WARPPRISM:
         if m.time_prism_completed is None:
             m.time_prism_completed = ctx.bot.time
@@ -168,10 +172,12 @@ def note_unit_destroyed(ctx: "BotContext", unit_tag: int) -> None:
 
 
 def note_upgrade_complete(ctx: "BotContext", upgrade: UpgradeId) -> None:
-    """Record Charge completion time."""
+    """Record Charge / Warp Gate completion times."""
     m = ctx.state.chargelot_metrics
     if upgrade == UpgradeId.CHARGE and m.charge_complete_time is None:
         m.charge_complete_time = ctx.bot.time
+    elif upgrade == UpgradeId.WARPGATERESEARCH and m.warpgate_complete_time is None:
+        m.warpgate_complete_time = ctx.bot.time
 
 
 def note_adept_shade_abort(ctx: "BotContext") -> None:
@@ -267,6 +273,14 @@ def snapshot(ctx: "BotContext") -> dict[str, Any]:
             None if m.charge_complete_time is None else round(m.charge_complete_time, 1)
         ),
         "charge_by_545": _pass_by(m.charge_complete_time, CHARGE_DEADLINE_S, now),
+        "warpgate_complete_time": (
+            None
+            if m.warpgate_complete_time is None
+            else round(m.warpgate_complete_time, 1)
+        ),
+        "warpgate_by_545": _pass_by(
+            m.warpgate_complete_time, WARPGATE_DEADLINE_S, now
+        ),
         "stalkers_before_robo": m.stalkers_before_robo,
         "time_second_stalker": (
             None if m.time_second_stalker is None else round(m.time_second_stalker, 1)
@@ -277,7 +291,14 @@ def snapshot(ctx: "BotContext") -> dict[str, Any]:
         "stalkers_trained": m.stalkers_trained,
         "stalkers_2_by_400": _pass_by(m.time_2_stalkers, STALKERS_DEADLINE_S, now),
         "zealots_trained": m.zealots_trained,
-        "zealots_6_by_510": _pass_by(m.time_6_zealots, ZEALOTS_DEADLINE_S, now),
+        "time_first_zealot": (
+            None if m.time_first_zealot is None else round(m.time_first_zealot, 1)
+        ),
+        "zealot1_by_400": _pass_by(m.time_first_zealot, FIRST_ZEALOT_DEADLINE_S, now),
+        "time_8_zealots": (
+            None if m.time_8_zealots is None else round(m.time_8_zealots, 1)
+        ),
+        "zealots_8_by_515": _pass_by(m.time_8_zealots, ZEALOTS_DEADLINE_S, now),
         "prism_produced": m.prism_produced,
         "time_prism": None if m.time_prism is None else round(m.time_prism, 1),
         "time_prism_phased": (
@@ -288,7 +309,7 @@ def snapshot(ctx: "BotContext") -> dict[str, Any]:
             if m.time_prism_completed is None
             else round(m.time_prism_completed, 1)
         ),
-        "prism_by_525": _pass_by(m.time_prism_completed, PRISM_DEADLINE_S, now),
+        "prism_by_515": _pass_by(m.time_prism_completed, PRISM_DEADLINE_S, now),
         "observer_produced": m.observer_produced,
         "time_observer": (
             None if m.time_observer is None else round(m.time_observer, 1)
@@ -346,11 +367,13 @@ def on_game_end(ctx: "BotContext") -> None:
         f"probe_alive@2:00={snap['scout_probe_alive_at_200']} "
         f"adept_alive@4:30={snap['adept_alive_at_430']} "
         f"charge_by@5:45={snap['charge_by_545']} "
+        f"warpgate_by@5:45={snap['warpgate_by_545']} "
         f"stalkers2_by@4:00={snap['stalkers_2_by_400']}"
         f"({snap['stalkers_trained']} trained) "
-        f"zealots6_by@5:10={snap['zealots_6_by_510']}"
+        f"zealot1_by@4:00={snap['zealot1_by_400']} "
+        f"zealots8_by@5:15={snap['zealots_8_by_515']}"
         f"({snap['zealots_trained']} trained) "
-        f"prism_by@5:25={snap['prism_by_525']} "
+        f"prism_by@5:15={snap['prism_by_515']} "
         f"observer_by@5:45={snap['observer_by_545']}",
     )
     bot.chargelot_regression_metrics = snap

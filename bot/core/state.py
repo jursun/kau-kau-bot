@@ -78,14 +78,18 @@ class ChargelotMetrics:
     adept_death_time: float | None = None
     """Game time the harassing Adept died, or None if it survived."""
     charge_complete_time: float | None = None
+    warpgate_complete_time: float | None = None
+    """Game time Warp Gate research finished."""
     stalkers_trained: int = 0
     """Cumulative Stalkers trained (never decremented on death)."""
     time_2_stalkers: float | None = None
     """Game time the 2nd Stalker was trained."""
     zealots_trained: int = 0
     """Cumulative Zealots trained (never decremented on death)."""
-    time_6_zealots: float | None = None
-    """Game time the 6th Zealot was trained."""
+    time_first_zealot: float | None = None
+    """Game time the 1st Zealot was trained (4:00 home-defense check)."""
+    time_8_zealots: float | None = None
+    """Game time the 8th Zealot was trained (5:15 leave check)."""
     muster_commit_time: float | None = None
     """Game time when Chargelot muster released the first wave."""
     muster_form_ready_since: float | None = None
@@ -196,6 +200,9 @@ class RunState:
     Cleared once weapon_cooldown rises so we do not re-issue and cancel windup."""
     adept_last_action: str | None = None
     """Last ADEPT action log line — only re-log on change."""
+    adept_harass_released: bool = False
+    """Latches True once the first Stalker completes — Adept may leave home
+    defense for natural harass (stays released even if that Stalker dies)."""
     chargelot_prism_gas_bank: bool = False
     """Latched once Charge gas covers a Prism — stay peeled for minerals
     until the Prism is started (avoids 3↔1 thrash when Stalkers spend gas)."""

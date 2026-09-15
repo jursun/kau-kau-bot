@@ -96,16 +96,23 @@ def test_note_unit_created_tracks_stalker_count_and_deadline_timestamp() -> None
 def test_note_unit_created_tracks_zealot_count_and_deadline_timestamp() -> None:
     ctx = _ctx(time=0.0)
     m = ctx.state.chargelot_metrics
-    for i in range(5):
-        ctx.bot.time = 100.0 + i
+    ctx.bot.time = 200.0
+    cm.note_unit_created(ctx, _unit(UnitTypeId.ZEALOT, tag=0))
+    assert m.zealots_trained == 1
+    assert m.time_first_zealot == 200.0
+    assert m.time_8_zealots is None
+
+    for i in range(1, 7):
+        ctx.bot.time = 250.0 + i
         cm.note_unit_created(ctx, _unit(UnitTypeId.ZEALOT, tag=i))
-    assert m.zealots_trained == 5
-    assert m.time_6_zealots is None
+    assert m.zealots_trained == 7
+    assert m.time_8_zealots is None
+    assert m.time_first_zealot == 200.0, "first-zealot timestamp latches"
 
     ctx.bot.time = 310.0
     cm.note_unit_created(ctx, _unit(UnitTypeId.ZEALOT, tag=99))
-    assert m.zealots_trained == 6
-    assert m.time_6_zealots == 310.0
+    assert m.zealots_trained == 8
+    assert m.time_8_zealots == 310.0
 
 
 def test_note_unit_created_tracks_prism_completion_time() -> None:
@@ -205,10 +212,18 @@ def test_note_upgrade_complete_records_charge_time() -> None:
     assert ctx.state.chargelot_metrics.charge_complete_time == 330.0
 
 
+def test_note_upgrade_complete_records_warpgate_time() -> None:
+    ctx = _ctx(time=320.0)
+    cm.note_upgrade_complete(ctx, UpgradeId.WARPGATERESEARCH)
+    assert ctx.state.chargelot_metrics.warpgate_complete_time == 320.0
+    assert ctx.state.chargelot_metrics.charge_complete_time is None
+
+
 def test_note_upgrade_complete_ignores_other_upgrades() -> None:
     ctx = _ctx(time=330.0)
-    cm.note_upgrade_complete(ctx, UpgradeId.WARPGATERESEARCH)
+    cm.note_upgrade_complete(ctx, UpgradeId.PROTOSSGROUNDWEAPONSLEVEL1)
     assert ctx.state.chargelot_metrics.charge_complete_time is None
+    assert ctx.state.chargelot_metrics.warpgate_complete_time is None
 
 
 def test_note_upgrade_complete_only_latches_first_charge() -> None:
@@ -219,18 +234,28 @@ def test_note_upgrade_complete_only_latches_first_charge() -> None:
     assert ctx.state.chargelot_metrics.charge_complete_time == 330.0
 
 
+def test_note_upgrade_complete_only_latches_first_warpgate() -> None:
+    ctx = _ctx(time=320.0)
+    cm.note_upgrade_complete(ctx, UpgradeId.WARPGATERESEARCH)
+    ctx.bot.time = 400.0
+    cm.note_upgrade_complete(ctx, UpgradeId.WARPGATERESEARCH)
+    assert ctx.state.chargelot_metrics.warpgate_complete_time == 320.0
+
+
 # --- snapshot -----------------------------------------------------------------
 
 
-def test_snapshot_reports_all_seven_pass_fail_checks() -> None:
+def test_snapshot_reports_all_pass_fail_checks() -> None:
     ctx = _ctx(time=420.0)  # 7:00 - past every deadline in the spec
     m = ctx.state.chargelot_metrics
 
     m.scout_probe_death_time = None  # survived
     m.adept_death_time = 100.0  # died early - should fail the 4:30 check
     m.charge_complete_time = 300.0  # by 5:45 (345s) - pass
+    m.warpgate_complete_time = 350.0  # after 5:45 (345s) - fail
     m.time_2_stalkers = 250.0  # after 4:00 (240s) - fail
-    m.time_6_zealots = 300.0  # by 5:10 (310s) - pass
+    m.time_first_zealot = 230.0  # by 4:00 (240s) - pass
+    m.time_8_zealots = 300.0  # by 5:15 (315s) - pass
     m.time_prism_completed = None  # never built - fail
     m.time_observer = 340.0  # by 5:45 (345s) - pass
 
@@ -239,9 +264,11 @@ def test_snapshot_reports_all_seven_pass_fail_checks() -> None:
     assert snap["scout_probe_alive_at_200"] is True
     assert snap["adept_alive_at_430"] is False
     assert snap["charge_by_545"] is True
+    assert snap["warpgate_by_545"] is False
     assert snap["stalkers_2_by_400"] is False
-    assert snap["zealots_6_by_510"] is True
-    assert snap["prism_by_525"] is False
+    assert snap["zealot1_by_400"] is True
+    assert snap["zealots_8_by_515"] is True
+    assert snap["prism_by_515"] is False
     assert snap["observer_by_545"] is True
 
 
@@ -252,9 +279,11 @@ def test_snapshot_pass_fail_is_none_when_game_ended_before_deadline() -> None:
     assert snap["scout_probe_alive_at_200"] is True  # 200 >= 120, never died
     assert snap["adept_alive_at_430"] is None  # 200 < 270
     assert snap["charge_by_545"] is None  # 200 < 345
+    assert snap["warpgate_by_545"] is None  # 200 < 345
     assert snap["stalkers_2_by_400"] is None  # 200 < 240
-    assert snap["zealots_6_by_510"] is None  # 200 < 310
-    assert snap["prism_by_525"] is None  # 200 < 325
+    assert snap["zealot1_by_400"] is None  # 200 < 240
+    assert snap["zealots_8_by_515"] is None  # 200 < 315
+    assert snap["prism_by_515"] is None  # 200 < 315
     assert snap["observer_by_545"] is None  # 200 < 345
 
 

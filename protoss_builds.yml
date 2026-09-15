@@ -71,26 +71,31 @@ Builds:
             - 17 gas
             - 20 expand
             - 20 core @ ramp
-            - 21 gas
-            # Wall FirstPylon — powers Gateways 2-3 + Robo in ThreeByThreesWall.
-            # `@ nat` alone often lands too far from the wall choke.
-            - 22 pylon @ nat_wall
+            # Wall FirstPylon before 2nd gas — powers Gateways 2-3 + Robo in
+            # ThreeByThreesWall. `@ nat` alone often lands too far from the
+            # wall choke.
+            - 20 pylon @ nat_wall
             - 22 adept
             - 22 chrono @ gateway
+            # Stalker #1 queues behind the Adept so it starts as soon as the
+            # Gateway frees (~2:25-2:35) - answer to early Reaper harass.
+            - 22 stalker
+            # Twilight before the Zealot so the Council starts while S1 trains
+            # (ares completes unit steps on queue, not on finish).
             - 22 twilightcouncil
+            # 2nd gas after Adept/S1/Twilight so it does not delay wall Pylon
+            # or the Reaper-window units.
+            - 23 gas
+            # Mineral-only third home body: uses the Gateway as soon as S1
+            # finishes (~3:00) instead of idling until Charge is researched.
+            # Chrono so Zealot frees the Gate early enough for S2 by 4:00.
+            - 24 zealot
+            - 24 chrono @ gateway
             - 24 warpgateresearch
             - 26 charge
             - 26 chrono @ twilightcouncil
+            # Stalker #2 before Warp Gate morph completes - ares will not
+            # train from an idle Gateway once WG finishes until it morphs.
             - 26 stalker
-            # Second Stalker before Warp Gate morph: ares will not train from an
-            # idle Gateway once WG finishes until it morphs, so a *later* Stalker
-            # step can stall the opening. Queue #2 here while the Gate still
-            # trains, so Robo (gated on 2 Stalkers) is not delayed to ~202s.
-            - 28 stalker
-            # Boosts this Stalker's Gateway. Adds ~20-25s to when the opening
-            # completes (build_completed, so also macro_steps/Robo) - the
-            # 3rd chrono in a row this late outruns energy regen a bit.
-            # Verified: no cascading effect on Adept/Charge since this is the
-            # last step, not one they wait behind.
             - 28 chrono @ gateway
             # Stop here — extra units come from spawn_army after the opening.
