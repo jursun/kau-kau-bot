@@ -39,3 +39,10 @@ def enemy_army_type_ids(ctx: BotContext) -> frozenset[Any]:
 def filter_non_workers(units: Iterable[Any]) -> list[Any]:
     """Same worker strip for an arbitrary unit iterable."""
     return [unit for unit in units if unit.type_id not in WORKER_TYPES]
+
+
+def enemy_has_air_units(ctx: BotContext) -> bool:
+    """True if any currently-tracked enemy combat unit is flying - gates
+    Macro Zerg's reactive Spire/Corruptor branch (see `steps.zerg.tech_up`/
+    `spawn_macro_army`)."""
+    return any(unit.is_flying for unit in enemy_army(ctx))

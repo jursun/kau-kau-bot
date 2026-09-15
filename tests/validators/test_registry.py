@@ -6,22 +6,20 @@ from __future__ import annotations
 
 from tests.validators.base_validator import BaseValidator
 from tests.validators.four_rax_proxy_validator import FourRaxProxyValidator
+from tests.validators.macro_zerg_validator import MacroZergValidator
 from tests.validators.registry import (
     unknown_validator_build_names,
     unregistered_build_names,
     validator_for_build,
 )
-from tests.validators.speedling_all_in_validator import SpeedlingAllInValidator
 from tests.validators.two_base_chargelot_all_in_validator import (
     TwoBaseChargelotAllInValidator,
 )
-from tests.validators.upgrade_rush_validator import UpgradeRushValidator
 
 
 def test_validator_for_build_resolves_every_registered_build() -> None:
     assert validator_for_build("Four Rax Proxy") is FourRaxProxyValidator
-    assert validator_for_build("UpgradeRush") is UpgradeRushValidator
-    assert validator_for_build("Speedling All-In") is SpeedlingAllInValidator
+    assert validator_for_build("Macro Zerg") is MacroZergValidator
     assert (
         validator_for_build("2base Chargelot All-In")
         is TwoBaseChargelotAllInValidator

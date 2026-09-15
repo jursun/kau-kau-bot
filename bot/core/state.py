@@ -158,6 +158,10 @@ class RunState:
     defender_hold: dict[int, Point2] = field(default_factory=dict)
     """DEFENDING unit tag → sticky hold Point2 (matched to live holds by
     nearest, not list index — townhall iteration order is unstable)."""
+    swarm_host_hold: dict[int, Point2] = field(default_factory=dict)
+    """Swarm Host tag → sticky forward hold Point2 - same matching scheme as
+    `defender_hold`, via the same `routines.combat._sticky_hold_point`, one
+    slot per owned base (see `routines.combat.dig_in_swarm_hosts`)."""
     chargelot_wave_gate_ready_since: float | None = None
     """When wave_gate first passed while under wave1_min (force-leave clock)."""
     chargelot_warp_wave_open: bool = False

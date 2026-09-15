@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ares.behaviors.macro import ExpansionController, MacroPlan
+from ares.behaviors.macro import ExpansionController, MacroPlan, SpawnController, TechUp
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 
@@ -20,7 +20,9 @@ from bot.behaviors.zerg import (
     TrainQueens,
 )
 from bot.builds.definition import _always
+from bot.consts import ROACH_SWARM_HOST_COMP, ROACH_SWARM_HOST_CORRUPTOR_COMP
 from bot.core.types import Gate, MacroStep
+from bot.intel.army import enemy_has_air_units
 from bot.steps import common
 
 if TYPE_CHECKING:
@@ -247,6 +249,63 @@ def overseers(per_wave: int = 1, maximum: int = 3, gate: Gate = _always) -> Macr
         if target <= 0:
             return None
         return MorphOverseers(to_count=target)
+
+    return step
+
+
+def tech_up(desired_tech: UnitTypeId, gate: Gate = _always) -> MacroStep:
+    """Tech toward a structure whose prerequisite chain `TechUp` understands
+    (e.g. Infestation Pit / Spire, both of which need Lair first) - handles
+    the Hatchery->Lair morph internally, so no separate Lair step is needed.
+
+    `common.structure()` can't be used for this: `BuildStructure` (which it
+    wraps) declines outright if a prerequisite is missing rather than
+    building it - `LAIR`/`HIVE` aren't even in ares' own
+    `STRUCTURE_TO_BUILDING_SIZE` dict, so it categorically cannot build
+    them. `TechUp` walks `UNIT_TECH_REQUIREMENT` itself and morphs
+    whatever's missing along the way (Lair included) before attempting
+    `desired_tech`.
+    """
+
+    def step(ctx: "BotContext"):
+        if not gate(ctx):
+            return None
+        return TechUp(desired_tech=desired_tech, base_location=ctx.production_location)
+
+    return step
+
+
+def spawn_macro_army(gate: Gate = _always) -> MacroStep:
+    """Roach/Swarm Host by default (see `bot.consts.ROACH_SWARM_HOST_COMP`).
+
+    While Roach Warren is done but Infestation Pit isn't, `SpawnController`'s
+    single-tech-type overproduce escape hatch no longer applies (both
+    Zergling and Roach are tech-ready at that point), so the raw 65/25/10
+    comp would stall Roach production once its slice of the *reachable*
+    two-member population is met - fall back to a renormalized 2-member
+    comp for that window instead. Once Spire is up and the enemy has shown
+    air (`intel.army.enemy_has_air_units`), fold Corruptor in.
+    """
+
+    _roach_only_comp: dict[UnitTypeId, dict[str, float | int]] = {
+        UnitTypeId.ROACH: {"proportion": 0.87, "priority": 0},
+        UnitTypeId.ZERGLING: {"proportion": 0.13, "priority": 2},
+    }
+
+    def step(ctx: "BotContext"):
+        if not gate(ctx):
+            return None
+        roach_ready = ctx.bot.tech_requirement_progress(UnitTypeId.ROACH) >= 1.0
+        swarm_host_ready = (
+            ctx.bot.tech_requirement_progress(UnitTypeId.SWARMHOSTMP) >= 1.0
+        )
+        if roach_ready and not swarm_host_ready:
+            comp = _roach_only_comp
+        elif ctx.bot.structures(UnitTypeId.SPIRE).ready and enemy_has_air_units(ctx):
+            comp = ROACH_SWARM_HOST_CORRUPTOR_COMP
+        else:
+            comp = ROACH_SWARM_HOST_COMP
+        return SpawnController(dict(comp), spawn_target=None)
 
     return step
 

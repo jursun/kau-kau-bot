@@ -8,6 +8,7 @@ from bot.intel.army import (
     enemy_army,
     enemy_army_tags,
     enemy_army_type_ids,
+    enemy_has_air_units,
     filter_non_workers,
 )
 from bot.intel.notes import OpponentNotes, get_opponent_id
@@ -25,6 +26,7 @@ __all__ = [
     "enemy_army",
     "enemy_army_tags",
     "enemy_army_type_ids",
+    "enemy_has_air_units",
     "filter_non_workers",
     "get_opponent_id",
     "idle_ready_townhalls",

@@ -50,6 +50,25 @@ CHARGELOT_FLOOD_COMP: dict[UnitTypeId, dict[str, float | int]] = {
     UnitTypeId.ZEALOT: {"proportion": 0.6, "priority": 1},
 }
 
+# Macro Zerg: Roach frontline, Swarm Host for cheap map-control chip damage,
+# a Zergling trickle for creep escort / worker-line defense. See
+# `steps.zerg.spawn_macro_army` for the phased fallback used before
+# Infestation Pit is up, and the Corruptor variant below.
+ROACH_SWARM_HOST_COMP: dict[UnitTypeId, dict[str, float | int]] = {
+    UnitTypeId.ROACH: {"proportion": 0.65, "priority": 0},
+    UnitTypeId.SWARMHOSTMP: {"proportion": 0.25, "priority": 1},
+    UnitTypeId.ZERGLING: {"proportion": 0.10, "priority": 2},
+}
+
+# Once Spire is up and the enemy has shown air (see `intel.army.
+# enemy_has_air_units`), fold Corruptor in at the other units' expense.
+ROACH_SWARM_HOST_CORRUPTOR_COMP: dict[UnitTypeId, dict[str, float | int]] = {
+    UnitTypeId.ROACH: {"proportion": 0.55, "priority": 0},
+    UnitTypeId.SWARMHOSTMP: {"proportion": 0.20, "priority": 1},
+    UnitTypeId.CORRUPTOR: {"proportion": 0.15, "priority": 0},
+    UnitTypeId.ZERGLING: {"proportion": 0.10, "priority": 2},
+}
+
 # Ordered upgrade path. `UpgradeController` walks this list in order and
 # auto-techs (evo chamber -> lair -> hive) for whatever it can't research yet.
 LING_SPEED_ONLY: tuple[UpgradeId, ...] = (UpgradeId.ZERGLINGMOVEMENTSPEED,)
@@ -90,3 +109,10 @@ PROXY_CREW_ROLE: UnitRole = UnitRole.GATE_KEEPER
 # Role for the continuous Depot SCV (`steps.terran.continuous_main_depots`).
 # Same unused-slot trick: must not sit in GATHERING or BUILDING.
 SUPPLY_BUILDER_ROLE: UnitRole = UnitRole.CONTROL_GROUP_ONE
+
+# Macro Zerg: Swarm Host and Corruptor both need to stay out of
+# DEFENDING/ATTACKING (see `core.roles.SUPPORT_ROLES`) so `release_waves()`
+# never sweeps them into a squad muster — same unused-slot trick as above,
+# on the next two free generic `UnitRole` control-group slots.
+SWARM_HOST_ROLE: UnitRole = UnitRole.CONTROL_GROUP_TWO
+CORRUPTOR_ROLE: UnitRole = UnitRole.CONTROL_GROUP_THREE

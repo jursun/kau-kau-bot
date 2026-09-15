@@ -4,7 +4,7 @@ report shape is each concrete validator's own test file instead.
 
 Drives `on_step` against the duck-typed fakes in `_fakes.py`, then inspects
 the tracking output. Most tests construct `BaseValidator` directly; a few
-needing a Stage 2/3/4 key use `UpgradeRushValidator` as a convenient
+needing a Stage 2/3/4 key use `MacroZergValidator` as a convenient
 four-stage concrete class.
 """
 
@@ -16,7 +16,7 @@ from sc2.ids.upgrade_id import UpgradeId
 
 from tests.validators._fakes import FakeAI, _Counted, _FakeUnit
 from tests.validators.base_validator import BaseValidator
-from tests.validators.upgrade_rush_validator import UpgradeRushValidator
+from tests.validators.macro_zerg_validator import MacroZergValidator
 
 # ── Stage 1: carried over from ZergRushValidator ────────────────────────────
 
@@ -65,7 +65,7 @@ def test_supply_block_after_grace_period_still_counts() -> None:
 
 
 def test_pool_timing_deadline_comes_from_the_build_not_a_shared_constant() -> None:
-    """A hatch-before-pool build (e.g. `UpgradeRush`, `pool_deadline=75.0`)
+    """A hatch-before-pool build (e.g. `Macro Zerg`, `pool_deadline=110.0`)
     pools later than an immediate-pool one by design - the check must use
     that build's own `ctx.build.pool_deadline`."""
     ai = FakeAI(pool_deadline=75.0)
@@ -277,7 +277,7 @@ def test_wave_release_records_size_time_and_next_expected_minimum() -> None:
     ai = FakeAI(upgrades=())
     ai.ctx.build.combat.wave1_min = 20
     ai.ctx.build.combat.wave_growth = 1.25
-    validator = UpgradeRushValidator(ai)
+    validator = MacroZergValidator(ai)
 
     wave1_units = [_FakeUnit(i) for i in range(21)]
     ai.time = 300.0
@@ -326,7 +326,7 @@ def test_wave_records_our_supply_against_enemy_army_supply() -> None:
     # these out itself - see `_enemy_army_supply`'s docstring) must not
     # count as army supply.
     ai.mediator.get_cached_enemy_army.append(_FakeUnit(950, type_id=UnitTypeId.DRONE))
-    validator = UpgradeRushValidator(ai)
+    validator = MacroZergValidator(ai)
 
     wave1_units = [_FakeUnit(i, type_id=UnitTypeId.ZERGLING) for i in range(20)]
     ai.time = 300.0
@@ -347,7 +347,7 @@ def test_wave_records_our_supply_against_enemy_army_supply() -> None:
 
 def test_no_wave_ever_released_fails_stage_4() -> None:
     ai = FakeAI(upgrades=())
-    validator = UpgradeRushValidator(ai)
+    validator = MacroZergValidator(ai)
     validator.on_step(0)
 
     result = validator.validate()

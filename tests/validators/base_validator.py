@@ -5,21 +5,21 @@ every build's own validator is built from.
 report formatting. It has no opinion on which stages a report shows or what
 Stage 4 is called — that decision belongs to each build's own, separate
 validator class under `tests/validators/` (`FourRaxProxyValidator`,
-`UpgradeRushValidator`, `SpeedlingAllInValidator`, and whatever comes next).
+`MacroZergValidator`, `TwoBaseChargelotAllInValidator`, and whatever comes
+next).
 See `tests/validators/registry.py` for how a build's name maps to its
 validator class, and any of the concrete per-build files (they're all
 short) for what a new build actually has to add.
 
-This split exists because of a real bug: `Four Rax Proxy`, `UpgradeRush` and
-`Speedling All-In` used to all run through one shared class
-(`tests.upgrade_rush_validator.UpgradeRushValidator`), and a change made
-"for" one build's report (adding Stage 1B, renaming Stage 4) silently
-changed the other two builds' reports too, since there was only one
-`validate()` method to edit. With plans for up to a dozen builds per race,
-the fix isn't "be more careful next time" — it's "make that impossible":
-each build's `validate()` now lives in its own file, so a bug or a change in
-Four Rax Proxy's report cannot touch UpgradeRush's. There is no shared
-method left for a change to leak through.
+This split exists because of a real bug: `Four Rax Proxy` and two Zerg
+builds (since replaced by `Macro Zerg`) used to all run through one shared
+class, and a change made "for" one build's report (adding Stage 1B,
+renaming Stage 4) silently changed the other builds' reports too, since
+there was only one `validate()` method to edit. With plans for up to a
+dozen builds per race, the fix isn't "be more careful next time" — it's
+"make that impossible": each build's `validate()` now lives in its own
+file, so a bug or a change in Four Rax Proxy's report cannot touch Macro
+Zerg's. There is no shared method left for a change to leak through.
 
 Every check below still reads its thresholds and gates off `ai.ctx.build` —
 worker/gas targets, pool deadline, wave1_min, wave_growth, the Evolution
@@ -110,6 +110,8 @@ STRUCTURE_LABELS: Dict[UnitTypeId, str] = {
     UnitTypeId.LAIR: "Lair",
     UnitTypeId.INFESTATIONPIT: "Infestation Pit",
     UnitTypeId.HIVE: "Hive",
+    UnitTypeId.ROACHWARREN: "Roach Warren",
+    UnitTypeId.SPIRE: "Spire",
 }
 
 
@@ -630,9 +632,9 @@ class BaseValidator:
         validator class yet (see `registry.validator_for_build`). A build
         with more to report than that (Proxy Crew Choreography, tech
         structures, upgrades) gets its own subclass overriding this method —
-        see `FourRaxProxyValidator` / `UpgradeRushValidator` for the two
-        existing shapes, and either as a template for a new build's own
-        validator file.
+        see `FourRaxProxyValidator` / `MacroZergValidator` for two existing
+        shapes, and either as a template for a new build's own validator
+        file.
         """
         stages: Dict[str, List[StepResult]] = {
             "Stage 1: Opening Economy": self._validate_economy(),

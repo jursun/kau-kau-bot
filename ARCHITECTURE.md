@@ -109,8 +109,9 @@ acts, so exactly one macro action happens per frame and earlier entries in
 must run every frame, including during the opening.
 
 **`Gate`** — `(ctx) -> bool`. Compose with `gates.all_of` / `any_of` /
-`negate` instead of writing new ones. `UpgradeRush`'s "leave 10s before +1/+1
-lands, but only for wave 1" is three existing gates combined, not new code.
+`negate` instead of writing new ones. `2base Chargelot All-In`'s "leave once
+Charge is done and it's past 5:15" is two existing gates combined, not new
+code.
 
 **`CombatRoutine`** — `(ctx) -> None`. Registers its own maneuvers. Wave
 release is itself a routine, so a purely defensive build simply omits it.
@@ -325,12 +326,13 @@ regardless of what build is running.
   fact stands on its own.
 - **A validator threshold calibrated for one build silently breaks for
   another.** The validator's "Pool Timing" check used to compare against a
-  single hardcoded `POOL_DEADLINE = 50.0`, which fit `Speedling All-In`'s
-  immediate pool but not `UpgradeRush`'s deliberate hatch-before-pool
-  opening (expand at 15, pool at 16 — pool routinely lands around 60s by
-  design, not by lateness). Fixed by adding `BuildDefinition.pool_deadline`
-  (default 50.0) so each build states its own expectation; `UpgradeRush`
-  sets `pool_deadline=75.0`. Same lesson as the module's own stated
+  single hardcoded `POOL_DEADLINE = 50.0`, which fit an immediate-pool
+  opening but not a deliberate hatch-before-pool one (expand first, pool
+  routinely landing 60-100s in by design, not by lateness — the original
+  case was `UpgradeRush`/`Speedling All-In`, since replaced by `Macro Zerg`,
+  which has the same shape and states `pool_deadline=110.0`). Fixed by
+  adding `BuildDefinition.pool_deadline` (default 50.0) so each build
+  states its own expectation. Same lesson as the module's own stated
   philosophy elsewhere: a number the validator enforces belongs on the
   build, not baked into the validator. (`POOL_DEADLINE` on the validator
   class — originally kept as a fallback for a window where `ctx` wasn't set

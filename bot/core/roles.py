@@ -13,12 +13,21 @@ from sc2.data import Race
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.unit import Unit
 
+from bot.consts import CORRUPTOR_ROLE, SWARM_HOST_ROLE
+
 if TYPE_CHECKING:
     from bot.core.context import BotContext
 
 # Non-army support units that want a specific role on creation.
 SUPPORT_ROLES: dict[Race, dict[UnitTypeId, UnitRole]] = {
-    Race.Zerg: {UnitTypeId.QUEEN: UnitRole.QUEEN_INJECT},
+    Race.Zerg: {
+        UnitTypeId.QUEEN: UnitRole.QUEEN_INJECT,
+        # Keep these out of DEFENDING/ATTACKING (see Protoss's Prism/Observer/
+        # Adept below) - `release_waves()` would otherwise promote a Swarm
+        # Host or Corruptor straight into a squad muster it must never join.
+        UnitTypeId.SWARMHOSTMP: SWARM_HOST_ROLE,
+        UnitTypeId.CORRUPTOR: CORRUPTOR_ROLE,
+    },
     Race.Terran: {},
     Race.Protoss: {
         # Keep these out of DEFENDING/ATTACKING or they suicide with the ball

@@ -14,6 +14,7 @@ from ares.behaviors.combat.individual import (
     KeepUnitSafe,
     MoveToSafeTarget,
     ShootTargetInRange,
+    UseAbility,
 )
 from ares.consts import UnitRole, UnitTreeQueryType
 from cython_extensions import (
@@ -26,12 +27,13 @@ from cython_extensions import (
 )
 from sc2.ids.ability_id import AbilityId
 from sc2.ids.unit_typeid import UnitTypeId
+from sc2.ids.upgrade_id import UpgradeId
 from sc2.position import Point2
 from sc2.unit import Unit
 from sc2.units import Units
 
 from bot.builds.definition import _always
-from bot.consts import IGNORED_ENEMY_TYPES, WORKER_TYPES
+from bot.consts import CORRUPTOR_ROLE, IGNORED_ENEMY_TYPES, SWARM_HOST_ROLE, WORKER_TYPES
 from bot.core.types import CombatRoutine, Gate, PointLocator
 from bot.intel import chargelot_metrics, enemy_army
 from bot.routines import targeting
@@ -412,17 +414,25 @@ def _kite_maneuver(
 
 
 def _sticky_hold_point(
-    ctx: "BotContext", unit: Unit, holds: list[Point2]
+    ctx: "BotContext",
+    unit: Unit,
+    holds: list[Point2],
+    hold_map: dict[int, Point2],
+    log_label: str = "DEFEND",
 ) -> Point2:
-    """Stable hold per defender — match by Point2, not list index."""
-    assigned = ctx.state.defender_hold.get(unit.tag)
+    """Stable hold per unit — match by Point2, not list index. Shared by
+    `defend_home` (`ctx.state.defender_hold`) and `dig_in_swarm_hosts`
+    (`ctx.state.swarm_host_hold`) — same load-balancing problem either way:
+    match an existing assignment first, else pick whichever point currently
+    has the fewest occupants."""
+    assigned = hold_map.get(unit.tag)
     if assigned is not None:
         nearest = min(holds, key=lambda h: cy_distance_to_squared(assigned, h))
         if cy_distance_to(assigned, nearest) <= 2.5:
-            ctx.state.defender_hold[unit.tag] = nearest
+            hold_map[unit.tag] = nearest
             return nearest
     loads = [0] * len(holds)
-    for other_tag, other_pt in ctx.state.defender_hold.items():
+    for other_tag, other_pt in hold_map.items():
         if other_tag == unit.tag:
             continue
         nearest_i = min(
@@ -432,9 +442,9 @@ def _sticky_hold_point(
         if cy_distance_to(other_pt, holds[nearest_i]) <= 2.5:
             loads[nearest_i] += 1
     best = min(range(len(holds)), key=lambda i: loads[i])
-    ctx.state.defender_hold[unit.tag] = holds[best]
+    hold_map[unit.tag] = holds[best]
     ctx.log(
-        f"DEFEND hold slot={best}/{len(holds)} "
+        f"{log_label} hold slot={best}/{len(holds)} "
         f"tag={unit.tag} type={unit.type_id.name}"
     )
     return holds[best]
@@ -498,7 +508,7 @@ def defend_home() -> CombatRoutine:
         if not holds:
             return
         for unit in defenders:
-            hold = _sticky_hold_point(ctx, unit, holds)
+            hold = _sticky_hold_point(ctx, unit, holds, ctx.state.defender_hold)
             maneuver = _defender_maneuver(ctx, unit, home_threats, hold)
             if maneuver is not None:
                 ctx.bot.register_behavior(maneuver)
@@ -1081,6 +1091,136 @@ def escort_overseers() -> CombatRoutine:
             maneuver = CombatManeuver()
             maneuver.add(KeepUnitSafe(unit=overseer, grid=grid))
             maneuver.add(MoveToSafeTarget(unit=overseer, grid=grid, target=target))
+            ctx.bot.register_behavior(maneuver)
+
+    return routine
+
+
+SWARM_HOST_FORWARD_OFFSET: float = 8.0
+"""How far in front of each owned base a Swarm Host's hold point sits -
+close enough to stay defensive, far enough that Locusts reach past the
+mineral line toward the likely approach."""
+SWARM_HOST_LOCUST_RANGE: float = 10.0
+"""How far past the hold point, toward the enemy, Spawn Locusts is cast."""
+
+
+def _swarm_host_points(ctx: "BotContext") -> list[Point2]:
+    """One forward point per owned base, facing the enemy start."""
+    enemy = ctx.bot.enemy_start_locations[0]
+    return [
+        Point2(cy_towards(base, enemy, SWARM_HOST_FORWARD_OFFSET))
+        for base in ctx.bot.owned_expansions
+    ]
+
+
+def dig_in_swarm_hosts() -> CombatRoutine:
+    """Park Swarm Hosts at a forward point per owned base and let Spawn
+    Locusts do the work - no squad clustering, no AMove-into-melee, and
+    never promoted out of `SWARM_HOST_ROLE` (see `core.roles.SUPPORT_ROLES`
+    - Swarm Host is deliberately kept out of `army.types` so `release_waves`
+    can never sweep it into a muster). Reads the role directly via
+    `ctx.mediator.get_units_from_role` rather than `ctx.units_in_role`,
+    which filters by `army.types` and would always return nothing here.
+
+    Burrows once in position, if Burrow is researched - purely for
+    survivability; Spawn Locusts works the same either way. Both abilities
+    are tried unconditionally every frame once settled: `UseAbility.execute`
+    already checks `ability in unit.abilities` and no-ops otherwise, and
+    `CombatManeuver.execute` stops at the first one that actually fires -
+    burrowing and casting can never both go out on the same frame, which is
+    correct (they're mutually exclusive actions in-game too).
+    """
+
+    def routine(ctx: "BotContext") -> None:
+        hosts = list(ctx.mediator.get_units_from_role(role=SWARM_HOST_ROLE))
+        alive = {u.tag for u in hosts}
+        ctx.state.swarm_host_hold = {
+            tag: pt for tag, pt in ctx.state.swarm_host_hold.items() if tag in alive
+        }
+        if not hosts:
+            return
+        points = _swarm_host_points(ctx)
+        if not points:
+            return
+
+        grid = ctx.mediator.get_ground_grid
+        enemy = ctx.bot.enemy_start_locations[0]
+        burrow_done = UpgradeId.BURROW in ctx.bot.state.upgrades
+
+        for host in hosts:
+            hold = _sticky_hold_point(
+                ctx, host, points, ctx.state.swarm_host_hold, log_label="SWARM_HOST"
+            )
+            maneuver = CombatManeuver()
+            maneuver.add(KeepUnitSafe(unit=host, grid=grid))
+
+            if cy_distance_to(host.position, hold) > DEFENDER_HOLD_ARRIVE:
+                maneuver.add(MoveToSafeTarget(unit=host, grid=grid, target=hold))
+            else:
+                locust_target = Point2(
+                    cy_towards(hold, enemy, SWARM_HOST_LOCUST_RANGE)
+                )
+                ctx.log_once(
+                    f"swarm_host_dug_in_{host.tag}",
+                    f"SWARM_HOST dug in at {hold}, spawning locusts "
+                    f"toward {locust_target}",
+                )
+                if burrow_done:
+                    maneuver.add(UseAbility(AbilityId.BURROWDOWN_SWARMHOST, host))
+                maneuver.add(
+                    UseAbility(
+                        AbilityId.EFFECT_SPAWNLOCUSTS, host, target=locust_target
+                    )
+                )
+                maneuver.add(
+                    UseAbility(
+                        AbilityId.SWARMHOSTSPAWNLOCUSTS_LOCUSTMP,
+                        host,
+                        target=locust_target,
+                    )
+                )
+            ctx.bot.register_behavior(maneuver)
+
+    return routine
+
+
+def escort_corruptors() -> CombatRoutine:
+    """Follow the biggest ATTACKING squad the way `escort_overseers` does,
+    but actually fight - Corruptor is anti-air only, so it engages air
+    targets in range directly rather than joining `attack_squads`'s
+    ground-target-seeking AMove/kite maneuvers, which would waste it on
+    objectives it cannot damage at all. Kept out of `army.types` and its
+    own `CORRUPTOR_ROLE` for the same reason Swarm Host is (see
+    `core.roles.SUPPORT_ROLES`)."""
+
+    def routine(ctx: "BotContext") -> None:
+        corruptors = list(ctx.mediator.get_units_from_role(role=CORRUPTOR_ROLE))
+        if not corruptors:
+            return
+
+        squads = ctx.mediator.get_squads(
+            role=UnitRole.ATTACKING, squad_radius=SQUAD_RADIUS
+        )
+        target = None
+        if squads:
+            biggest = max(squads, key=lambda squad: len(squad.squad_units))
+            target = targeting.squad_destination(ctx, biggest.squad_position)
+
+        grid = ctx.mediator.get_air_grid
+        for corruptor in corruptors:
+            maneuver = CombatManeuver()
+            maneuver.add(KeepUnitSafe(unit=corruptor, grid=grid))
+            air = ctx.mediator.get_units_in_range(
+                start_points=[corruptor.position],
+                distances=corruptor.air_range,
+                query_tree=UnitTreeQueryType.EnemyFlying,
+            )[0]
+            if air:
+                maneuver.add(ShootTargetInRange(unit=corruptor, targets=air))
+                closest = cy_closest_to(position=corruptor.position, units=air)
+                maneuver.add(AttackTarget(unit=corruptor, target=closest))
+            elif target is not None:
+                maneuver.add(MoveToSafeTarget(unit=corruptor, grid=grid, target=target))
             ctx.bot.register_behavior(maneuver)
 
     return routine

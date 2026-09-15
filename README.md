@@ -11,8 +11,7 @@ StarCraft II bot for [AI Arena](https://aiarena.net/), built on
 | Opening | Intent | State |
 |---------|--------|-------|
 | Four Rax Proxy | Proxy Barracks Marine all-in at the enemy fourth | Ladder Ready |
-| Speedling All-In | Overlord, pool, gas, metabolic boost, macro hatch, zergling flood into the enemy main | Ready (set `MyBotRace: Zerg`) |
-| Upgrade Rush | Zergling flood by maximizing upgrades with double evo | Ready (set `MyBotRace: Zerg`) |
+| Macro Zerg | 15 Hatch / 17 Pool into Roach -> Swarm Host, Corruptor if the enemy shows air | Ready (set `MyBotRace: Zerg`) |
 | 2base Chargelot All-In | Blink-looking 2-base opener into 8-Gate Charge Zealots + Warp Prism | Ready (set `MyBotRace: Protoss`) |
 
 ## Getting started
@@ -130,8 +129,8 @@ To force a specific opening:
 1. Set `Debug: True` in `config.yml` so local games use the `test_123` cycle.
 2. Put the opening you want first under `BuildChoices.test_123.Cycle` in
    `terran_builds.yml`, `zerg_builds.yml`, or `protoss_builds.yml` (YAML key
-   for Upgrade Rush is
-   still `UpgradeRush`).
+   for the Zerg opening is `Macro Zerg`, matching its `BuildDefinition.name`
+   exactly).
 3. Clear the local data file for that opponent id (`data/None-terran.json` /
    `data/None-zerg.json` for a plain local game, or the whole `data/`
    folder). With no history, ares falls back to cycle position 0.
