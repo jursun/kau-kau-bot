@@ -44,6 +44,12 @@ pool as the opening's own steps:
 
 See `zerg_builds.yml`'s own comment on this same setting.
 
+`_claim_third_base_scout` pulls one Drone aside once supply passes 21 and
+starts it walking toward the 3rd base site ahead of time, rather than
+leaving the full travel time to happen only after the real "23 expand"
+step becomes current (see that function's own docstring for how it stays
+selectable by that later step instead of just sitting there unclaimed).
+
 After the opening, macro steps take Roach Warren (Roach is the frontline),
 then tech toward Infestation Pit (Swarm Host — cheap, passive map-control
 damage from Locusts, meant to be dug in at each base rather than committed
@@ -64,6 +70,8 @@ Host/Corruptor never enter that pipeline at all — see
 
 from __future__ import annotations
 
+from ares.behaviors.macro import ExpansionController
+from ares.consts import UnitRole
 from sc2.data import Race
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
@@ -74,6 +82,68 @@ from bot.intel import army as intel_army
 from bot.routines import combat, creep, gates, scouting
 from bot.steps import common as c
 from bot.steps import zerg as z
+
+# Supply mark to pull a Drone aside and start it walking toward the 3rd base
+# site - see `_claim_third_base_scout`.
+_THIRD_BASE_SCOUT_AT_SUPPLY: int = 21
+
+
+def _claim_third_base_scout(ctx) -> None:
+    """Pull one already-mining Drone aside, once supply passes 21, to walk
+    it toward the 3rd base site ahead of the real "23 expand" step - ares
+    only selects and dispatches a worker once a structure step is already
+    current (`ares.build_runner.build_order_runner.BuildOrderRunner.
+    do_step`), so today the full walk happens entirely *after* the wait,
+    not overlapped with it.
+
+    Pulls from the *existing* mining pool via `on_step` rather than
+    intercepting a freshly-trained one via `on_unit_created` (the first
+    version of this) - `ConstantWorkerProductionTill` is held at 19 until
+    the opening's Queens/Zerglings are confirmed (see `_phase_worker_
+    production`), so no *new* Drone gets trained anywhere near supply 21;
+    the first version's own trigger didn't fire until 2:33, well after
+    the real expand step (2:21) - too late to help at all.
+
+    `UnitRole.PERSISTENT_BUILDER`, not a bare move order left in
+    `GATHERING`, is what keeps `Mining` (scoped to `UnitRole.GATHERING`,
+    reasserting a mineral-patch order every frame) from dragging it back -
+    and it's also the one role `ResourceManager.select_worker` checks
+    first, ahead of the general `GATHERING` pool, so the real "23 expand"
+    step picks up this exact Drone later instead of interrupting a
+    different, still-mining one (see that method's own docstring: "make
+    sure to change the worker role once selected, otherwise it will be
+    selected to mine again"). Ares' own auto-persistent-worker assignment
+    (`BuildOrderRunner._assign_persistent_worker`) is Zerg-exempt, so
+    there's no built-in claimant already using this role to conflict with.
+
+    Reuses `ExpansionController`'s own next-location lookup (terrain
+    safety / not-already-taken checks included) rather than a separate
+    one, so this walks to the exact same spot the real "expand" step
+    would otherwise pick.
+    """
+    if ctx.state.third_base_scout_claimed:
+        return
+    if ctx.bot.supply_used < _THIRD_BASE_SCOUT_AT_SUPPLY:
+        return
+
+    location = ExpansionController(to_count=1)._get_next_expansion_location(
+        ctx.bot, ctx.mediator
+    )
+    if location is None:
+        return  # try again next frame
+
+    miners = ctx.mediator.get_units_from_role(role=UnitRole.GATHERING).filter(
+        lambda u: u.type_id == UnitTypeId.DRONE
+    )
+    if not miners:
+        return  # try again next frame
+
+    scout = miners.closest_to(location)
+    ctx.state.third_base_scout_claimed = True
+    ctx.mediator.assign_role(tag=scout.tag, role=UnitRole.PERSISTENT_BUILDER)
+    scout.move(location)
+    ctx.log(f"MACRO_ZERG pre-walking Drone {scout.tag} toward 3rd base at {location}")
+
 
 # Middle stage: held here (once the 2nd Overlord is confirmed) so `19 queen
 # *2` / `19 zergling *4` aren't competing against continuous drone
@@ -116,6 +186,13 @@ def _phase_worker_production(ctx) -> None:
     if queens >= 2 and zerglings >= 4:
         runner.constant_worker_production_till = _WORKER_PRODUCTION_TARGET
         ctx.log("MACRO_ZERG resumed constant worker production after Queens/Zerglings")
+
+
+def _macro_zerg_on_step(ctx) -> None:
+    """`BuildDefinition` only has one `on_step` slot - both of this
+    build's per-frame concerns are called from here."""
+    _phase_worker_production(ctx)
+    _claim_third_base_scout(ctx)
 
 
 BUILD = BuildDefinition(
@@ -165,7 +242,7 @@ BUILD = BuildDefinition(
         wave_growth=1.15,
         wave_stage_label="Roach Pushes",
     ),
-    on_step=_phase_worker_production,
+    on_step=_macro_zerg_on_step,
     always=(
         c.mining(),
         # Don't over-mine gas once there's a buffer to spend from: pulls off

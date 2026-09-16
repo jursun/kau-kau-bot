@@ -248,4 +248,8 @@ class RunState:
     """True once a pylon exists near Chargelot staging."""
     army_idle_check_at: float | None = None
     """Last game time `nudge_idle_army` scanned ATTACKING units."""
+    third_base_scout_claimed: bool = False
+    """Latched once a Drone has been pulled aside to pre-walk toward the
+    3rd base site (see `builds.zerg.macro_zerg._claim_third_base_scout`) -
+    a one-shot claim, never re-enters even if that Drone dies en route."""
     log_once: LogOnce = field(default_factory=LogOnce)
