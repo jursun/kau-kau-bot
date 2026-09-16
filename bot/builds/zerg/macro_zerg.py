@@ -16,23 +16,33 @@ production for the whole opening - mixing it with explicit drone steps in
 the same early range let the two race each other for larva, delaying steps
 that were listed earlier.
 
-`ConstantWorkerProductionTill` is deliberately held at 13 (one drone above
-where we start) rather than the build's real economy target, until
-`_resume_worker_production_after_overlord2` below confirms the 2nd Overlord
-has been queued: `_produce_workers` runs every frame regardless of which
-step is current, competing for the same mineral bank. The intended
-sequence is "first ~50 minerals -> the 13th drone (a larva this opening
-wants trained anyway), next ~100 minerals -> the 2nd Overlord (a different
-larva)" - at the real economy target a THIRD drone kept winning the race
-for that second block too (a drone only needs 50 to the Overlord's 100),
-delaying the Overlord ~1-2s waiting for the bank to refill after that extra
-purchase. Held at 13, `_produce_workers` trains exactly the drone this
-opening already wants (supply_workers 12 -> 13) and then stops on its own
-once that drone is pending or finished — ares counts
-`supply_workers + already_pending(worker)` against the till, because
-`food_workers` alone excludes eggs and used to let a second drone slip in
-before the first hatched. See `zerg_builds.yml`'s own comment on this same
-pair of settings.
+`ConstantWorkerProductionTill` is deliberately held below the build's real
+economy target through two stages, both driven by `_phase_worker_production`
+below (using the till's own current value as the phase marker - no extra
+state needed) since `_produce_workers` runs every frame regardless of which
+OpeningBuildOrder step is current, competing for the same mineral/larva
+pool as the opening's own steps:
+
+1. Starts at 13 (one drone above where we start). The intended sequence is
+   "first ~50 minerals -> the 13th drone (a larva this opening wants
+   trained anyway), next ~100 minerals -> the 2nd Overlord (a different
+   larva)" - at the real target a THIRD drone kept winning the race for
+   that second block too (a drone only needs 50 to the Overlord's 100),
+   delaying the Overlord ~1-2s waiting for the bank to refill after that
+   extra purchase. Held at 13, `_produce_workers` trains exactly the drone
+   this opening already wants (supply_workers 12 -> 13) and then stops on
+   its own once that drone is pending or finished - ares counts
+   `supply_workers + already_pending(worker)` against the till, because
+   `food_workers` alone excludes eggs and used to let a second drone slip
+   in before the first hatched (patches/ares-sc2/0005).
+2. Once the 2nd Overlord is confirmed, raised to 19 rather than straight
+   to the real target: `19 queen *2` and `19 zergling *4` come right after
+   in the opening and want the same larva/minerals continuous drone
+   production would otherwise keep spending for the next ~100s+.
+3. Once both Queens and all 4 Zerglings are confirmed, raised to the real
+   target - nothing later in the opening needs this kind of protection.
+
+See `zerg_builds.yml`'s own comment on this same setting.
 
 After the opening, macro steps take Roach Warren (Roach is the frontline),
 then tech toward Infestation Pit (Swarm Host — cheap, passive map-control
@@ -65,23 +75,47 @@ from bot.routines import combat, creep, gates, scouting
 from bot.steps import common as c
 from bot.steps import zerg as z
 
-# Real economy target `ConstantWorkerProductionTill` resumes to, once the
-# opening's first step (the 2nd Overlord) no longer needs protecting from
-# it - see the module docstring and zerg_builds.yml's own comment on that
-# setting. Matches this opening's own final supply value.
+# Middle stage: held here (once the 2nd Overlord is confirmed) so `19 queen
+# *2` / `19 zergling *4` aren't competing against continuous drone
+# production for the same larva/minerals - see the module docstring.
+_HOLD_FOR_QUEENS_ZERGLINGS_TILL: int = 19
+# Real economy target `ConstantWorkerProductionTill` resumes to once nothing
+# later in the opening needs protecting from it - see the module docstring
+# and zerg_builds.yml's own comment on that setting. Matches this opening's
+# own final supply value.
 _WORKER_PRODUCTION_TARGET: int = 36
 
 
-def _resume_worker_production_after_overlord2(ctx) -> None:
+def _phase_worker_production(ctx) -> None:
+    """Two-stage hold on `ConstantWorkerProductionTill` - see the module
+    docstring for why each stage exists. Uses the till's own current value
+    as the phase marker rather than separate tracked state."""
     runner = ctx.bot.build_order_runner
-    if runner.constant_worker_production_till >= _WORKER_PRODUCTION_TARGET:
+    till = runner.constant_worker_production_till
+    if till >= _WORKER_PRODUCTION_TARGET:
         return
-    overlords = ctx.bot.units(UnitTypeId.OVERLORD).amount + ctx.bot.already_pending(
-        UnitTypeId.OVERLORD
+
+    if till < _HOLD_FOR_QUEENS_ZERGLINGS_TILL:
+        overlords = ctx.bot.units(UnitTypeId.OVERLORD).amount + ctx.bot.already_pending(
+            UnitTypeId.OVERLORD
+        )
+        if overlords >= 2:
+            runner.constant_worker_production_till = _HOLD_FOR_QUEENS_ZERGLINGS_TILL
+            ctx.log(
+                "MACRO_ZERG holding worker production at "
+                f"{_HOLD_FOR_QUEENS_ZERGLINGS_TILL} for Queens/Zerglings"
+            )
+        return
+
+    queens = ctx.bot.units(UnitTypeId.QUEEN).amount + ctx.bot.already_pending(
+        UnitTypeId.QUEEN
     )
-    if overlords >= 2:
+    zerglings = ctx.bot.units(UnitTypeId.ZERGLING).amount + ctx.bot.already_pending(
+        UnitTypeId.ZERGLING
+    )
+    if queens >= 2 and zerglings >= 4:
         runner.constant_worker_production_till = _WORKER_PRODUCTION_TARGET
-        ctx.log("MACRO_ZERG resumed constant worker production after 2nd Overlord")
+        ctx.log("MACRO_ZERG resumed constant worker production after Queens/Zerglings")
 
 
 BUILD = BuildDefinition(
@@ -131,7 +165,7 @@ BUILD = BuildDefinition(
         wave_growth=1.15,
         wave_stage_label="Roach Pushes",
     ),
-    on_step=_resume_worker_production_after_overlord2,
+    on_step=_phase_worker_production,
     always=(
         c.mining(),
         # Don't over-mine gas once there's a buffer to spend from: pulls off
