@@ -33,7 +33,13 @@ from sc2.unit import Unit
 from sc2.units import Units
 
 from bot.builds.definition import _always
-from bot.consts import CORRUPTOR_ROLE, IGNORED_ENEMY_TYPES, SWARM_HOST_ROLE, WORKER_TYPES
+from bot.consts import (
+    CORRUPTOR_ROLE,
+    IGNORED_ENEMY_TYPES,
+    SWARM_HOST_ROLE,
+    WORKER_TYPES,
+    ZERGLING_DEFENDER_ROLE,
+)
 from bot.core.types import CombatRoutine, Gate, PointLocator
 from bot.intel import chargelot_metrics, enemy_army
 from bot.routines import targeting
@@ -509,6 +515,52 @@ def defend_home() -> CombatRoutine:
             return
         for unit in defenders:
             hold = _sticky_hold_point(ctx, unit, holds, ctx.state.defender_hold)
+            maneuver = _defender_maneuver(ctx, unit, home_threats, hold)
+            if maneuver is not None:
+                ctx.bot.register_behavior(maneuver)
+
+    return routine
+
+
+def defend_with_zerglings() -> CombatRoutine:
+    """Zergling is a permanent home defender, never promoted to an attack
+    wave — see `consts.ZERGLING_DEFENDER_ROLE` and `core.roles.SUPPORT_ROLES`
+    for why it's kept out of `Army.types` (`ROACH_SWARM_HOST_COMP` already
+    frames its slice of the composition as a "trickle for creep escort /
+    worker-line defense", not an offensive unit).
+
+    Mirrors `defend_home()`'s hold/engage logic exactly, but reads
+    `ZERGLING_DEFENDER_ROLE` directly instead of going through
+    `ctx.units_in_role` (scoped to `army.types`, which no longer includes
+    Zergling), and keeps its own hold map (`ctx.state.zergling_defender_
+    hold`) so it doesn't compete with Roach for the same slots while Roach
+    is still sitting in DEFENDING ahead of the next wave release.
+    """
+
+    def routine(ctx: "BotContext") -> None:
+        zerglings = ctx.mediator.get_units_from_role(
+            role=ZERGLING_DEFENDER_ROLE, unit_type=UnitTypeId.ZERGLING
+        )
+        alive = {u.tag for u in zerglings}
+        ctx.state.zergling_defender_hold = {
+            tag: pt
+            for tag, pt in ctx.state.zergling_defender_hold.items()
+            if tag in alive
+        }
+        if not zerglings:
+            return
+        home_threats = ctx.mediator.get_main_ground_threats_near_townhall
+        holds = targeting.hold_positions(ctx)
+        if not holds:
+            return
+        for unit in zerglings:
+            hold = _sticky_hold_point(
+                ctx,
+                unit,
+                holds,
+                ctx.state.zergling_defender_hold,
+                log_label="ZERGLING_DEFEND",
+            )
             maneuver = _defender_maneuver(ctx, unit, home_threats, hold)
             if maneuver is not None:
                 ctx.bot.register_behavior(maneuver)

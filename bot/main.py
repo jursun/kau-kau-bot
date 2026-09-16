@@ -114,6 +114,7 @@ class KauKauBot(AresBot):
         opening: str = self.build_order_runner.chosen_opening
         build = self._resolve_build(opening)
         self.ctx = BotContext(bot=self, build=build, state=RunState())
+        roles.assign_starting_scout(self.ctx)
 
         log_event(
             self,

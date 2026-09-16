@@ -116,3 +116,12 @@ SUPPLY_BUILDER_ROLE: UnitRole = UnitRole.CONTROL_GROUP_ONE
 # on the next two free generic `UnitRole` control-group slots.
 SWARM_HOST_ROLE: UnitRole = UnitRole.CONTROL_GROUP_TWO
 CORRUPTOR_ROLE: UnitRole = UnitRole.CONTROL_GROUP_THREE
+
+# Macro Zerg: Zergling is a dedicated home defender, never an offensive unit
+# (see `consts.ROACH_SWARM_HOST_COMP`'s own framing of its slice as a
+# "trickle for creep escort / worker-line defense") — kept out of
+# `Army.types` so `release_waves()` can never sweep it into an attack wave,
+# same unused-slot trick as above. Safe to key this off unit type alone
+# (rather than per-build) only because Macro Zerg is currently the only
+# Zerg build; revisit if a second one wants Zergling on offense.
+ZERGLING_DEFENDER_ROLE: UnitRole = UnitRole.CONTROL_GROUP_FOUR

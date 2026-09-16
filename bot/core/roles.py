@@ -13,7 +13,7 @@ from sc2.data import Race
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.unit import Unit
 
-from bot.consts import CORRUPTOR_ROLE, SWARM_HOST_ROLE
+from bot.consts import CORRUPTOR_ROLE, SWARM_HOST_ROLE, ZERGLING_DEFENDER_ROLE
 
 if TYPE_CHECKING:
     from bot.core.context import BotContext
@@ -24,9 +24,12 @@ SUPPORT_ROLES: dict[Race, dict[UnitTypeId, UnitRole]] = {
         UnitTypeId.QUEEN: UnitRole.QUEEN_INJECT,
         # Keep these out of DEFENDING/ATTACKING (see Protoss's Prism/Observer/
         # Adept below) - `release_waves()` would otherwise promote a Swarm
-        # Host or Corruptor straight into a squad muster it must never join.
+        # Host or Corruptor straight into a squad muster it must never join,
+        # and a Zergling into an offensive wave it's meant to stay out of
+        # (see `consts.ZERGLING_DEFENDER_ROLE`).
         UnitTypeId.SWARMHOSTMP: SWARM_HOST_ROLE,
         UnitTypeId.CORRUPTOR: CORRUPTOR_ROLE,
+        UnitTypeId.ZERGLING: ZERGLING_DEFENDER_ROLE,
     },
     Race.Terran: {},
     Race.Protoss: {
@@ -44,6 +47,27 @@ SCOUT_TYPES: dict[Race, UnitTypeId | None] = {
     Race.Terran: None,
     Race.Protoss: None,
 }
+
+
+def assign_starting_scout(ctx: "BotContext") -> None:
+    """Send the game-start scout unit (Zerg's starting Overlord) scouting.
+
+    It exists before `on_start` runs, so it never fires `on_unit_created` -
+    the hook `assign_on_created` below relies on to spend a scout, which
+    would otherwise wait for a freshly *produced* unit of the same type and
+    leave the starting one sitting idle at home forever.
+    """
+    race = ctx.build.race
+    scout_type = SCOUT_TYPES.get(race)
+    if scout_type is None or ctx.state.scout_tags:
+        return
+    existing = ctx.bot.units(scout_type)
+    if not existing:
+        return
+    unit = existing.first
+    ctx.state.scout_tags.add(unit.tag)
+    ctx.mediator.assign_role(tag=unit.tag, role=UnitRole.SCOUTING)
+    ctx.log("SCOUT assigned (starting unit)")
 
 
 def assign_on_created(ctx: "BotContext", unit: Unit) -> None:
@@ -64,8 +88,10 @@ def assign_on_created(ctx: "BotContext", unit: Unit) -> None:
         if support is not None:
             ctx.mediator.assign_role(tag=unit.tag, role=support)
         elif unit.type_id == SCOUT_TYPES.get(race) and not ctx.state.scout_tags:
-            # The game-start supply unit never fires on_unit_created, so the
-            # first one seen here is the second one — spend it on vision.
+            # Normally already spent by `assign_starting_scout` on the
+            # game-start unit; this only fires if that unit died before this
+            # one was created (`forget_destroyed` clears `scout_tags`), or
+            # for a race whose scout type isn't the starting supply unit.
             ctx.state.scout_tags.add(unit.tag)
             ctx.mediator.assign_role(tag=unit.tag, role=UnitRole.SCOUTING)
             ctx.log("SCOUT assigned")

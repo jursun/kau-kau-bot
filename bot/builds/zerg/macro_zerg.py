@@ -65,7 +65,21 @@ This is a continuous macro identity, not a scripted all-in leave time:
 size/tech gate, `combat.defend_home()` holds between waves, and Swarm
 Host/Corruptor never enter that pipeline at all — see
 `combat.dig_in_swarm_hosts`/`combat.escort_corruptors` and
-`core.roles.SUPPORT_ROLES` for why they're kept off `army.types`.
+`core.roles.SUPPORT_ROLES` for why they're kept off `army.types`. Zergling
+is kept off `army.types` too, for the opposite reason: it's a dedicated
+home defender that must never be swept into a wave (`combat.defend_with_
+zerglings`), not an offensive unit release_waves() would otherwise collect.
+
+The starting Overlord is sent scouting from `bot.main.on_start` rather than
+through `core.roles.assign_on_created` — it exists before the game-start
+event stream begins, so it never fires `on_unit_created` (see `core.roles.
+assign_starting_scout`).
+
+`_claim_natural_queen_tumor` spends the natural's Queen's starting 25
+energy on a Creep Tumor before it ever injects, by parking it on
+`UnitRole.QUEEN_CREEP` — the same pool `routines.creep.spread_creep`
+already drives with ares' own `QueenSpreadCreep` — until a tumor is
+confirmed, then handing it back to `UnitRole.QUEEN_INJECT` for normal duty.
 """
 
 from __future__ import annotations
@@ -145,6 +159,83 @@ def _claim_third_base_scout(ctx) -> None:
     ctx.log(f"MACRO_ZERG pre-walking Drone {scout.tag} toward 3rd base at {location}")
 
 
+# Radius from the natural townhall a Queen must spawn within to be claimed
+# as "the natural's queen" - see `_claim_natural_queen_tumor`.
+_NATURAL_QUEEN_RADIUS: float = 15.0
+
+
+def _claim_natural_queen_tumor(ctx) -> None:
+    """One-shot: spend the natural's Queen's starting 25 energy on a Creep
+    Tumor instead of its first inject, then hand it back to normal inject
+    duty.
+
+    Reassigns the claimed Queen to `UnitRole.QUEEN_CREEP` rather than
+    casting the tumor ability directly - that's the same role/pool
+    `routines.creep.spread_creep` drives with ares' own `QueenSpreadCreep`
+    (walk-to-a-valid-edge, then cast), and it's also what keeps
+    `InjectLarva` (scoped to `UnitRole.QUEEN_INJECT`) from sweeping this
+    Queen into an inject mid-walk - exactly the reason that routine gives
+    for using a separate role in the first place. `spread_creep` itself
+    only ever promotes a *new* creep queen when its pool is empty, so once
+    this claims one, the two routines hand off cleanly with no double-claim.
+
+    Detects "done" by tracked Creep Tumor count rather than an energy
+    threshold: energy can drift above 25 while the queen is still walking to
+    a valid edge, so "some tumor now exists" is the more reliable signal
+    that the one-shot cast already fired.
+    """
+    if ctx.state.natural_queen_tumor_done:
+        return
+
+    if ctx.state.natural_queen_tag is None:
+        townhalls = ctx.bot.townhalls.ready
+        if len(townhalls) < 2:
+            return  # natural not up yet
+        # 2nd-closest to home, not `furthest_to` - once a 3rd base exists,
+        # "furthest from start" stops meaning "the natural" (confirmed live:
+        # after the first claimed Queen died mid-walk, the retry picked the
+        # 3rd base instead once it existed).
+        natural = sorted(
+            townhalls, key=lambda th: th.distance_to(ctx.bot.start_location)
+        )[1]
+        candidates = ctx.mediator.get_units_from_role(
+            role=UnitRole.QUEEN_INJECT, unit_type=UnitTypeId.QUEEN
+        ).filter(
+            lambda q: q.energy >= 25 and q.distance_to(natural) < _NATURAL_QUEEN_RADIUS
+        )
+        if not candidates:
+            return  # try again next frame
+        queen = candidates.closest_to(natural)
+        ctx.state.natural_queen_tag = queen.tag
+        ctx.mediator.assign_role(tag=queen.tag, role=UnitRole.QUEEN_CREEP)
+        ctx.log(f"MACRO_ZERG natural Queen {queen.tag} pulled for opening creep tumor")
+        return
+
+    tag = ctx.state.natural_queen_tag
+    still_claimed = ctx.mediator.get_units_from_role(
+        role=UnitRole.QUEEN_CREEP, unit_type=UnitTypeId.QUEEN
+    )
+    if not any(q.tag == tag for q in still_claimed):
+        # Died before ever placing the tumor - let a fresh candidate claim
+        # the slot instead of leaving this latched forever.
+        ctx.state.natural_queen_tag = None
+        return
+
+    # Creep Tumors are structures, not units, in this API (`bot.units(...)`
+    # never matches them - confirmed live: without this the Queen just kept
+    # casting indefinitely, walking the whole opening creep chain toward the
+    # enemy natural instead of handing back after its first tumor).
+    tumors = ctx.bot.structures(UnitTypeId.CREEPTUMORQUEEN) | ctx.bot.structures(
+        UnitTypeId.CREEPTUMORBURROWED
+    )
+    if not tumors:
+        return  # still walking to a placement spot
+
+    ctx.state.natural_queen_tumor_done = True
+    ctx.mediator.assign_role(tag=tag, role=UnitRole.QUEEN_INJECT)
+    ctx.log(f"MACRO_ZERG natural Queen {tag} back on inject duty")
+
+
 # Middle stage: held here (once the 2nd Overlord is confirmed) so `19 queen
 # *2` / `19 zergling *4` aren't competing against continuous drone
 # production for the same larva/minerals - see the module docstring.
@@ -189,10 +280,11 @@ def _phase_worker_production(ctx) -> None:
 
 
 def _macro_zerg_on_step(ctx) -> None:
-    """`BuildDefinition` only has one `on_step` slot - both of this
+    """`BuildDefinition` only has one `on_step` slot - all of this
     build's per-frame concerns are called from here."""
     _phase_worker_production(ctx)
     _claim_third_base_scout(ctx)
+    _claim_natural_queen_tumor(ctx)
 
 
 BUILD = BuildDefinition(
@@ -210,7 +302,11 @@ BUILD = BuildDefinition(
     ),
     army=Army(
         comp=ROACH_SWARM_HOST_COMP,
-        types=frozenset({UnitTypeId.ZERGLING, UnitTypeId.ROACH}),
+        # Zergling is deliberately not in `types`: it's a dedicated home
+        # defender (`core.roles.SUPPORT_ROLES`, `combat.defend_with_
+        # zerglings`), never promoted to an attack wave — Roach alone is
+        # the offensive component here.
+        types=frozenset({UnitTypeId.ROACH}),
         upgrades=(
             UpgradeId.ZERGLINGMOVEMENTSPEED,  # from the opening, 2:45
             UpgradeId.GLIALRECONSTITUTION,  # Roach speed
@@ -228,6 +324,7 @@ BUILD = BuildDefinition(
         routines=(
             combat.release_waves(),
             combat.defend_home(),
+            combat.defend_with_zerglings(),
             combat.attack_squads(),
             combat.dig_in_swarm_hosts(),
             combat.escort_corruptors(),
@@ -270,6 +367,10 @@ BUILD = BuildDefinition(
         c.upgrades(),
         c.split_production(gate=gates.after_wave(1)),
         z.spawn_macro_army(),
+        # One per base, mineral-line placement — static anti-air so Mutalisk/
+        # air harass can't freely pick off drones while the army is Roach-
+        # heavy (no native anti-air until Corruptor/Spire comes online).
+        z.spore_crawlers(per_base=1, gate=gates.after_time(240.0)),
         # Last: only fires when nothing above had anywhere to put a mineral
         # surplus - see the module docstring and the step's own.
         z.overflow_hatcheries(mineral_threshold=500),

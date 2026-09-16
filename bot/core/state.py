@@ -252,4 +252,18 @@ class RunState:
     """Latched once a Drone has been pulled aside to pre-walk toward the
     3rd base site (see `builds.zerg.macro_zerg._claim_third_base_scout`) -
     a one-shot claim, never re-enters even if that Drone dies en route."""
+    natural_queen_tag: int | None = None
+    """Queen pulled onto `UnitRole.QUEEN_CREEP` to spend its starting 25
+    energy on a Creep Tumor instead of an inject (see `builds.zerg.
+    macro_zerg._claim_natural_queen_tumor`) - cleared once handed back to
+    `UnitRole.QUEEN_INJECT`, or if it dies before ever placing the tumor."""
+    natural_queen_tumor_done: bool = False
+    """Latched once the pulled Queen's tumor is confirmed - never re-enters,
+    even if that Queen later dies."""
+    zergling_defender_hold: dict[int, Point2] = field(default_factory=dict)
+    """Zergling tag → sticky home hold Point2 - same matching scheme as
+    `defender_hold`/`swarm_host_hold`, via `routines.combat.
+    _sticky_hold_point`, but kept in its own map since Zergling is on a
+    dedicated defender role rather than `UnitRole.DEFENDING` (see
+    `routines.combat.defend_with_zerglings`)."""
     log_once: LogOnce = field(default_factory=LogOnce)
