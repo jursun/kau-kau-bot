@@ -1,20 +1,32 @@
 """Macro Zerg — 16 Hatch / 17 Pool into Roach -> Swarm Host.
 
-Opening: `Macro Zerg` in `zerg_builds.yml` — 13 overlord, 16 hatch before
-pool, 18 gas, 17 pool, 19 overlord, double queen, 4 lings, speed, overlord,
-3rd hatch, overlord, 3rd queen. Gas is listed before pool on purpose even
-though its own supply number is higher: morphing a drone into the
-Extractor drops `supply_used` by 1 the instant it's commanded (every Zerg
-structure eats the drone that builds it), so triggering gas at real supply
-18 lands pool's own supply-17 threshold immediately after, with no extra
-drone-production gap - reversing the order would send pool first (dropping
-supply to 16) and make gas wait for supply to climb back past 18 again.
+Opening: `Macro Zerg` in `zerg_builds.yml` — 12 overlord, 16 hatch before
+pool, 18 gas, 17 pool, 19 overlord, double queen, 4 lings, expand, overlord,
+queen, speed, overlord, overlord. Gas is listed before pool (and the second
+expand before its own overlord) on purpose even though the supply number is
+higher: morphing a drone into a structure drops `supply_used` by 1 the
+instant it's commanded (every Zerg structure eats the drone that builds
+it), so triggering the higher-numbered step first lands the lower one's
+threshold immediately after, with no extra drone-production gap - reversing
+either pair would send the lower one first and make the higher one wait for
+supply to climb back up again.
 
-No explicit drone steps: `ConstantWorkerProductionTill: 34` alone drives
-worker production for the whole opening - mixing it with explicit drone
-steps in the same early range let the two race each other for larva,
-delaying steps that were listed earlier (the Overlord at 13 firing late
-relative to real supply was the symptom).
+No explicit drone steps: `ConstantWorkerProductionTill` alone drives worker
+production for the whole opening - mixing it with explicit drone steps in
+the same early range let the two race each other for larva, delaying steps
+that were listed earlier.
+
+`ConstantWorkerProductionTill` is deliberately held at 12 (effectively off)
+until `_resume_worker_production_after_overlord2` below confirms the very
+first step (12 overlord) has been queued: `_produce_workers` runs every
+frame regardless of which step is current, and at the build's real economy
+target it was racing that first Overlord for the same minerals - a drone
+only needs 50 to the Overlord's 100, so it reliably won every contested
+bank and delayed the Overlord ~1-2s waiting for the bank to refill after a
+drone purchase. The step is declared "12", not "13": at 13 it would need a
+13th drone trained first just to become eligible - the exact same
+competing purchase this is trying to avoid. See `zerg_builds.yml`'s own
+comment on this same pair of settings.
 
 After the opening, macro steps take Roach Warren (Roach is the frontline),
 then tech toward Infestation Pit (Swarm Host — cheap, passive map-control
@@ -46,6 +58,25 @@ from bot.intel import army as intel_army
 from bot.routines import combat, creep, gates, scouting
 from bot.steps import common as c
 from bot.steps import zerg as z
+
+# Real economy target `ConstantWorkerProductionTill` resumes to, once the
+# opening's first step (the 2nd Overlord) no longer needs protecting from
+# it - see the module docstring and zerg_builds.yml's own comment on that
+# setting. Matches this opening's own final supply value.
+_WORKER_PRODUCTION_TARGET: int = 36
+
+
+def _resume_worker_production_after_overlord2(ctx) -> None:
+    runner = ctx.bot.build_order_runner
+    if runner.constant_worker_production_till >= _WORKER_PRODUCTION_TARGET:
+        return
+    overlords = ctx.bot.units(UnitTypeId.OVERLORD).amount + ctx.bot.already_pending(
+        UnitTypeId.OVERLORD
+    )
+    if overlords >= 2:
+        runner.constant_worker_production_till = _WORKER_PRODUCTION_TARGET
+        ctx.log("MACRO_ZERG resumed constant worker production after 2nd Overlord")
+
 
 BUILD = BuildDefinition(
     name="Macro Zerg",
@@ -94,6 +125,7 @@ BUILD = BuildDefinition(
         wave_growth=1.15,
         wave_stage_label="Roach Pushes",
     ),
+    on_step=_resume_worker_production_after_overlord2,
     always=(
         c.mining(),
         # Don't over-mine gas once there's a buffer to spend from: pulls off

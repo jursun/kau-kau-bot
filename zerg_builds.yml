@@ -46,18 +46,39 @@ Builds:
     # shows air). Queens, third hatch and the Roach/Lair/Infestation Pit/
     # Spire tech tree are all handled dynamically after this opening finishes.
     Macro Zerg:
-        ConstantWorkerProductionTill: 34
+        # Held at 12 (i.e. off - we already start with 12) rather than the
+        # build's real economy target: `_produce_workers` runs every frame
+        # regardless of which OpeningBuildOrder step is current, and at the
+        # real target it was racing the very first step for the same
+        # minerals - a drone only needs 50 to the Overlord's 100, so it
+        # reliably won every contested bank, delaying the Overlord ~1-2s
+        # waiting for the bank to refill after a drone purchase.
+        # bot.builds.zerg.macro_zerg's on_step hook bumps this back up to
+        # the real target the instant the 2nd Overlord is confirmed queued,
+        # so it only holds for the ~6-8s that Overlord actually needs.
+        #
+        # The Overlord step itself is declared "12", not "13": at 13 it
+        # would need supply_used >= 13 to even become eligible, which
+        # itself requires training a 13th drone first - defeating the
+        # whole point of holding drone production off, since that
+        # prerequisite drone is exactly the same competing purchase this
+        # is trying to avoid. Declaring it at 12 (supply is already 12 at
+        # game start) means it's eligible from frame 0, with the held-off
+        # `ConstantWorkerProductionTill` guaranteeing nothing else is
+        # competing for the bank while it climbs to 100.
+        ConstantWorkerProductionTill: 12
         AutoSupplyAtSupply: 19
         OpeningBuildOrder:
-            - 13 overlord
+            - 12 overlord
             - 16 expand
             - 18 gas
             - 17 spawningpool
             - 19 overlord
             - 19 queen *2
-            - 23 zergling *4
-            - 29 zerglingmovementspeed
-            - 29 overlord
-            - 32 expand
-            - 34 overlord
-            - 34 queen
+            - 19 zergling *4
+            - 27 expand
+            - 26 overlord
+            - 30 queen
+            - 30 zerglingmovementspeed
+            - 33 overlord
+            - 36 overlord
