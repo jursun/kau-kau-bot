@@ -17,7 +17,7 @@ which do trip the Lair/Hive auto-derivation) used to get away with a bare
 
 Stage 2 (Opening Timing) is a from-scratch addition specific to this
 build's exact opening (see `zerg_builds.yml`'s `Macro Zerg` entry): a
-"must start by real game-time X" deadline for each of its 14 opening
+"must start by real game-time X" deadline for each of its 16 opening
 milestones, both economy and race-timing (unlike `pool_deadline`, which
 is a generic, deliberately loose safety net shared by every Zerg build,
 these are precise regression numbers for THIS opening's own intended
@@ -81,6 +81,8 @@ class MacroZergValidator(BaseValidator):
         ("gas_on", "3 Drone on gas", 215.0),
         ("roach_warren", "Roach Warren", 217.0),
         ("gas2", "2nd Gas", 240.0),
+        ("lair", "Lair", 255.0),
+        ("spores3", "3 Spore Crawlers", 270.0),
     )
 
     def _init_milestones(self) -> None:
@@ -153,6 +155,14 @@ class MacroZergValidator(BaseValidator):
         latch("zerglings4", zerglings >= 4)
 
         latch("roach_warren", self.structures(UnitTypeId.ROACHWARREN).amount >= 1)
+
+        latch("lair", self.structures(UnitTypeId.LAIR).amount >= 1)
+
+        # One per base (`steps.zerg.spore_crawlers(per_base=1)`) - "3" is
+        # this opening's own base count by this point (main, natural, 3rd),
+        # not a generic per-base check the way the structure count in
+        # Stage 3 is.
+        latch("spores3", self.structures(UnitTypeId.SPORECRAWLER).amount >= 3)
 
         latch("speed", self.pending_or_complete_upgrade(UpgradeId.ZERGLINGMOVEMENTSPEED))
 

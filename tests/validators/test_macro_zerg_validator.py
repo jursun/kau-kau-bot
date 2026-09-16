@@ -92,7 +92,7 @@ def _validator() -> MacroZergValidator:
     return MacroZergValidator(ai)
 
 
-def test_all_fourteen_opening_timing_checks_are_reported_in_order() -> None:
+def test_all_sixteen_opening_timing_checks_are_reported_in_order() -> None:
     validator = _validator()
     validator.on_step(0)
 
@@ -113,6 +113,8 @@ def test_all_fourteen_opening_timing_checks_are_reported_in_order() -> None:
         "3 Drone on gas",
         "Roach Warren",
         "2nd Gas",
+        "Lair",
+        "3 Spore Crawlers",
     ]
 
 
@@ -243,6 +245,47 @@ def test_gas_pull_off_and_resume_track_in_order() -> None:
     assert "100.0s" in by_name["3 Drone off gas"].detail
     assert by_name["3 Drone on gas"].passed
     assert "200.0s" in by_name["3 Drone on gas"].detail
+
+
+def test_lair_milestone_tracks_structure_count() -> None:
+    validator = _validator()
+    validator.ai.time = 200.0  # Lair's deadline is 255.0s
+    validator.ai._structure_counts[UnitTypeId.LAIR] = 1
+    validator.on_step(0)
+
+    result = validator.validate()
+    lair = next(r for r in result["Stage 2: Opening Timing"] if r.name == "Lair")
+    assert lair.passed, lair.detail
+    assert "200.0s" in lair.detail
+
+
+def test_spores3_requires_three_not_two() -> None:
+    """One Spore Crawler per base (`steps.zerg.spore_crawlers(per_base=1)`)
+    - two up (only main + natural) must not satisfy a check meant to
+    confirm the 3rd base is covered too."""
+    validator = _validator()
+    validator.ai._structure_counts[UnitTypeId.SPORECRAWLER] = 2
+    validator.on_step(0)
+
+    result = validator.validate()
+    spores = next(
+        r for r in result["Stage 2: Opening Timing"] if r.name == "3 Spore Crawlers"
+    )
+    assert not spores.passed
+
+
+def test_spores3_passes_once_the_third_is_up() -> None:
+    validator = _validator()
+    validator.ai.time = 250.0  # deadline is 270.0s
+    validator.ai._structure_counts[UnitTypeId.SPORECRAWLER] = 3
+    validator.on_step(0)
+
+    result = validator.validate()
+    spores = next(
+        r for r in result["Stage 2: Opening Timing"] if r.name == "3 Spore Crawlers"
+    )
+    assert spores.passed, spores.detail
+    assert "250.0s" in spores.detail
 
 
 def test_gas_on_never_latches_without_gas_off_happening_first() -> None:
