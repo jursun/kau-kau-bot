@@ -1,0 +1,40 @@
+From b828377cc5c926f84c5c209ae41a52795c205228 Mon Sep 17 00:00:00 2001
+From: Jason Wong <usernameunknown@yahoo.com>
+Date: Tue, 15 Sep 2026 14:20:00 -1000
+Subject: [PATCH] Count pending workers against ConstantWorkerProductionTill.
+
+ai.supply_workers (food_workers) excludes a worker still morphing from
+an egg/larva. With ConstantWorkerProductionTill set one above the
+starting count (e.g. 13, to train exactly one more drone before
+handing off to the opening's own next step - see Macro Zerg), the
+still-morphing first drone didn't count yet, so the till check stayed
+satisfied and queued a second drone off the next 50 minerals while the
+first was still hatching - one drone too many for a build that means
+to hold worker production at a precise count. Adding
+already_pending(worker_type) closes that gap.
+---
+ src/ares/build_runner/build_order_runner.py | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/src/ares/build_runner/build_order_runner.py b/src/ares/build_runner/build_order_runner.py
+index 7278953..af2f827 100644
+--- a/src/ares/build_runner/build_order_runner.py
++++ b/src/ares/build_runner/build_order_runner.py
+@@ -257,7 +257,14 @@ class BuildOrderRunner:
+             logger.info("Build order completed")
+             return
+
+-        if self.ai.supply_workers < self.constant_worker_production_till:
++        pending_workers = self.ai.already_pending(self.ai.worker_type)
++        # food_workers excludes workers still in production/eggs; count them
++        # or ConstantWorkerProductionTill=13 queues a second drone on the next
++        # 50 minerals while the first egg is morphing (Macro Zerg opening).
++        if (
++            self.ai.supply_workers + pending_workers
++            < self.constant_worker_production_till
++        ):
+             self._produce_workers()
+
+         if self.ai.supply_used >= self.auto_supply_at_supply:
+--
+2.22.0.windows.1

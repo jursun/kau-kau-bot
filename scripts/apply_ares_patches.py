@@ -1,8 +1,9 @@
 """Apply kau-kau-bot's ares-sc2 patches after a clean submodule checkout.
 
 Pin is upstream v3.13.1 (87308658). Patches live in patches/ares-sc2/ and cover
-nat-wall FirstPylon preference, pylon+Prism warp power by spawn distance, and
-spreading multi-Gate warp placements around the power source.
+nat-wall FirstPylon preference, pylon+Prism warp power by spawn distance,
+spreading multi-Gate warp placements around the power source, and counting
+pending (still-morphing) workers against ConstantWorkerProductionTill.
 
 Usage (from repo root, after `git submodule update --init --recursive`):
 

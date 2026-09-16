@@ -1,6 +1,6 @@
 """Macro Zerg — 16 Hatch / 17 Pool into Roach -> Swarm Host.
 
-Opening: `Macro Zerg` in `zerg_builds.yml` — 12 overlord, 16 hatch before
+Opening: `Macro Zerg` in `zerg_builds.yml` — 13 overlord, 16 hatch before
 pool, 18 gas, 17 pool, 19 overlord, double queen, 4 lings, expand, overlord,
 queen, speed, overlord, overlord. Gas is listed before pool (and the second
 expand before its own overlord) on purpose even though the supply number is
@@ -16,17 +16,23 @@ production for the whole opening - mixing it with explicit drone steps in
 the same early range let the two race each other for larva, delaying steps
 that were listed earlier.
 
-`ConstantWorkerProductionTill` is deliberately held at 12 (effectively off)
-until `_resume_worker_production_after_overlord2` below confirms the very
-first step (12 overlord) has been queued: `_produce_workers` runs every
-frame regardless of which step is current, and at the build's real economy
-target it was racing that first Overlord for the same minerals - a drone
-only needs 50 to the Overlord's 100, so it reliably won every contested
-bank and delayed the Overlord ~1-2s waiting for the bank to refill after a
-drone purchase. The step is declared "12", not "13": at 13 it would need a
-13th drone trained first just to become eligible - the exact same
-competing purchase this is trying to avoid. See `zerg_builds.yml`'s own
-comment on this same pair of settings.
+`ConstantWorkerProductionTill` is deliberately held at 13 (one drone above
+where we start) rather than the build's real economy target, until
+`_resume_worker_production_after_overlord2` below confirms the 2nd Overlord
+has been queued: `_produce_workers` runs every frame regardless of which
+step is current, competing for the same mineral bank. The intended
+sequence is "first ~50 minerals -> the 13th drone (a larva this opening
+wants trained anyway), next ~100 minerals -> the 2nd Overlord (a different
+larva)" - at the real economy target a THIRD drone kept winning the race
+for that second block too (a drone only needs 50 to the Overlord's 100),
+delaying the Overlord ~1-2s waiting for the bank to refill after that extra
+purchase. Held at 13, `_produce_workers` trains exactly the drone this
+opening already wants (supply_workers 12 -> 13) and then stops on its own
+once that drone is pending or finished — ares counts
+`supply_workers + already_pending(worker)` against the till, because
+`food_workers` alone excludes eggs and used to let a second drone slip in
+before the first hatched. See `zerg_builds.yml`'s own comment on this same
+pair of settings.
 
 After the opening, macro steps take Roach Warren (Roach is the frontline),
 then tech toward Infestation Pit (Swarm Host — cheap, passive map-control
