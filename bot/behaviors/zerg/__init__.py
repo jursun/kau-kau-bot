@@ -5,6 +5,7 @@ from bot.behaviors.zerg.build_spore_crawler import BuildSporeCrawler
 from bot.behaviors.zerg.expand_with_persistent_builder import (
     ExpandWithPersistentBuilder,
 )
+from bot.behaviors.zerg.gas_building_controller import ZergGasBuildingController
 from bot.behaviors.zerg.inject_larva import InjectLarva
 from bot.behaviors.zerg.morph_lair_at_main import MorphLairAtMain
 from bot.behaviors.zerg.morph_overseers import MorphOverseers
@@ -20,5 +21,6 @@ __all__ = [
     "MorphOverseers",
     "TrainFromLarva",
     "TrainQueens",
+    "ZergGasBuildingController",
     "pending_larva_trained",
 ]

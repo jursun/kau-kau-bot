@@ -49,9 +49,10 @@ the moment it's economically able to (it walks prerequisites and morphs
 whatever's missing along the way), well ahead of where the scripted
 sequence wants it.
 `_scripted_gas_scaling` replaces `c.gas_buildings()` outright rather than
-just being re-gated: after 5:30 it grows the gas target by 1 every 30s
+just being re-gated: after 5:00 it grows the gas target by 1 every 20s
 until capped at 6 (`economy.max_gas` is raised to match, so the Stage 1
-"Extractor Cap Respected" validator check stays meaningful).
+"Extractor Cap Respected" validator check stays meaningful). New Extractors
+prefer main → natural → 3rd → 4th → … (`ZergGasBuildingController`).
 
 `c.auto_supply()` is also re-gated, on `_scripted_overlords_exhausted`
 rather than left unconditional - see that function's own comment for why
@@ -150,7 +151,6 @@ from ares.behaviors.macro import (
     BuildStructure,
     BuildWorkers,
     ExpansionController,
-    GasBuildingController,
     UpgradeController,
 )
 from ares.consts import UnitRole
@@ -163,6 +163,7 @@ from bot.behaviors.zerg import (
     ExpandWithPersistentBuilder,
     MorphLairAtMain,
     TrainFromLarva,
+    ZergGasBuildingController,
     pending_larva_trained,
 )
 from bot.builds.definition import Army, BuildDefinition, Combat, Economy
@@ -330,7 +331,7 @@ def _step_behavior(ctx, step: "_Step"):
         # `_claim_natural_scout` parks on `UnitRole.PERSISTENT_BUILDER`).
         return ExpandWithPersistentBuilder(to_count=step.target)
     if step.kind == "gas":
-        return GasBuildingController(to_count=step.target)
+        return ZergGasBuildingController(to_count=step.target)
     if step.kind == "spawning_pool":
         return BuildStructure(
             base_location=ctx.production_location,
@@ -469,9 +470,10 @@ def _scripted_worker_production(ctx):
 # which caps at `_GAS_SCALE_BASE`). Absolute, not incremental: re-derives
 # the target from elapsed time every call rather than tracking state, so a
 # lost Extractor gets rebuilt instead of permanently capping the total one
-# short.
-_GAS_SCALE_START: float = 330.0  # 5:30
-_GAS_SCALE_INTERVAL: float = 30.0
+# short. Placement prefers main → natural → later bases (see
+# `ZergGasBuildingController`).
+_GAS_SCALE_START: float = 300.0  # 5:00
+_GAS_SCALE_INTERVAL: float = 20.0
 _GAS_SCALE_BASE: int = 2  # matches `_SEQUENCE`'s own final gas target
 _GAS_SCALE_MAX: int = 6
 
@@ -500,13 +502,19 @@ def _scripted_overlords_exhausted(ctx) -> bool:
     return have >= _FINAL_SCRIPTED_OVERLORD_COUNT
 
 
-def _scripted_gas_scaling(ctx):
-    time = ctx.bot.time
+def _gas_scale_target(time: float) -> int | None:
+    """Total Extractor count wanted at `time`, or `None` before scaling opens."""
     if time < _GAS_SCALE_START:
         return None
     intervals = int((time - _GAS_SCALE_START) // _GAS_SCALE_INTERVAL) + 1
-    target = min(_GAS_SCALE_MAX, _GAS_SCALE_BASE + intervals)
-    return GasBuildingController(to_count=target)
+    return min(_GAS_SCALE_MAX, _GAS_SCALE_BASE + intervals)
+
+
+def _scripted_gas_scaling(ctx):
+    target = _gas_scale_target(ctx.bot.time)
+    if target is None:
+        return None
+    return ZergGasBuildingController(to_count=target)
 
 
 def _split_production_after_opening(ctx):
