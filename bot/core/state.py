@@ -278,6 +278,9 @@ class RunState:
     """Last game time `steps.zerg.spore_crawlers` ran its per-base missing
     check (see that step's `check_interval`). `None` until the first check
     after the gate opens."""
+    last_forward_crawler_wave_at: float | None = None
+    """Last game time Macro Zerg dispatched a 6-worker Spine/Spore wave
+    beside the army (`steps.zerg.forward_crawler_wave`)."""
     queen_train_cooldown: dict[str, float] = field(default_factory=dict)
     """`TrainQueens`'s own `cooldown_state` - a single `{"last": ai.time}`
     entry it writes after every Queen it trains, persisted here so the

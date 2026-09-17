@@ -988,6 +988,9 @@ BUILD = BuildDefinition(
         _split_production_after_opening,
         _army_before_five,
         _post_five_army_tech,
+        # Mineral sink: >5000 bank → every 30s pull 6 drones for 3 Spine +
+        # 3 Spore beside the army (needs creep under the ball).
+        z.forward_crawler_wave(),
         # Last: only fires when nothing above had anywhere to put a mineral
         # surplus - see the module docstring and the step's own. Gated via
         # `_overflow_after_scripted_opening` so a 500+ bank mid-opening

@@ -409,6 +409,28 @@ def test_spawn_macro_army_prefers_lings_when_gas_starved() -> None:
     assert comp[UnitTypeId.ZERGLING]["proportion"] > comp[UnitTypeId.ROACH]["proportion"]
 
 
+def test_forward_crawler_wave_waits_on_minerals_and_interval() -> None:
+    from bot.behaviors.zerg import ForwardCrawlerWave
+
+    ctx = _ctx()
+    ctx.bot.minerals = 4000
+    ctx.bot.time = 100.0
+    ctx.bot.start_location = Point2((10.0, 10.0))
+    ctx.bot.enemy_start_locations = [Point2((50.0, 50.0))]
+    ctx.bot.mediator.get_squads.return_value = []
+    assert z.forward_crawler_wave()(ctx) is None
+
+    ctx.bot.minerals = 5001
+    wave = z.forward_crawler_wave()(ctx)
+    assert isinstance(wave, ForwardCrawlerWave)
+    assert list(wave.structure_types).count(UnitTypeId.SPINECRAWLER) == 3
+    assert list(wave.structure_types).count(UnitTypeId.SPORECRAWLER) == 3
+    assert ctx.state.last_forward_crawler_wave_at == 100.0
+    assert z.forward_crawler_wave()(ctx) is None
+    ctx.bot.time = 130.0
+    assert z.forward_crawler_wave()(ctx) is not None
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failures = 0

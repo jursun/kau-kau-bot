@@ -5,6 +5,7 @@ from bot.behaviors.zerg.build_spore_crawler import BuildSporeCrawler
 from bot.behaviors.zerg.expand_with_persistent_builder import (
     ExpandWithPersistentBuilder,
 )
+from bot.behaviors.zerg.forward_crawler_wave import ForwardCrawlerWave
 from bot.behaviors.zerg.gas_building_controller import ZergGasBuildingController
 from bot.behaviors.zerg.inject_larva import InjectLarva
 from bot.behaviors.zerg.morph_lair_at_main import MorphLairAtMain
@@ -17,6 +18,7 @@ __all__ = [
     "BuildMacroHatch",
     "BuildSporeCrawler",
     "ExpandWithPersistentBuilder",
+    "ForwardCrawlerWave",
     "InjectLarva",
     "MorphLairAtMain",
     "MorphOverseers",

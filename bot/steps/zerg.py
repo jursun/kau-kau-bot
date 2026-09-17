@@ -15,6 +15,7 @@ from sc2.ids.upgrade_id import UpgradeId
 from bot.behaviors.zerg import (
     BuildMacroHatch,
     BuildSporeCrawler,
+    ForwardCrawlerWave,
     InjectLarva,
     MorphOverseers,
     TrainQueens,
@@ -30,6 +31,7 @@ from bot.consts import (
 )
 from bot.core.types import Gate, MacroStep
 from bot.intel.army import enemy_has_air_units
+from bot.routines import targeting
 from bot.steps import common
 
 if TYPE_CHECKING:
@@ -270,6 +272,67 @@ def spore_crawlers(
 
 def spine_crawlers(count: int, gate: Gate = _always) -> MacroStep:
     return common.structure(UnitTypeId.SPINECRAWLER, count, gate)
+
+
+_FORWARD_CRAWLER_MINERALS: int = 5000
+_FORWARD_CRAWLER_INTERVAL: float = 30.0
+_FORWARD_CRAWLER_WAVE: tuple[UnitTypeId, ...] = (
+    UnitTypeId.SPINECRAWLER,
+    UnitTypeId.SPINECRAWLER,
+    UnitTypeId.SPINECRAWLER,
+    UnitTypeId.SPORECRAWLER,
+    UnitTypeId.SPORECRAWLER,
+    UnitTypeId.SPORECRAWLER,
+)
+
+
+def _army_forward_anchor(ctx: "BotContext"):
+    """Largest ATTACKING squad position, else attack destination from home."""
+    from ares.consts import UnitRole
+
+    # Match `routines.combat.SQUAD_RADIUS` (local to avoid import cycle).
+    squad_radius = 9.0
+    squads = ctx.mediator.get_squads(
+        role=UnitRole.ATTACKING, squad_radius=squad_radius
+    )
+    if squads:
+        biggest = max(squads, key=lambda squad: len(squad.squad_units))
+        return biggest.squad_position
+    return targeting.attack_target(ctx, ctx.production_location)
+
+
+def forward_crawler_wave(gate: Gate = _always) -> MacroStep:
+    """When floating >5000 minerals, every 30s pull 6 workers to plant
+    3 Spines + 3 Spores beside the army (mineral sink / forward static).
+
+    Placement needs creep — if the army is off creep the wave no-ops and
+    the interval still advances so we do not spam failed placement every
+    frame.
+    """
+
+    def step(ctx: "BotContext"):
+        if not gate(ctx):
+            return None
+        if ctx.bot.minerals <= _FORWARD_CRAWLER_MINERALS:
+            return None
+        last = ctx.state.last_forward_crawler_wave_at
+        if last is not None and ctx.bot.time - last < _FORWARD_CRAWLER_INTERVAL:
+            return None
+
+        anchor = _army_forward_anchor(ctx)
+        ctx.state.last_forward_crawler_wave_at = ctx.bot.time
+        from bot.common.log import log_event
+
+        log_event(
+            ctx.bot,
+            "FORWARD_CRAWLER wave: 3 Spine + 3 Spore beside army "
+            f"(minerals={ctx.bot.minerals})",
+        )
+        return ForwardCrawlerWave(
+            anchor=anchor, structure_types=_FORWARD_CRAWLER_WAVE
+        )
+
+    return step
 
 
 def overseers(
