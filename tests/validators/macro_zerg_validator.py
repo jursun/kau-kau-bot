@@ -67,20 +67,20 @@ class MacroZergValidator(BaseValidator):
 
     # (internal key, label, deadline in seconds) - matches
     # `bot.builds.zerg.macro_zerg._SEQUENCE` and its "additional timings"
-    # exactly (0:12, 0:54, 1:10, 1:15, 2:03, 2:15, 2:17, 2:47, 2:59, 3:32,
+    # exactly (0:12, 0:50, 1:00, 1:15, 2:03, 2:05, 2:17, 2:47, 2:59, 3:32,
     # 3:35, 4:05, 4:16, 4:25 - `gas_off`/`gas_on` come from the
-    # gas-worker-count timings, not the production sequence itself; Natural
-    # Hatchery's deadline is 54s rather than the opening's own 49s target -
-    # a slightly later natural is an accepted trade-off, not a regression),
-    # and is what Stage 2 reports in.
+    # gas-worker-count timings, not the production sequence itself),
+    # and is what Stage 2 reports in. Natural/Gas/gas-off were tightened
+    # after smoke showed consistent ~5-15s headroom on the prior 54/70/135
+    # windows.
     _OPENING_TIMING_SPEC: tuple[tuple[str, str, float], ...] = (
         ("overlord2", "Overlord", 12.0),
-        ("natural_hatch", "Natural Hatchery", 54.0),
-        ("gas1", "Gas", 70.0),
+        ("natural_hatch", "Natural Hatchery", 50.0),
+        ("gas1", "Gas", 60.0),
         ("pool", "Spawning Pool", 75.0),
         ("zerglings4", "4 Zergling", 123.0),
         ("hatch3", "3rd base Hatchery", 137.0),
-        ("gas_off", "3 Drone off gas", 135.0),
+        ("gas_off", "3 Drone off gas", 125.0),
         ("speed", "Speed", 167.0),
         ("overlord4", "4th Overlord", 179.0),
         ("gas_on", "3 Drone on gas", 212.0),
