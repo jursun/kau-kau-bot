@@ -153,7 +153,7 @@ def test_four_zergling_latches_on_two_eggs_not_hatched_units() -> None:
     result = validator.validate()
     lings = next(r for r in result["Stage 2: Opening Timing"] if r.name == "4 Zergling")
     assert lings.passed, lings.detail
-    assert "121.5s" in lings.detail
+    assert "Started: 122s" in lings.detail  # round(121.5)
 
 
 def test_a_milestone_hit_before_its_deadline_passes() -> None:
@@ -166,7 +166,24 @@ def test_a_milestone_hit_before_its_deadline_passes() -> None:
     result = validator.validate()
     overlord = next(r for r in result["Stage 2: Opening Timing"] if r.name == "Overlord")
     assert overlord.passed, overlord.detail
-    assert "10.0s" in overlord.detail
+    assert "Started: 10s" in overlord.detail
+    assert "[PASS]" in overlord.detail
+
+
+def test_opening_timing_matches_the_requested_shape() -> None:
+    """Regression test for the exact requested format: "Spawning Pool
+    ... Started: 73s (Target 75s) | Diff: -2s [PASS]"."""
+    validator = _validator()
+    validator.ai.time = 73.0  # Spawning Pool's deadline is 75.0s
+    validator.ai._structure_counts[UnitTypeId.SPAWNINGPOOL] = 1
+    validator.on_step(0)
+
+    result = validator.validate()
+    pool = next(r for r in result["Stage 2: Opening Timing"] if r.name == "Spawning Pool")
+
+    assert pool.passed
+    assert pool.detail == "Started: 73s (Target 75s) | Diff: -2s [PASS]"
+    assert str(pool) == pool.detail, "preformatted: __str__ must not add its own PASS/FAIL"
 
 
 def test_a_milestone_hit_after_its_deadline_fails() -> None:
@@ -178,8 +195,10 @@ def test_a_milestone_hit_after_its_deadline_fails() -> None:
     result = validator.validate()
     overlord = next(r for r in result["Stage 2: Opening Timing"] if r.name == "Overlord")
     assert not overlord.passed
-    assert "20.0s" in overlord.detail
-    assert "deadline 12s" in overlord.detail
+    assert "Started: 20s" in overlord.detail
+    assert "Target 12s" in overlord.detail
+    assert "Diff: +8s" in overlord.detail
+    assert "[FAIL]" in overlord.detail
 
 
 def test_a_milestone_never_reached_fails_with_a_clear_detail() -> None:
@@ -190,7 +209,7 @@ def test_a_milestone_never_reached_fails_with_a_clear_detail() -> None:
     result = validator.validate()
     pool = next(r for r in result["Stage 2: Opening Timing"] if r.name == "Spawning Pool")
     assert not pool.passed
-    assert pool.detail == "never happened (deadline 75s)"
+    assert pool.detail == "Started: never (Target 75s) [FAIL]"
 
 
 def test_a_milestone_latches_and_does_not_un_report_once_passed() -> None:
@@ -241,9 +260,9 @@ def test_gas_pull_off_and_resume_track_in_order() -> None:
     result = validator.validate()
     by_name = {r.name: r for r in result["Stage 2: Opening Timing"]}
     assert by_name["3 Drone off gas"].passed
-    assert "100.0s" in by_name["3 Drone off gas"].detail
+    assert "Started: 100s" in by_name["3 Drone off gas"].detail
     assert by_name["3 Drone on gas"].passed
-    assert "200.0s" in by_name["3 Drone on gas"].detail
+    assert "Started: 200s" in by_name["3 Drone on gas"].detail
 
 
 def test_lair_milestone_tracks_structure_count() -> None:
@@ -255,7 +274,7 @@ def test_lair_milestone_tracks_structure_count() -> None:
     result = validator.validate()
     lair = next(r for r in result["Stage 2: Opening Timing"] if r.name == "Lair")
     assert lair.passed, lair.detail
-    assert "200.0s" in lair.detail
+    assert "Started: 200s" in lair.detail
 
 
 def test_spores3_requires_three_not_two() -> None:
@@ -284,7 +303,7 @@ def test_spores3_passes_once_the_third_is_up() -> None:
         r for r in result["Stage 2: Opening Timing"] if r.name == "3 Spore Crawlers"
     )
     assert spores.passed, spores.detail
-    assert "300.0s" in spores.detail
+    assert "Started: 300s" in spores.detail
 
 
 def test_gas_on_never_latches_without_gas_off_happening_first() -> None:

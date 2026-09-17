@@ -12,32 +12,20 @@ needing a Stage 3/4/5 key (Tech Structures/Upgrades/Attack Waves) use
 from __future__ import annotations
 
 from sc2.data import Race
+from sc2.game_data import Cost
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 
 from tests.validators._fakes import FakeAI, _Counted, _FakeUnit
-from tests.validators.base_validator import BaseValidator, StepResult
+from tests.validators.base_validator import (
+    BaseValidator,
+    StepResult,
+    _StructureTracker,
+    _UpgradeTracker,
+)
 from tests.validators.macro_zerg_validator import MacroZergValidator
 
 # ── Stage 1: carried over from ZergRushValidator ────────────────────────────
-
-
-def test_pool_under_construction_is_not_double_counted() -> None:
-    """A single pool, mid-build, must not read as `pool count: 2` — see
-    `already_pending`'s docstring ("buildings already in progress"): it
-    counts the same structure `structures(...).amount` already counts."""
-    ai = FakeAI()
-    ai._structure_counts[UnitTypeId.SPAWNINGPOOL] = 1
-    ai._pending_counts[UnitTypeId.SPAWNINGPOOL] = 1
-    validator = BaseValidator(ai)
-    for _ in range(5):
-        validator.on_step(0)
-
-    result = validator.validate()
-    only_one_pool = next(
-        r for r in result["Stage 1: Opening Economy"] if r.name == "Only One Pool"
-    )
-    assert only_one_pool.passed, only_one_pool.detail
 
 
 def test_supply_block_within_grace_period_is_ignored() -> None:
@@ -62,70 +50,63 @@ def test_supply_block_after_grace_period_still_counts() -> None:
     assert validator._supply_blocked_frames == 1000
 
 
-# ── Stage 1: pool deadline comes from the build ─────────────────────────────
+def test_a_spawning_pool_still_lifts_the_early_supply_block_grace() -> None:
+    """"Pool Timing"/"Workers Before Pool"/"Only One Pool"/"Extractor
+    Built" were removed as reported Stage 1 checks (at the user's request -
+    redundant with Stage 2's own "Spawning Pool" deadline check), but the
+    underlying "has a pool ever been commanded" latch survives because
+    Supply Management still needs it: a fast opening is supply-blocked by
+    design for its first few seconds, pool or not, and this is what stops
+    that from free-riding on the grace period forever."""
+    ai = FakeAI()
+    ai.supply_left = 0
+    ai.time = 100.0  # past the grace period
+    validator = BaseValidator(ai)
+    validator.on_step(0)
+    validator.on_step(0)
+    before = validator._supply_blocked_frames  # 2 frames blocked so far
 
-
-def test_pool_timing_deadline_comes_from_the_build_not_a_shared_constant() -> None:
-    """A hatch-before-pool build (e.g. `Macro Zerg`, `pool_deadline=110.0`)
-    pools later than an immediate-pool one by design - the check must use
-    that build's own `ctx.build.pool_deadline`."""
-    ai = FakeAI(pool_deadline=75.0)
-    ai.time = 63.0  # past an immediate-pool deadline (50.0), within 75.0
     ai._structure_counts[UnitTypeId.SPAWNINGPOOL] = 1
-    validator = BaseValidator(ai)
-    validator.on_step(0)
+    validator.on_step(0)  # `_pool_started` still stale this frame - one more block
+    validator.on_step(0)  # now reflects the pool - stops counting
 
-    result = validator.validate()
-    pool_check = next(
-        r for r in result["Stage 1: Opening Economy"] if r.name == "Pool Timing"
+    assert validator._supply_blocked_frames == before + 1, (
+        "pool commanded - supply block must stop counting from the next frame"
     )
-    assert pool_check.passed, pool_check.detail
 
 
-def test_a_non_zerg_build_gets_no_pool_or_extractor_checks() -> None:
-    """A Terran build can never have a Spawning Pool or Extractor, so
-    reporting FAILs for them would bury checks that do apply."""
-    ai = FakeAI(race=Race.Terran)
-    ai.time = 120.0
-    validator = BaseValidator(ai)
-    validator.on_step(0)
-
-    names = [r.name for r in validator.validate()["Stage 1: Opening Economy"]]
-    assert "Pool Timing" not in names, names
-    assert "Workers Before Pool" not in names, names
-    assert "Only One Pool" not in names, names
-    assert "Extractor Built" not in names, names
-    # The race-neutral checks are still there.
-    assert "Workers Massed" in names, names
-    assert "Supply Management" in names, names
+# ── Stage 1: removed checks stay gone for every race ────────────────────────
 
 
-def test_a_zerg_build_still_gets_the_pool_checks() -> None:
-    ai = FakeAI()  # defaults to Race.Zerg
-    ai.time = 120.0
-    validator = BaseValidator(ai)
-    validator.on_step(0)
+def test_removed_pool_and_extractor_checks_are_gone_for_every_race() -> None:
+    for race in (Race.Terran, Race.Zerg):
+        ai = FakeAI(race=race)
+        ai.time = 120.0
+        validator = BaseValidator(ai)
+        validator.on_step(0)
 
-    names = [r.name for r in validator.validate()["Stage 1: Opening Economy"]]
-    assert "Pool Timing" in names, names
-    assert "Extractor Built" in names, names
-
-
-def test_pool_timing_still_fails_past_the_builds_own_deadline() -> None:
-    ai = FakeAI(pool_deadline=75.0)
-    ai.time = 80.0
-    ai._structure_counts[UnitTypeId.SPAWNINGPOOL] = 1
-    validator = BaseValidator(ai)
-    validator.on_step(0)
-
-    result = validator.validate()
-    pool_check = next(
-        r for r in result["Stage 1: Opening Economy"] if r.name == "Pool Timing"
-    )
-    assert not pool_check.passed
+        names = [r.name for r in validator.validate()["Stage 1: Opening Economy"]]
+        assert "Pool Timing" not in names, names
+        assert "Workers Before Pool" not in names, names
+        assert "Only One Pool" not in names, names
+        assert "Extractor Built" not in names, names
+        # The checks that do still apply are unaffected by the removal.
+        assert "Workers Massed" in names, names
+        assert "Supply Management" in names, names
 
 
 # ── Stage 1: extractor cap ───────────────────────────────────────────────────
+
+
+def test_extractor_cap_check_is_zerg_only() -> None:
+    """A Terran/Protoss build has no Extractor cap the same way - reporting
+    it would be a check that build can never fail meaningfully."""
+    ai = FakeAI(race=Race.Terran)
+    validator = BaseValidator(ai)
+    validator.on_step(0)
+
+    names = [r.name for r in validator.validate()["Stage 1: Opening Economy"]]
+    assert "Extractor Cap Respected" not in names, names
 
 
 def test_extractor_cap_respected_when_within_cap() -> None:
@@ -332,6 +313,154 @@ def test_get_score_excludes_informational_steps() -> None:
     assert score["steps_total"] < sum(
         len(steps) for steps in validator.validate().values()
     )
+
+
+# ── Completion tracking: started vs actually finished ───────────────────────
+
+
+def test_upgrade_completed_is_latched_separately_from_started() -> None:
+    """`pending_or_complete_upgrade` (→ `started`) fires the moment an
+    upgrade is queued; `ai.state.upgrades` (→ `completed`) only once
+    research actually finishes - these must not be conflated."""
+    ai = FakeAI(upgrades=(UpgradeId.ZERGLINGMOVEMENTSPEED,))
+    validator = BaseValidator(ai)
+    tracker = next(
+        t for t in validator._upgrades if t.upgrade == UpgradeId.ZERGLINGMOVEMENTSPEED
+    )
+
+    ai.time = 100.0
+    ai._pending_upgrades.add(UpgradeId.ZERGLINGMOVEMENTSPEED)
+    validator.on_step(0)
+    assert tracker.started and tracker.started_time == 100.0
+    assert not tracker.completed
+
+    ai.time = 179.0
+    ai.state.upgrades.add(UpgradeId.ZERGLINGMOVEMENTSPEED)
+    validator.on_step(0)
+    assert tracker.completed and tracker.completed_time == 179.0
+
+
+def test_structure_completed_is_latched_once_ready() -> None:
+    """A structure's `.amount` (→ `started`) counts it the instant
+    construction begins; `.ready.amount` (→ `completed`) only once it
+    finishes - same "commanded vs finished" split as upgrades."""
+    ai = FakeAI()
+    validator = BaseValidator(ai)
+    tracker = _StructureTracker(UnitTypeId.ROACHWARREN, "Roach Warren")
+    validator._structures.append(tracker)
+
+    ai.time = 50.0
+    ai._structure_counts[UnitTypeId.ROACHWARREN] = 1
+    ai._structure_ready_counts[UnitTypeId.ROACHWARREN] = 0  # still building
+    validator.on_step(0)
+    assert tracker.started and tracker.started_time == 50.0
+    assert not tracker.completed
+
+    ai.time = 90.0
+    ai._structure_ready_counts[UnitTypeId.ROACHWARREN] = 1
+    validator.on_step(0)
+    assert tracker.completed and tracker.completed_time == 90.0
+
+
+# ── Resource-shortage reason: mineral vs vespene, for the informational ────
+# ── Stage 3/4 report ─────────────────────────────────────────────────────
+
+
+def test_blocked_reason_identifies_a_mineral_only_shortage() -> None:
+    validator = BaseValidator(FakeAI())
+    validator.ai.minerals = 10
+    validator.ai.vespene = 999
+    validator.ai._costs[UpgradeId.ZERGLINGMOVEMENTSPEED] = Cost(100, 100)
+    tracker = _UpgradeTracker(
+        UpgradeId.ZERGLINGMOVEMENTSPEED, "Metabolic Boost", UnitTypeId.HATCHERY, None
+    )
+
+    validator._track_resource_block(tracker, tracker.upgrade)
+
+    assert tracker.mineral_blocked_frames == 1
+    assert tracker.vespene_blocked_frames == 0
+    assert validator._blocked_reason(tracker) == "Mineral shortage for 1s"
+
+
+def test_blocked_reason_identifies_a_vespene_only_shortage() -> None:
+    validator = BaseValidator(FakeAI())
+    validator.ai.minerals = 999
+    validator.ai.vespene = 10
+    validator.ai._costs[UpgradeId.GLIALRECONSTITUTION] = Cost(100, 100)
+    tracker = _UpgradeTracker(
+        UpgradeId.GLIALRECONSTITUTION, "Glial Reconstitution", UnitTypeId.ROACHWARREN, None
+    )
+
+    validator._track_resource_block(tracker, tracker.upgrade)
+
+    assert tracker.mineral_blocked_frames == 0
+    assert tracker.vespene_blocked_frames == 1
+    assert validator._blocked_reason(tracker) == "Vespene shortage for 1s"
+
+
+def test_blocked_reason_identifies_both_resources_short_at_once() -> None:
+    validator = BaseValidator(FakeAI())
+    validator.ai.minerals = 0
+    validator.ai.vespene = 0
+    validator.ai._costs[UnitTypeId.ROACHWARREN] = Cost(150, 100)
+    tracker = _StructureTracker(UnitTypeId.ROACHWARREN, "Roach Warren")
+    # 45 frames blocked, both resources short the whole time (≈2.0s @ 22.4fps).
+    for _ in range(45):
+        validator._track_resource_block(tracker, tracker.structure)
+
+    assert validator._blocked_reason(tracker) == "Mineral & Vespene shortage for 2s"
+
+
+def test_blocked_reason_is_none_when_never_blocked() -> None:
+    validator = BaseValidator(FakeAI())
+    tracker = _UpgradeTracker(
+        UpgradeId.BURROW, "Burrow", UnitTypeId.HATCHERY, None
+    )
+
+    assert validator._blocked_reason(tracker) is None
+
+
+# ── Informational Stage 3/4 detail: "Started: X | Completed: Y (reason)" ────
+
+
+def test_informational_detail_never_started() -> None:
+    validator = BaseValidator(FakeAI())
+    tracker = _UpgradeTracker(UpgradeId.BURROW, "Burrow", UnitTypeId.HATCHERY, None)
+
+    assert validator._informational_milestone_detail(tracker) == "Started: never"
+
+
+def test_informational_detail_started_but_not_yet_completed() -> None:
+    validator = BaseValidator(FakeAI())
+    tracker = _StructureTracker(UnitTypeId.SPIRE, "Spire")
+    tracker.started = True
+    tracker.started_time = 400.0
+
+    detail = validator._informational_milestone_detail(tracker)
+
+    assert detail == "Started: 400s | Completed: in progress"
+
+
+def test_informational_detail_matches_the_requested_shape() -> None:
+    """Regression test for the exact requested format: "Metabolic Boost
+    ... Started: 159s | Completed: 238s (Mineral shortage for 2s)"."""
+    validator = BaseValidator(FakeAI())
+    validator.ai.minerals = 0
+    validator.ai.vespene = 999
+    validator.ai._costs[UpgradeId.ZERGLINGMOVEMENTSPEED] = Cost(100, 0)
+    tracker = _UpgradeTracker(
+        UpgradeId.ZERGLINGMOVEMENTSPEED, "Metabolic Boost", UnitTypeId.HATCHERY, None
+    )
+    tracker.started = True
+    tracker.started_time = 159.0
+    tracker.completed = True
+    tracker.completed_time = 238.0
+    for _ in range(45):  # ≈2.0s @ 22.4fps
+        validator._track_resource_block(tracker, tracker.upgrade)
+
+    detail = validator._informational_milestone_detail(tracker)
+
+    assert detail == "Started: 159s | Completed: 238s (Mineral shortage for 2s)"
 
 
 # ── Stage 4: attack waves ────────────────────────────────────────────────────

@@ -100,9 +100,17 @@ class StepResult:
     would have blocked it, a PASS/FAIL label on top doesn't add
     information - see `_validate_structures`/`_validate_upgrades`'s own
     `informational` parameter."""
+    preformatted: bool = False
+    """True when `detail` is already a complete, ready-to-print line - its
+    own `[PASS]`/`[FAIL]` marker included, if any - so `__str__` returns it
+    verbatim instead of wrapping it in a generic `STATUS (...)` prefix.
+    Unlike `informational`, a preformatted step still counts toward the
+    report's overall score; only how it renders differs. See `Macro
+    ZergValidator._validate_opening_timing`'s "Started: X (Target Y) |
+    Diff: Z [STATUS]" shape for why a step would want this."""
 
     def __str__(self) -> str:
-        if self.informational:
+        if self.informational or self.preformatted:
             return self.detail
         status = "PASS" if self.passed else "FAIL"
         if self.detail:
@@ -143,7 +151,11 @@ class _UpgradeTracker:
     required_building: Optional[UnitTypeId]
     started: bool = False
     started_time: Optional[float] = None
+    completed: bool = False
+    completed_time: Optional[float] = None
     blocked_frames: int = 0
+    mineral_blocked_frames: int = 0
+    vespene_blocked_frames: int = 0
 
 
 def _make_upgrade_tracker(upgrade: UpgradeId) -> _UpgradeTracker:
@@ -160,7 +172,11 @@ class _StructureTracker:
     target: int = 1
     started: bool = False
     started_time: Optional[float] = None
+    completed: bool = False
+    completed_time: Optional[float] = None
     blocked_frames: int = 0
+    mineral_blocked_frames: int = 0
+    vespene_blocked_frames: int = 0
 
 
 @dataclass
@@ -228,6 +244,11 @@ class BaseValidator:
     """No wave should take longer than this to reform after the previous
     one releases. Past wave 1, a gap this long usually means macro fell
     over somewhere, not that the next wave is legitimately still massing."""
+    GAME_FPS: float = 22.4
+    """SC2's "Faster" game speed - what every ladder/bot game runs at.
+    `on_step` runs every game loop (see its own docstring), so a blocked-
+    frame count divided by this is the blocked duration in real seconds -
+    used by `_blocked_reason` for the informational Stage 3/4 report."""
     REPORT_TITLE: str = "VALIDATION REPORT"
     """Printed report header. Every concrete build validator sets its own —
     e.g. `FourRaxProxyValidator` sets "FOUR RAX PROXY VALIDATION REPORT" —
@@ -260,11 +281,14 @@ class BaseValidator:
         self.ai = ai
         # Stage 1
         self._max_workers: int = 0
-        self._workers_at_pool_start: int = 0
+        # Only the "has a Spawning Pool ever been commanded" latch survives
+        # here - it still gates Supply Management below (a fast opening is
+        # supply-blocked by design for its first few seconds, pool or not).
+        # Pool Timing / Workers Before Pool / Only One Pool / Extractor
+        # Built were removed as reported checks (redundant with Stage 2's
+        # own "Spawning Pool" deadline check for the one build that has a
+        # Stage 2), so nothing else here tracks their own state anymore.
         self._pool_started: bool = False
-        self._pool_start_time: Optional[float] = None
-        self._pool_count: int = 0
-        self._extractor_built: bool = False
         self._max_gas_buildings: int = 0
         self._gas_cap_exceeded: bool = False
         self._supply_blocked_frames: int = 0
@@ -390,8 +414,6 @@ class BaseValidator:
             self._supply_blocked_frames += 1
 
         gas_count = self.gas_buildings.amount
-        if gas_count > 0:
-            self._extractor_built = True
         if gas_count > self._max_gas_buildings:
             self._max_gas_buildings = gas_count
         if gas_count > self.ctx.build.economy.max_gas:
@@ -402,19 +424,6 @@ class BaseValidator:
             pending = self.already_pending(UnitTypeId.SPAWNINGPOOL)
             if pool_count + pending > 0:
                 self._pool_started = True
-                self._pool_start_time = self.time
-                self._workers_at_pool_start = self.workers.amount
-                # Deliberately not `pool_count + pending` here: once placed
-                # but still building, `already_pending` ALSO counts it (its
-                # own docstring: "buildings already in progress"), so both
-                # equal 1 for the same physical pool through its whole
-                # build time. The unconditional block below re-derives the
-                # true count every frame from `structures(...).amount`
-                # alone, so nothing is lost by not seeding it here.
-
-        current_pool = self.structures(UnitTypeId.SPAWNINGPOOL).amount
-        if current_pool > self._pool_count:
-            self._pool_count = current_pool
 
         # ── Stage 1B tracking ────────────────────────────────────────
         if self._crew_claims:
@@ -503,8 +512,25 @@ class BaseValidator:
             self.pending_or_complete_upgrade(u) for u in self._upgrades_before(first)
         )
 
+    def _track_resource_block(self, tracker, item) -> None:
+        """Shared by `_track_upgrades`/`_track_structures`: on top of the
+        existing generic `blocked_frames` tally, split it by which
+        resource(s) actually fell short - `can_afford` alone conflates
+        "waiting on minerals" and "waiting on gas", but the informational
+        Stage 3/4 report wants to name the specific one."""
+        tracker.blocked_frames += 1
+        cost = self.calculate_cost(item)
+        if self.minerals < cost.minerals:
+            tracker.mineral_blocked_frames += 1
+        if self.vespene < cost.vespene:
+            tracker.vespene_blocked_frames += 1
+
     def _track_upgrades(self) -> None:
         for tracker in self._upgrades:
+            if not tracker.completed and tracker.upgrade in self.state.upgrades:
+                tracker.completed = True
+                tracker.completed_time = self.time
+
             if tracker.started:
                 continue
             if self.pending_or_complete_upgrade(tracker.upgrade):
@@ -524,10 +550,16 @@ class BaseValidator:
                 )
             )
             if eligible and not self.can_afford(tracker.upgrade):
-                tracker.blocked_frames += 1
+                self._track_resource_block(tracker, tracker.upgrade)
 
     def _track_structures(self) -> None:
         for tracker in self._structures:
+            if not tracker.completed:
+                ready = self.structures(tracker.structure).ready.amount
+                if ready >= tracker.target:
+                    tracker.completed = True
+                    tracker.completed_time = self.time
+
             if tracker.started:
                 continue
             existing = self.structures(tracker.structure).amount
@@ -541,7 +573,7 @@ class BaseValidator:
                 and self.tech_requirement_progress(tracker.structure) >= 1.0
             )
             if eligible and not self.can_afford(tracker.structure):
-                tracker.blocked_frames += 1
+                self._track_resource_block(tracker, tracker.structure)
 
     # ── Stage 4 tracking ─────────────────────────────────────────────────
 
@@ -670,13 +702,19 @@ class BaseValidator:
         Split into the race-neutral checks and the Zerg-specific ones, for
         the same reason gotchas 12 and 17 pushed the tech tree and the pool
         deadline onto the build: a check the build can never satisfy is
-        noise, not a finding. A Terran or Protoss build has no Spawning Pool
-        and no Extractor, so reporting "no pool" as a FAIL four lines running
-        would bury the checks that do apply to it.
+        noise, not a finding. A Terran or Protoss build has no Extractor
+        cap the same way, so reporting it as a FAIL would bury the checks
+        that do apply to it.
+
+        "Workers Before Pool" / "Pool Timing" / "Only One Pool" / "Extractor
+        Built" used to also live here for Zerg - dropped at the user's
+        request once Stage 2's own from-scratch opening-timing checklist
+        (Macro Zerg's `_OPENING_TIMING_SPEC`, which already has its own
+        "Spawning Pool" deadline check) made them redundant noise rather
+        than a distinct finding.
         """
         target = self.ctx.build.economy.worker_target
         max_gas = self.ctx.build.economy.max_gas
-        pool_deadline = self.ctx.build.pool_deadline
         race = self.ctx.build.race
 
         results: List[StepResult] = [
@@ -688,34 +726,13 @@ class BaseValidator:
         ]
 
         if race == Race.Zerg:
-            results += [
-                StepResult(
-                    "Workers Before Pool",
-                    self._workers_at_pool_start >= 12,
-                    f"workers at pool start: {self._workers_at_pool_start}",
-                ),
-                StepResult(
-                    "Pool Timing",
-                    self._pool_start_time is not None
-                    and self._pool_start_time <= pool_deadline,
-                    (
-                        f"pool at {self._pool_start_time:.1f}s"
-                        if self._pool_start_time is not None
-                        else "no pool"
-                    ),
-                ),
-                StepResult(
-                    "Only One Pool",
-                    self._pool_count <= 1,
-                    f"pool count: {self._pool_count}",
-                ),
-                StepResult("Extractor Built", self._extractor_built),
+            results.append(
                 StepResult(
                     "Extractor Cap Respected",
                     not self._gas_cap_exceeded,
                     f"max gas buildings: {self._max_gas_buildings} (cap {max_gas})",
                 ),
-            ]
+            )
 
         results.append(
             StepResult(
@@ -789,6 +806,41 @@ class BaseValidator:
             detail += f" - {blocked_frames} resource-blocked frames so far"
         return detail
 
+    def _blocked_reason(self, tracker) -> Optional[str]:
+        """Which resource, if any, this tracker ever sat tech-ready but
+        unaffordable for - `blocked_frames`'s own generic count, broken
+        down by mineral vs vespene (`_track_resource_block`) and converted
+        from frames to seconds (`GAME_FPS`) for the informational Stage 3/4
+        report. `or 1` so a real-but-brief block (a handful of frames)
+        never displays as a misleading "for 0s"."""
+        mineral_s = tracker.mineral_blocked_frames / self.GAME_FPS
+        vespene_s = tracker.vespene_blocked_frames / self.GAME_FPS
+        if not mineral_s and not vespene_s:
+            return None
+        if mineral_s and vespene_s:
+            seconds = round(max(mineral_s, vespene_s)) or 1
+            return f"Mineral & Vespene shortage for {seconds}s"
+        if mineral_s:
+            return f"Mineral shortage for {round(mineral_s) or 1}s"
+        return f"Vespene shortage for {round(vespene_s) or 1}s"
+
+    def _informational_milestone_detail(self, tracker) -> str:
+        """"Started: X | Completed: Y (reason)" - see `StepResult.
+        informational`'s own comment for why Stage 3/4 want this instead
+        of a PASS/FAIL judgment on top of `_milestone_detail`'s text."""
+        reason = self._blocked_reason(tracker)
+        if not tracker.started:
+            detail = "Started: never"
+        else:
+            detail = f"Started: {round(tracker.started_time)}s"
+            if tracker.completed:
+                detail += f" | Completed: {round(tracker.completed_time)}s"
+            else:
+                detail += " | Completed: in progress"
+        if reason:
+            detail += f" ({reason})"
+        return detail
+
     def _validate_structures(self, informational: bool = False) -> List[StepResult]:
         """`informational=True`: report "up at X" / "never built (+ why)"
         with no PASS/FAIL judgment, and exclude these from the report's
@@ -811,15 +863,15 @@ class BaseValidator:
                 if tracker.target == 1
                 else f"{tracker.label} x{tracker.target}"
             )
-            results.append(
-                StepResult(
-                    label,
-                    tracker.started,
-                    self._milestone_detail(
-                        tracker.started, tracker.started_time, tracker.blocked_frames
-                    ),
-                    informational=informational,
+            detail = (
+                self._informational_milestone_detail(tracker)
+                if informational
+                else self._milestone_detail(
+                    tracker.started, tracker.started_time, tracker.blocked_frames
                 )
+            )
+            results.append(
+                StepResult(label, tracker.started, detail, informational=informational)
             )
         return results
 
@@ -836,9 +888,12 @@ class BaseValidator:
             ]
         results = []
         for tracker in self._upgrades:
-            detail = self._milestone_detail(
-                tracker.started, tracker.started_time, tracker.blocked_frames
-            ).replace("up at", "started")
+            if informational:
+                detail = self._informational_milestone_detail(tracker)
+            else:
+                detail = self._milestone_detail(
+                    tracker.started, tracker.started_time, tracker.blocked_frames
+                ).replace("up at", "started")
             results.append(
                 StepResult(
                     tracker.label, tracker.started, detail, informational=informational

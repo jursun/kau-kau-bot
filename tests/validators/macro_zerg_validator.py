@@ -206,16 +206,36 @@ class MacroZergValidator(BaseValidator):
             latch("gas_on", gas_assigned >= 3)
 
     def _validate_opening_timing(self) -> List[StepResult]:
+        """"Started: X (Target Y) | Diff: Z [STATUS]" - PASS/FAIL judgment
+        moves from a prefix to a bracketed suffix so it reads next to the
+        actual numbers it's judging, and `Diff` spells out the margin
+        instead of leaving the reader to subtract it themselves.
+        `preformatted=True` (see `StepResult`'s own comment) so `__str__`
+        prints this line verbatim - the `[STATUS]` is already in it.
+
+        `on_time`/`passed` still comes from the precise, unrounded
+        `started_time` vs `deadline` - only the *display* rounds to whole
+        seconds, so `Diff`'s sign always matches the bracketed status even
+        though the displayed arithmetic (Started - Target) is what a
+        reader would compute by eye.
+        """
         results: List[StepResult] = []
         for key, label, deadline in self._OPENING_TIMING_SPEC:
             tracker = self._opening_timing[key]
+            target = round(deadline)
             if tracker.started:
                 on_time = tracker.started_time <= deadline
-                detail = f"started at {tracker.started_time:.1f}s (deadline {deadline:.0f}s)"
+                started = round(tracker.started_time)
+                diff = started - target
+                status = "PASS" if on_time else "FAIL"
+                detail = (
+                    f"Started: {started}s (Target {target}s) | "
+                    f"Diff: {diff:+d}s [{status}]"
+                )
             else:
                 on_time = False
-                detail = f"never happened (deadline {deadline:.0f}s)"
-            results.append(StepResult(label, on_time, detail))
+                detail = f"Started: never (Target {target}s) [FAIL]"
+            results.append(StepResult(label, on_time, detail, preformatted=True))
         return results
 
     def validate(self) -> Dict[str, List[StepResult]]:

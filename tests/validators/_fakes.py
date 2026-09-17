@@ -9,6 +9,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from sc2.data import Race
+from sc2.game_data import Cost
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
 
@@ -156,6 +157,19 @@ class FakeAI:
         # `.get_cached_enemy_army` is a plain attribute here (a test sets it
         # directly), standing in for ares' real `ManagerMediator` property.
         self.mediator = SimpleNamespace(get_cached_enemy_army=[])
+        # `ai.state.upgrades` is python-sc2's own *completed*-upgrades set
+        # (distinct from `pending_or_complete_upgrade`, true the moment an
+        # upgrade is queued) - a plain, test-settable stand-in here since
+        # `FakeAI` doesn't model a full `GameState`.
+        self.state = SimpleNamespace(upgrades=set())
+        # High by default so a test that never touches these (most of them
+        # - `can_afford`/`_affordable` is the pre-existing, independent
+        # affordability switch) never accidentally trips the mineral/
+        # vespene-specific shortage tracking `_track_resource_block` adds
+        # on top of it.
+        self.minerals = 9_999
+        self.vespene = 9_999
+        self._costs: dict = {}
         self.ctx = _FakeCtx(
             upgrades,
             max_gas=max_gas,
@@ -192,6 +206,9 @@ class FakeAI:
 
     def can_afford(self, item) -> bool:
         return item in self._affordable
+
+    def calculate_cost(self, item) -> Cost:
+        return self._costs.get(item, Cost(0, 0))
 
     def tech_requirement_progress(self, structure_type) -> float:
         return 1.0

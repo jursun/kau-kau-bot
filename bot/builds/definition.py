@@ -240,13 +240,15 @@ class BuildDefinition:
     on_upgrade_complete: UpgradeCompleteHook | None = None
     """Called from `KauKauBot.on_upgrade_complete`."""
     pool_deadline: float = 50.0
-    """Latest acceptable Spawning Pool start time (game seconds), read by
-    `tests.validators.base_validator.BaseValidator`'s "Pool Timing" check
-    (shared by every Zerg build's own validator). Defaults to an
-    immediate-pool opening's expectation; a build whose `OpeningBuildOrder`
-    deliberately expands (or does anything else) before pool should raise
-    this to match its own opening rather than let the validator enforce a
-    deadline calibrated for a different build's timing."""
+    """Latest acceptable Spawning Pool start time (game seconds) - documents
+    a build's own opening intent (immediate-pool by default; a build whose
+    `OpeningBuildOrder` deliberately expands or does anything else before
+    pool should raise this to match). Not currently read by any validator
+    check: `BaseValidator`'s own generic "Pool Timing" was removed as a
+    reported Stage 1 check (redundant with a per-build Stage 2's own
+    opening-timing checklist, e.g. `MacroZergValidator`'s "Spawning Pool"
+    deadline), leaving this field as documentation only unless a future
+    validator wants to read it again."""
 
     def __post_init__(self) -> None:
         total = sum(v["proportion"] for v in self.army.comp.values())
