@@ -125,14 +125,13 @@ production in the Roach-only window. Counter comps from scouting are a
 placeholder; baseline is Roach + Swarm Host (+ Corruptor on air).
 
 This is a continuous macro identity, not a scripted all-in leave time:
-`combat.release_waves()` releases (and grows) waves on its own repeating
-size/tech gate, `combat.defend_home()` holds between waves, and Swarm
-Host/Corruptor never enter that pipeline at all — see
-`combat.dig_in_swarm_hosts`/`combat.escort_corruptors` and
-`core.roles.SUPPORT_ROLES` for why they're kept off `army.types`. Zergling
-is kept off `army.types` too, for the opposite reason: it's a dedicated
-home defender that must never be swept into a wave (`combat.defend_with_
-zerglings`), not an offensive unit release_waves() would otherwise collect.
+once army supply hits 40, `combat.release_first_wave_then_stream` puts
+every DEFENDING army unit on ATTACKING and streams new ones forever after.
+`combat.defend_home()` holds before that, and Swarm Host/Corruptor never
+enter that pipeline at all — see `combat.dig_in_swarm_hosts`/
+`combat.escort_corruptors` and `core.roles.SUPPORT_ROLES`. Home Zerglings
+stay on `ZERGLING_DEFENDER_ROLE` (`combat.defend_with_zerglings`); extras
+join the attack wave.
 
 The starting Overlord is sent scouting from `bot.main.on_start` rather than
 through `core.roles.assign_on_created` — it exists before the game-start
@@ -880,7 +879,9 @@ BUILD = BuildDefinition(
     pool_deadline=110.0,
     combat=Combat(
         routines=(
-            combat.release_waves(),
+            # Once army supply hits 40, promote everyone on DEFENDING and
+            # stream every new army unit into ATTACKING from then on.
+            combat.release_first_wave_then_stream(muster=True),
             combat.defend_home(),
             combat.defend_with_zerglings(),
             combat.attack_squads(),
@@ -891,12 +892,10 @@ BUILD = BuildDefinition(
             creep.spread_tumors(),
             scouting.air_scout(UnitTypeId.OVERLORD),
         ),
-        # Leave once Glial has started *and* army supply is at least 40.
-        wave_gate=gates.all_of(
-            gates.upgrade_started(UpgradeId.GLIALRECONSTITUTION),
-            gates.army_supply_at_least(40),
-        ),
-        wave1_min=10,
+        # Leave the moment army supply hits 40 — wave1_min=1 so we do not
+        # also wait on a unit-count floor after that.
+        wave_gate=gates.army_supply_at_least(40),
+        wave1_min=1,
         wave_growth=1.15,
         wave_stage_label="Roach Pushes",
     ),
