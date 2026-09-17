@@ -1,0 +1,80 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Jason Wong <usernameunknown@yahoo.com>
+Date: Wed, 16 Sep 2026 20:21:00 -1000
+Subject: [PATCH] Prefer main hatchery for Lair/Hive morph in TechUp.
+
+TechUp._upgrade_zerg_townhall morphs idle_townhalls[0], which is often
+the natural when the main is busy (Queen train) or simply later in
+ai.townhalls. Lair (and Hive) should wait for the townhall closest to
+base_location — the main — rather than falling back to another base.
+Confirmed live in Macro Zerg: scripted Lair landed on the natural.
+---
+ src/ares/behaviors/macro/tech_up.py | 53 ++++++++++++++++++-------------------
+ 1 file changed, 27 insertions(+), 26 deletions(-)
+
+diff --git a/src/ares/behaviors/macro/tech_up.py b/src/ares/behaviors/macro/tech_up.py
+index 883786d6..31726734 100644
+--- a/src/ares/behaviors/macro/tech_up.py
++++ b/src/ares/behaviors/macro/tech_up.py
+@@ -271,35 +271,33 @@ class TechUp(MacroBehavior):
+         ):
+             return False
+ 
+-        # lair
+-        if (
+-            structure_type == UnitTypeId.LAIR
+-            and not structures_dict[UnitTypeId.HIVE]
+-            and (
+-                idle_townhalls := [
+-                    th for th in ai.townhalls if th.is_idle and th.is_ready
+-                ]
+-            )
+-        ):
+-            # all townhalls will be a hatchery if got to here
+-            th: Unit = idle_townhalls[0]
++        # lair — prefer the hatchery at `base_location` (main), never the
++        # first idle townhall in list order. Confirmed live against Macro
++        # Zerg: `idle_townhalls[0]` morphs the natural when main is busy or
++        # simply later in `ai.townhalls`. Wait for main to go idle rather
++        # than falling back to another base.
++        if structure_type == UnitTypeId.LAIR and not structures_dict[UnitTypeId.HIVE]:
++            hatches = [
++                th
++                for th in ai.townhalls
++                if th.is_ready and th.type_id == UnitTypeId.HATCHERY
++            ]
++            if not hatches:
++                return False
++            th = min(hatches, key=lambda h: h.distance_to(self.base_location))
++            if not th.is_idle:
++                return False
+             th(AbilityId.UPGRADETOLAIR_LAIR)
+             return True
+ 
+-        # hive
+-        if (
+-            structure_type == UnitTypeId.HIVE
+-            and not structures_dict[UnitTypeId.HIVE]
+-            and (
+-                idle_lair := [
+-                    th
+-                    for th in structures_dict[UnitTypeId.LAIR]
+-                    if th.is_idle and th.is_ready
+-                ]
+-            )
+-        ):
+-            # all townhalls will be a hatchery if got to here
+-            th = idle_lair[0]
++        # hive — same main-first rule on the Lair closest to base_location
++        if structure_type == UnitTypeId.HIVE and not structures_dict[UnitTypeId.HIVE]:
++            lairs = [th for th in structures_dict[UnitTypeId.LAIR] if th.is_ready]
++            if not lairs:
++                return False
++            th = min(lairs, key=lambda h: h.distance_to(self.base_location))
++            if not th.is_idle:
++                return False
+             th(AbilityId.UPGRADETOHIVE_HIVE)
+             return True
+ 
+--
+2.22.0.windows.1

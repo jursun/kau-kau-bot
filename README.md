@@ -66,10 +66,11 @@ python scripts/apply_ares_patches.py
 ```
 
 `apply_ares_patches.py` overlays Chargelot nat-wall FirstPylon,
-pylon+Prism warp-power, and multi-Gate warp-placement fixes onto the pinned
-upstream ares-sc2 (no fork). Safe to re-run; after bumping ares you may need
-refreshed patches under `patches/ares-sc2/`. The submodule working tree will
-look dirty — that is expected; do not commit those ares file edits.
+pylon+Prism warp-power, multi-Gate warp-placement, pending-worker till,
+and TechUp main-hatch Lair/Hive fixes onto the pinned upstream ares-sc2
+(no fork). Safe to re-run; after bumping ares you may need refreshed
+patches under `patches/ares-sc2/`. The submodule working tree will look
+dirty — that is expected; do not commit those ares file edits.
 
 ### Install dependencies
 

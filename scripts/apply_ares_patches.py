@@ -2,8 +2,9 @@
 
 Pin is upstream v3.13.1 (87308658). Patches live in patches/ares-sc2/ and cover
 nat-wall FirstPylon preference, pylon+Prism warp power by spawn distance,
-spreading multi-Gate warp placements around the power source, and counting
-pending (still-morphing) workers against ConstantWorkerProductionTill.
+spreading multi-Gate warp placements around the power source, counting
+pending (still-morphing) workers against ConstantWorkerProductionTill, and
+preferring the main hatchery for TechUp Lair/Hive morphs.
 
 Usage (from repo root, after `git submodule update --init --recursive`):
 
