@@ -23,11 +23,12 @@ from bot.common.log import log_event
 from bot.core import BotContext, CombatEngine, MacroEngine, RunState, roles
 from bot.core.registry import UnknownBuild, default_build, get_build
 
-# Optional local cut via `run_game(..., game_time_limit=...)` when callers
-# pass `--leave N` (`run.py` / harness). Neither defaults a limit anymore;
-# Ladder never passes one. Do NOT call `client.leave()` mid-step — ares
-# `_after_step` then hits ProtocolError: Not in a game.
-LOCAL_GAME_TIME_LIMIT_SECONDS: float = 7 * 60  # documented 7:00 suggestion only
+# Harness default leave (`scripts/harness/harness_common.DEFAULT_LEAVE_SECONDS`):
+# 7:00 via `run_game(..., game_time_limit=...)`. `run.py` itself has no
+# default leave — pass `--leave N` there explicitly. Ladder never passes a
+# limit. Do NOT call `client.leave()` mid-step — ares `_after_step` then hits
+# ProtocolError: Not in a game.
+LOCAL_GAME_TIME_LIMIT_SECONDS: float = 7 * 60
 
 # Structures worth a line in the timeline log.
 LOGGED_STRUCTURES: frozenset[UnitTypeId] = frozenset(

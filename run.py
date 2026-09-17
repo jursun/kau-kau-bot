@@ -5,9 +5,8 @@
   python run.py --leave 420     # optional artificial Tie at N game-seconds
   python run.py --LadderServer  # invoked by AI Arena's LadderManager
 
-Harness scripts (`scripts/harness/*_tier.py`) also omit a limit unless
-you pass `--leave N` (e.g. `--leave 420` for a 7:00 cut). Ladder never
-passes a time limit.
+Harness scripts (`scripts/harness/*_tier.py`) still default `--leave` to
+420 (7:00). Ladder never passes a time limit.
 
 Local settings live under `LocalGame:` in config.yml. Bot name / race come
 from `MyBotName` / `MyBotRace` in the same file, which is also what
@@ -276,7 +275,7 @@ def main() -> None:
         metavar="SECONDS",
         help=(
             "Artificial Tie after N game-seconds. Omit for no time limit "
-            "(same for harness scripts; pass --leave 420 for a 7:00 cut)."
+            "(harness scripts still default to 420)."
         ),
     )
     args, _unknown = parser.parse_known_args()
