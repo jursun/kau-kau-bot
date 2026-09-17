@@ -377,6 +377,95 @@ def test_attack_squads_kites_when_outnumbered_and_min_engage_range_is_set() -> N
         _restore_in_range(original_in_range)
 
 
+# ── Attack squads: never_retreat (Roach/Zergling commit-and-grind) ─────────
+
+
+def test_never_retreat_skips_keep_group_safe_entirely() -> None:
+    """Regression test for the exact user report: "the majority of our
+    Roaches and Zerglings never attacked... maintained their distance and
+    never engaged". `KeepGroupSafe` only needs one unit mid-cooldown on
+    enemy-influenced ground to short-circuit the whole squad's advance -
+    `never_retreat=True` must not register it at all."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original = _patch_targeting(rally, attack)
+    try:
+        ctx = _ctx()
+        units = [_unit(1, Point2((10.0, 10.0))), _unit(2, Point2((12.0, 10.0)))]
+        enemies = [_unit(90, Point2((11.0, 10.0)))]
+        ctx.mediator.get_cached_enemy_army = enemies
+        ctx.mediator.get_units_in_range.return_value = [enemies]
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+
+        combat.attack_squads(never_retreat=True)(ctx)
+
+        registered = ctx.bot.register_behavior.call_args.args[0]
+        assert not any(isinstance(m, KeepGroupSafe) for m in registered.micros)
+        stutters = [
+            m for m in registered.micros if isinstance(m, StutterGroupForward)
+        ]
+        assert len(stutters) == 1, "should stutter-forward toward the enemy"
+        assert stutters[0].enemies == enemies
+        assert any(isinstance(m, AMoveGroup) for m in registered.micros)
+    finally:
+        _restore_targeting(original)
+
+
+def test_never_retreat_still_commits_when_badly_outnumbered() -> None:
+    """`never_retreat=True` overrides `min_engage_range` kiting too - a
+    build that wants to never peel off must not fall back to per-unit kite
+    just because the enemy force is larger."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original = _patch_targeting(rally, attack)
+    try:
+        ctx = _ctx()
+        units = [_unit(1, Point2((10.0, 10.0)))]  # 1 unit
+        enemies = [
+            _unit(90, Point2((11.0, 10.0))),
+            _unit(91, Point2((11.0, 11.0))),
+            _unit(92, Point2((11.0, 12.0))),
+        ]  # badly outnumbered
+        ctx.mediator.get_cached_enemy_army = enemies
+        ctx.mediator.get_units_in_range.return_value = [enemies]
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+
+        combat.attack_squads(min_engage_range=3.0, never_retreat=True)(ctx)
+
+        assert ctx.bot.register_behavior.call_count == 1, "one group maneuver, not per-unit kite"
+        registered = ctx.bot.register_behavior.call_args.args[0]
+        assert not any(isinstance(m, KeepUnitSafe) for m in registered.micros)
+        assert not any(isinstance(m, KeepGroupSafe) for m in registered.micros)
+        assert any(isinstance(m, StutterGroupForward) for m in registered.micros)
+    finally:
+        _restore_targeting(original)
+
+
+def test_never_retreat_falls_back_to_amove_with_no_close_enemy() -> None:
+    """No nearby enemy: just advance toward the destination, same as the
+    influence-retreat path's own fallback."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original = _patch_targeting(rally, attack)
+    try:
+        ctx = _ctx()
+        units = [_unit(1, Point2((10.0, 10.0)))]
+        ctx.mediator.get_cached_enemy_army = []
+        ctx.mediator.get_units_in_range.return_value = [[]]
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+
+        combat.attack_squads(never_retreat=True)(ctx)
+
+        registered = ctx.bot.register_behavior.call_args.args[0]
+        assert not any(isinstance(m, KeepGroupSafe) for m in registered.micros)
+        assert not any(isinstance(m, StutterGroupForward) for m in registered.micros)
+        amoves = [m for m in registered.micros if isinstance(m, AMoveGroup)]
+        assert len(amoves) == 1
+        assert amoves[0].target == attack
+    finally:
+        _restore_targeting(original)
+
+
 def test_attack_squads_stutters_when_ahead_even_with_min_engage_range() -> None:
     """Having a kite range configured must not kite a fight we are winning -
     stutter-step is the aggressive path when our supply is larger."""

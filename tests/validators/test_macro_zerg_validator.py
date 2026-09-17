@@ -33,6 +33,31 @@ def test_validate_returns_all_six_stages() -> None:
     ]
 
 
+def test_only_stage_1_and_2_are_pass_fail() -> None:
+    """Stage 1/2 cover the scripted opening (one correct answer to regress
+    against) and must stay PASS/FAIL. Stage 3/4 cover tech/upgrades reached
+    only after the opening hands off to reactive macro_steps - "never
+    built by leave time" is an expected outcome there, not a regression -
+    so they report status only (see `StepResult.informational`)."""
+    ai = FakeAI(
+        upgrades=(UpgradeId.BURROW, UpgradeId.TUNNELINGCLAWS),
+        wave_stage_label="Roach Pushes",
+    )
+    validator = MacroZergValidator(ai)
+    validator.on_step(0)
+
+    result = validator.validate()
+    assert result["Stage 1: Opening Economy"], "sanity: stage is non-empty"
+    assert result["Stage 2: Opening Timing"], "sanity: stage is non-empty"
+    assert all(not r.informational for r in result["Stage 1: Opening Economy"])
+    assert all(not r.informational for r in result["Stage 2: Opening Timing"])
+
+    assert result["Stage 3: Tech Structures"], "sanity: stage is non-empty"
+    assert result["Stage 4: Upgrades"], "sanity: stage is non-empty"
+    assert all(r.informational for r in result["Stage 3: Tech Structures"])
+    assert all(r.informational for r in result["Stage 4: Upgrades"])
+
+
 def test_report_never_includes_stage_1b() -> None:
     """Regression test: Stage 1B used to leak in from the old shared
     validator class. `MacroZergValidator.validate()` structurally never

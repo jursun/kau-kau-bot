@@ -64,7 +64,7 @@ LocalGame:
     OpponentRace: Protoss
     # VeryEasy .. VeryHard, plus CheatVision / CheatMoney / CheatInsane
     OpponentDifficulty: VeryHard
-    Realtime: True
+    Realtime: False
     # Tiny corner window when Realtime is False (faster GPU). Ignored if Realtime.
     FastWindow: True
     WindowWidth: 256

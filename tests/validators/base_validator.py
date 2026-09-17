@@ -92,8 +92,18 @@ class StepResult:
     name: str
     passed: bool = False
     detail: str = ""
+    informational: bool = False
+    """True for a status-only step: no PASS/FAIL judgment printed, and
+    excluded from the report's overall pass count/percentage. For a
+    milestone whose own detail already says exactly what happened ("up at
+    213.5s" / "never built - N resource-blocked frames so far") and what
+    would have blocked it, a PASS/FAIL label on top doesn't add
+    information - see `_validate_structures`/`_validate_upgrades`'s own
+    `informational` parameter."""
 
     def __str__(self) -> str:
+        if self.informational:
+            return self.detail
         status = "PASS" if self.passed else "FAIL"
         if self.detail:
             return f"{status} ({self.detail})"
@@ -779,9 +789,21 @@ class BaseValidator:
             detail += f" - {blocked_frames} resource-blocked frames so far"
         return detail
 
-    def _validate_structures(self) -> List[StepResult]:
+    def _validate_structures(self, informational: bool = False) -> List[StepResult]:
+        """`informational=True`: report "up at X" / "never built (+ why)"
+        with no PASS/FAIL judgment, and exclude these from the report's
+        overall pass count - for a build (Macro Zerg) whose tech order
+        past the scripted opening reacts to the game rather than following
+        a fixed schedule, so "never built by leave time" isn't a
+        regression the way a missed opening deadline is."""
         if not self._structures:
-            return [StepResult("No tech structures required by this build", True)]
+            return [
+                StepResult(
+                    "No tech structures required by this build",
+                    True,
+                    informational=informational,
+                )
+            ]
         results = []
         for tracker in self._structures:
             label = (
@@ -796,19 +818,32 @@ class BaseValidator:
                     self._milestone_detail(
                         tracker.started, tracker.started_time, tracker.blocked_frames
                     ),
+                    informational=informational,
                 )
             )
         return results
 
-    def _validate_upgrades(self) -> List[StepResult]:
+    def _validate_upgrades(self, informational: bool = False) -> List[StepResult]:
+        """See `_validate_structures`'s own `informational` for what this
+        changes and why a build would want it."""
         if not self._upgrades:
-            return [StepResult("No upgrades declared by this build", True)]
+            return [
+                StepResult(
+                    "No upgrades declared by this build",
+                    True,
+                    informational=informational,
+                )
+            ]
         results = []
         for tracker in self._upgrades:
             detail = self._milestone_detail(
                 tracker.started, tracker.started_time, tracker.blocked_frames
             ).replace("up at", "started")
-            results.append(StepResult(tracker.label, tracker.started, detail))
+            results.append(
+                StepResult(
+                    tracker.label, tracker.started, detail, informational=informational
+                )
+            )
         return results
 
     def _validate_waves(self) -> List[StepResult]:
@@ -848,9 +883,10 @@ class BaseValidator:
         for stage_name, steps in stages.items():
             print(f"\n  {stage_name}")
             for step in steps:
-                total_steps += 1
-                if step.passed:
-                    total_passed += 1
+                if not step.informational:
+                    total_steps += 1
+                    if step.passed:
+                        total_passed += 1
                 pad = 28 - len(step.name)
                 line = f"    {step.name} {'.' * max(pad, 3)} {step}"
                 print(line)
@@ -872,6 +908,8 @@ class BaseValidator:
         passed = 0
         for steps in stages.values():
             for step in steps:
+                if step.informational:
+                    continue
                 total += 1
                 if step.passed:
                     passed += 1

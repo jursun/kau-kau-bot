@@ -383,6 +383,51 @@ def _squad_maneuver_with_influence_retreat(
     return maneuver
 
 
+def _squad_maneuver_commit(
+    group,
+    group_tags: set[int],
+    group_position,
+    target,
+    close_enemy,
+) -> CombatManeuver:
+    """Reusable ATTACKING-squad maneuver with no influence-retreat at all -
+    for comps where retreating off a cooldown achieves nothing (Zergling is
+    melee, zero benefit from kiting; Roach's whole identity here is "cheap
+    to hold ground with", not hit-and-run - see `bot.builds.zerg.macro_
+    zerg`'s own module docstring).
+
+    `KeepGroupSafe` treats standing on enemy-influenced ground as unsafe
+    whenever a unit's weapon is on cooldown (`ShootTargetInRange` -> `cy_
+    attack_ready` fails, falls through to `KeepUnitSafe`) - during any
+    sustained melee/short-range brawl that's true for close to the whole
+    squad, staggered by each unit's own cooldown timer. `KeepGroupSafe`
+    only needs ONE unit to want out to short-circuit the entire maneuver
+    (`CombatManeuver.execute` stops at the first behavior that acts), so
+    `StutterGroupForward`/`AMoveGroup` never got a turn - confirmed live:
+    "the majority of our Roaches and Zerglings never attacked... maintained
+    their distance and never engaged" while nominally ATTACKING. Same
+    idiom as `chargelot_attack`'s Zealots ("never KeepUnitSafe — overwhelm"),
+    generalized as an `attack_squads` flag instead of a whole separate
+    routine, since Macro Zerg still wants `attack_squads`'s existing
+    muster/breach-worker logic.
+    """
+    maneuver = CombatManeuver()
+    if close_enemy:
+        maneuver.add(
+            StutterGroupForward(
+                group=group,
+                group_tags=group_tags,
+                group_position=group_position,
+                target=target,
+                enemies=close_enemy,
+            )
+        )
+    maneuver.add(
+        AMoveGroup(group=group, group_tags=group_tags, target=target)
+    )
+    return maneuver
+
+
 def _kite_maneuver(
     unit: Unit,
     enemies: Units | list[Unit],
@@ -601,7 +646,9 @@ def _breach_worker_target(ctx: "BotContext", unit: Unit) -> Unit | None:
 
 
 def attack_squads(
-    squad_radius: float = SQUAD_RADIUS, min_engage_range: float | None = None
+    squad_radius: float = SQUAD_RADIUS,
+    min_engage_range: float | None = None,
+    never_retreat: bool = False,
 ) -> CombatRoutine:
     """Drive each ATTACKING squad at its nearest worthwhile target.
 
@@ -621,10 +668,16 @@ def attack_squads(
     (`SQUAD_ENGAGE_RANGE`) engages. Close army comes from
     `bot.intel.enemy_army` (workers stripped); if that list is empty nearby,
     `_enemies_near` still supplies structures to shoot. How the squad fights
-    depends on local force size (intel army supply) and `min_engage_range`:
+    depends on local force size (intel army supply), `min_engage_range` and
+    `never_retreat`:
 
-    - Unsafe ground influence: `KeepGroupSafe` / `KeepUnitSafe` run first so
-      the ball leaves bad tiles instead of parking (Zerg openings included).
+    - `never_retreat=True`: skip influence-retreat entirely - see `_squad_
+      maneuver_commit`'s own docstring for exactly why a comp would want
+      this (in short: melee/short-range units that gain nothing from
+      kiting get stuck peeling backward one at a time instead of ever
+      landing damage together).
+    - Otherwise, unsafe ground influence: `KeepGroupSafe` / `KeepUnitSafe`
+      run first so the ball leaves bad tiles instead of parking.
     - Enemy force strictly smaller than ours: `StutterGroupForward` trades
       as one group toward the destination.
     - Enemy force equal or larger, and `min_engage_range` is set: each unit
@@ -634,7 +687,8 @@ def attack_squads(
       retreat rather than per-unit kite.
 
     ATTACKING Zerglings that are already inside an enemy base peel off to
-    prioritize workers (Macro Zerg breach micro).
+    prioritize workers (Macro Zerg breach micro) regardless of `never_
+    retreat`.
     """
 
     def routine(ctx: "BotContext") -> None:
@@ -682,7 +736,8 @@ def attack_squads(
             target = rally if mustering else targeting.squad_destination(ctx, position)
 
             if (
-                close_army
+                not never_retreat
+                and close_army
                 and min_engage_range is not None
                 and not _our_force_larger(ctx, group_units, close_army)
             ):
@@ -692,6 +747,18 @@ def attack_squads(
                             unit, close_army, min_engage_range, target, grid=grid
                         )
                     )
+                continue
+
+            if never_retreat:
+                ctx.bot.register_behavior(
+                    _squad_maneuver_commit(
+                        group=group_units,
+                        group_tags=group_tags,
+                        group_position=position,
+                        target=target,
+                        close_enemy=close_enemy,
+                    )
+                )
                 continue
 
             ctx.bot.register_behavior(

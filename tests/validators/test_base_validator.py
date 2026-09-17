@@ -16,7 +16,7 @@ from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 
 from tests.validators._fakes import FakeAI, _Counted, _FakeUnit
-from tests.validators.base_validator import BaseValidator
+from tests.validators.base_validator import BaseValidator, StepResult
 from tests.validators.macro_zerg_validator import MacroZergValidator
 
 # ── Stage 1: carried over from ZergRushValidator ────────────────────────────
@@ -269,6 +269,69 @@ def test_evolution_chamber_target_and_gate_come_from_the_build_not_a_constant() 
     for _ in range(10):
         validator.on_step(0)
     assert evo.blocked_frames == 10  # gate open, still unaffordable
+
+
+# ── StepResult.informational: status-only, no PASS/FAIL judgment ───────────
+
+
+def test_step_result_str_omits_pass_fail_when_informational() -> None:
+    started = StepResult("Lair", True, "up at 213.5s", informational=True)
+    never = StepResult("Spire", False, "never built", informational=True)
+
+    assert str(started) == "up at 213.5s"
+    assert str(never) == "never built"
+    assert "PASS" not in str(started) and "FAIL" not in str(started)
+
+
+def test_step_result_str_keeps_pass_fail_when_not_informational() -> None:
+    result = StepResult("Lair", True, "up at 213.5s")
+
+    assert str(result) == "PASS (up at 213.5s)"
+
+
+def test_validate_structures_informational_flag_propagates_to_every_step() -> None:
+    ai = FakeAI(upgrades=(UpgradeId.BURROW, UpgradeId.TUNNELINGCLAWS))
+    validator = MacroZergValidator(ai)
+    validator.on_step(0)
+
+    plain = validator._validate_structures()
+    marked = validator._validate_structures(informational=True)
+
+    assert plain and all(not r.informational for r in plain)
+    assert marked and all(r.informational for r in marked)
+
+
+def test_validate_upgrades_informational_flag_propagates_to_every_step() -> None:
+    ai = FakeAI(upgrades=(UpgradeId.ZERGLINGMOVEMENTSPEED,))
+    validator = MacroZergValidator(ai)
+    validator.on_step(0)
+
+    plain = validator._validate_upgrades()
+    marked = validator._validate_upgrades(informational=True)
+
+    assert plain and all(not r.informational for r in plain)
+    assert marked and all(r.informational for r in marked)
+
+
+def test_get_score_excludes_informational_steps() -> None:
+    """Regression test: an informational stage must not silently count
+    toward the report's overall pass rate just because `.passed` is still
+    populated underneath for CSV purposes (`metrics_snapshot`)."""
+    ai = FakeAI(upgrades=(UpgradeId.BURROW,))
+    validator = MacroZergValidator(ai)
+    validator.on_step(0)
+
+    informational_count = sum(
+        len(steps)
+        for name, steps in validator.validate().items()
+        if name.startswith(("Stage 3", "Stage 4"))
+    )
+    score = validator.get_score()
+
+    assert informational_count > 0
+    assert score["steps_total"] < sum(
+        len(steps) for steps in validator.validate().values()
+    )
 
 
 # ── Stage 4: attack waves ────────────────────────────────────────────────────

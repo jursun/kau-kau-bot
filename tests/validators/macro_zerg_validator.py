@@ -1,7 +1,16 @@
 """`Macro Zerg`'s own Validation Report shape.
 
 Six-stage report: economy, opening timing, tech structures, upgrades,
-waves, combat QA. No Stage 1B: this build has no `ProxyCrewPlan`.
+waves, combat QA. No Stage 1B: this build has no `ProxyCrewPlan`. Only
+Stage 1/2 are PASS/FAIL - they cover the scripted opening (`_SEQUENCE`),
+which has one correct answer to regress against. Stage 3/4 cover tech and
+upgrades reached *after* the opening hands off to reactive macro_steps
+(enemy-air-gated Spire, supply-balance-gated army-vs-upgrade spend, etc.),
+where "never built by leave time" is an expected outcome in plenty of
+games, not a regression - so they're `informational=True`: still report
+exactly when (if ever) each one started and whether it ever sat
+tech-ready but unaffordable, just without a PASS/FAIL label or counting
+against the report's overall score.
 
 `_init_milestones` needs its own override here, unlike most builds:
 `BaseValidator`'s own implementation only auto-derives Stage 3's structure
@@ -210,11 +219,19 @@ class MacroZergValidator(BaseValidator):
         return results
 
     def validate(self) -> Dict[str, List[StepResult]]:
+        # Stage 3/4 are informational, not PASS/FAIL: past the scripted
+        # opening (Stage 1/2's job), Macro Zerg's tech order reacts to the
+        # game (enemy air, army-vs-upgrade supply balance) rather than
+        # following a fixed schedule - "Spire never built" is expected
+        # against a ground-only opponent, not a regression to flag the way
+        # a missed opening deadline is. These still report exactly when
+        # each one started and, via `blocked_frames`, whether it was ever
+        # sitting tech-ready but unaffordable.
         stages: Dict[str, List[StepResult]] = {
             "Stage 1: Opening Economy": self._validate_economy(),
             "Stage 2: Opening Timing": self._validate_opening_timing(),
-            "Stage 3: Tech Structures": self._validate_structures(),
-            "Stage 4: Upgrades": self._validate_upgrades(),
+            "Stage 3: Tech Structures": self._validate_structures(informational=True),
+            "Stage 4: Upgrades": self._validate_upgrades(informational=True),
         }
         wave_label = self.ctx.build.combat.wave_stage_label
         stages[f"Stage 5: {wave_label}"] = self._validate_waves()

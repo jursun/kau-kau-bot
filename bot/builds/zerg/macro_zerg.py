@@ -886,7 +886,15 @@ BUILD = BuildDefinition(
             combat.release_first_wave_then_stream(muster=True),
             combat.defend_home(),
             combat.defend_with_zerglings(),
-            combat.attack_squads(),
+            # never_retreat=True: Roach/Zergling gain nothing from kiting
+            # off a weapon cooldown (Zergling is melee; Roach's whole
+            # identity here is "cheap to hold ground with", not hit-and-
+            # run) - see `_squad_maneuver_commit`'s own docstring for the
+            # live-confirmed bug this fixes (KeepGroupSafe short-circuiting
+            # the whole squad's advance the instant any one member was
+            # mid-cooldown on enemy-influenced ground, which a close-range
+            # brawl makes true almost constantly).
+            combat.attack_squads(never_retreat=True),
             combat.dig_in_swarm_hosts(),
             combat.escort_corruptors(),
             overseer_routines.manage_overseers(),
