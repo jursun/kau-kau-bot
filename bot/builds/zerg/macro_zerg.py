@@ -868,12 +868,16 @@ BUILD = BuildDefinition(
         # `ZERGLING_DEFENDER_ROLE` in `_macro_zerg_on_unit_created`.
         types=frozenset({UnitTypeId.ROACH, UnitTypeId.ZERGLING}),
         upgrades=(
-            UpgradeId.ZERGLINGMOVEMENTSPEED,
+            UpgradeId.ZERGLINGMOVEMENTSPEED,  # opening upgrade, well before 5:00
+            # Post-5:00 priority (`_desired_upgrades`/`UpgradeSlots` both
+            # just walk this list in order - see their own docstrings):
+            # Glial, Ground Carapace 1, Burrow, Tunneling Claws, then the
+            # rest of the Evo Chamber tree, at the user's explicit request.
             UpgradeId.GLIALRECONSTITUTION,  # Roach speed
+            UpgradeId.ZERGGROUNDARMORSLEVEL1,
             UpgradeId.BURROW,
             UpgradeId.TUNNELINGCLAWS,  # full use of burrowed Roach regen
             UpgradeId.ZERGMISSILEWEAPONSLEVEL1,
-            UpgradeId.ZERGGROUNDARMORSLEVEL1,
             UpgradeId.ZERGMISSILEWEAPONSLEVEL2,
             UpgradeId.ZERGGROUNDARMORSLEVEL2,
             UpgradeId.ZERGMISSILEWEAPONSLEVEL3,
@@ -1007,8 +1011,9 @@ BUILD = BuildDefinition(
         _split_production_after_opening,
         _army_before_five,
         _post_five_army_tech,
-        # After Tunneling Claws has started (implies Glial/Burrow already
-        # pending) — was above upgrades and ate the Glial 100/100 bank.
+        # After Tunneling Claws has started (implies Glial/Ground Carapace
+        # 1/Burrow already pending) — was above upgrades and ate the Glial
+        # 100/100 bank.
         z.tech_up(
             UnitTypeId.INFESTATIONPIT,
             gate=gates.all_of(
