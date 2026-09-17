@@ -38,7 +38,9 @@ def inject_larva(min_energy: int = 25) -> MacroStep:
     return step
 
 
-def train_queens(per_base: int = 1, maximum: int = 4, extra: int = 0) -> MacroStep:
+def train_queens(
+    per_base: int = 1, maximum: int = 4, extra: int = 0, gate: Gate = _always
+) -> MacroStep:
     """Keep one queen per base (for injects), plus `extra` more for other
     duties (see `routines.creep.spread_creep`), capped at `maximum` total.
 
@@ -51,9 +53,13 @@ def train_queens(per_base: int = 1, maximum: int = 4, extra: int = 0) -> MacroSt
     """
 
     def step(ctx: "BotContext"):
+        if not gate(ctx):
+            return None
         return TrainQueens(
             to_count=min(maximum, ctx.base_count * per_base + extra),
             max_per_townhall=per_base + extra,
+            home_townhall=ctx.state.queen_home_townhall,
+            cooldown_state=ctx.state.queen_train_cooldown,
         )
 
     return step

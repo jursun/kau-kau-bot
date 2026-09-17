@@ -248,6 +248,11 @@ class RunState:
     """True once a pylon exists near Chargelot staging."""
     army_idle_check_at: float | None = None
     """Last game time `nudge_idle_army` scanned ATTACKING units."""
+    natural_scout_claimed: bool = False
+    """Latched once a Drone has been pulled aside to pre-walk toward the
+    natural expansion site (see `builds.zerg.macro_zerg._claim_natural_
+    scout`) - a one-shot claim, never re-enters even if that Drone dies
+    en route."""
     third_base_scout_claimed: bool = False
     """Latched once a Drone has been pulled aside to pre-walk toward the
     3rd base site (see `builds.zerg.macro_zerg._claim_third_base_scout`) -
@@ -260,10 +265,39 @@ class RunState:
     natural_queen_tumor_done: bool = False
     """Latched once the pulled Queen's tumor is confirmed - never re-enters,
     even if that Queen later dies."""
+    queen_home_townhall: dict[int, int] = field(default_factory=dict)
+    """Queen tag -> the townhall tag nearest it *at creation*, snapshotted
+    once in `builds.zerg.macro_zerg._macro_zerg_on_unit_created` rather
+    than re-derived from live position on every `TrainQueens` call (see
+    that behavior's own `home_townhall` docstring for why: `InjectLarva`
+    sends the closest *available* Queen to whichever townhall needs an
+    inject next, regardless of which base trained it, so a Queen can be
+    physically standing at a different base mid-inject at the exact
+    moment a live-position lookup would run - confirmed as the cause of
+    the natural inconsistently never getting credited for its own Queen).
+    Entries for dead Queens are never removed - harmless, since `Train
+    Queens` only ever looks up tags that are still alive in `ai.units
+    (QUEEN)`."""
+    queen_train_cooldown: dict[str, float] = field(default_factory=dict)
+    """`TrainQueens`'s own `cooldown_state` - a single `{"last": ai.time}`
+    entry it writes after every Queen it trains, persisted here so the
+    fresh `TrainQueens` instance the wrapper builds each call still sees
+    the last one's timestamp. Guards against realtime specifically: ares
+    can call `execute()` several times against the same stale observation
+    before an already-issued `.train()` shows up in `already_pending`/
+    `is_idle`, which otherwise let three Queens land at the same townhall
+    within 0.1 real seconds - confirmed live - while a second base got
+    none at all."""
     zergling_defender_hold: dict[int, Point2] = field(default_factory=dict)
     """Zergling tag → sticky home hold Point2 - same matching scheme as
     `defender_hold`/`swarm_host_hold`, via `routines.combat.
     _sticky_hold_point`, but kept in its own map since Zergling is on a
     dedicated defender role rather than `UnitRole.DEFENDING` (see
     `routines.combat.defend_with_zerglings`)."""
+    opening_step_index: int = 0
+    """Position in `builds.zerg.macro_zerg._SEQUENCE` - a persisted,
+    monotonically-increasing index (never re-derived from scratch, never
+    decremented) so a later structure/unit loss can't make the scripted
+    opening walk back to an earlier step and re-block everything after it.
+    Mirrors ares' own `BuildOrderRunner.build_step` for the same reason."""
     log_once: LogOnce = field(default_factory=LogOnce)

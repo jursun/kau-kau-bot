@@ -455,23 +455,27 @@ def build_workers(gate: Gate = _always, to_count: int | None = None) -> MacroSte
     return step
 
 
-def expansions() -> MacroStep:
+def expansions(gate: Gate = _always) -> MacroStep:
     def step(ctx: "BotContext"):
+        if not gate(ctx):
+            return None
         return ExpansionController(to_count=ctx.build.economy.max_bases)
 
     return step
 
 
-def gas_buildings() -> MacroStep:
+def gas_buildings(gate: Gate = _always) -> MacroStep:
     def step(ctx: "BotContext"):
+        if not gate(ctx):
+            return None
         return GasBuildingController(to_count=ctx.gas_target)
 
     return step
 
 
-def upgrades() -> MacroStep:
+def upgrades(gate: Gate = _always) -> MacroStep:
     def step(ctx: "BotContext"):
-        if not ctx.build.army.upgrades:
+        if not gate(ctx) or not ctx.build.army.upgrades:
             return None
         return UpgradeController(
             list(ctx.build.army.upgrades), base_location=ctx.production_location
@@ -481,10 +485,15 @@ def upgrades() -> MacroStep:
 
 
 def _nat_wall_warp_anchor(ctx: "BotContext") -> Point2:
-    """Natural-wall FirstPylon slot if known, else own natural / start."""
-    nat = ctx.mediator.get_own_nat
+    """Natural-wall FirstPylon slot if known, else own natural / start.
+
+    `ctx.own_nat` never actually returns `None` (see its own comment for
+    the fallback chain), but the check is cheap and keeps this readable
+    on its own without relying on that guarantee.
+    """
+    nat = ctx.own_nat
     if nat is None:
-        return ctx.bot.start_location
+        return ctx.production_location
     placements = ctx.mediator.get_placements_dict
     if nat in placements:
         first_slots = [

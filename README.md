@@ -112,7 +112,7 @@ you need a normal window for `run.py`.
 Cross-check registered builds against `<race>_builds.yml` (no pytest required):
 
 ```bash
-python -m tests.test_builds
+python -m tests.builds.test_builds
 ```
 
 ### Force an opening locally
@@ -166,7 +166,7 @@ terran_builds.yml      # Terran openings (live when MyBotRace: Terran)
 zerg_builds.yml        # Zerg openings (live when MyBotRace: Zerg)
 protoss_builds.yml     # Protoss openings (live when MyBotRace: Protoss)
 run.py / ladder.py     # local play and AI Arena entry points
-tests/test_builds.py   # registry <-> YAML consistency check
+tests/builds/test_builds.py  # registry <-> YAML consistency check
 ```
 
 A build is **data, not a subclass**: it declares which steps and routines it

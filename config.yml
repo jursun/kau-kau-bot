@@ -6,7 +6,7 @@
 MyBotName: KauKauBot
 # Which `<race>_builds.yml` ares reads (and which race the ladder zip is).
 # Flip to `Zerg` to ship the Zerg openings instead.
-MyBotRace: Protoss
+MyBotRace: Zerg
 
 # Auto-upload to https://aiarena.net/ on push to `main`.
 # Requires UPLOAD_API_TOKEN / UPLOAD_BOT_ID repo secrets — see README.

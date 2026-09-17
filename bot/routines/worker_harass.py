@@ -735,7 +735,7 @@ def _clear_mission(ctx: "BotContext") -> None:
 def _begin_return(ctx: "BotContext", scouts, reason: str) -> None:
     if not ctx.state.worker_harass_returning:
         for scout in scouts:
-            dist = cy_distance_to(scout.position, ctx.bot.start_location)
+            dist = cy_distance_to(scout.position, ctx.production_location)
             ctx.log(
                 f"HARASS returning home ({reason}) from {dist:.0f} away"
             )
@@ -743,20 +743,20 @@ def _begin_return(ctx: "BotContext", scouts, reason: str) -> None:
         ctx.state.worker_harass_returning = True
         ctx.state.worker_harass_last_action = None
     for scout in scouts:
-        scout.move(ctx.bot.start_location)
+        scout.move(ctx.production_location)
 
 def _finish_return(ctx: "BotContext", scout) -> None:
-    home_mins = ctx.bot.mineral_field.closer_than(12, ctx.bot.start_location)
+    home_mins = ctx.bot.mineral_field.closer_than(12, ctx.production_location)
     ctx.mediator.assign_role(tag=scout.tag, role=UnitRole.GATHERING)
     if home_mins:
         patch = cy_closest_to(
-            position=ctx.bot.start_location, units=home_mins
+            position=ctx.production_location, units=home_mins
         )
         scout.gather(patch)
         ctx.log("HARASS arrived home; gathering")
     else:
         ctx.bot.register_behavior(
-            AMove(unit=scout, target=ctx.bot.start_location)
+            AMove(unit=scout, target=ctx.production_location)
         )
         ctx.log("HARASS arrived home; no minerals found")
     _clear_mission(ctx)
@@ -943,24 +943,24 @@ def worker_harass(
             if not ctx.state.worker_harass_returning:
                 _begin_return(ctx, scouts, leave_reason)
             for scout in scouts:
-                dist = cy_distance_to(scout.position, ctx.bot.start_location)
+                dist = cy_distance_to(scout.position, ctx.production_location)
                 if dist <= HOME_ARRIVE:
                     _finish_return(ctx, scout)
                 else:
                     bucket = int(dist // 10) * 10
                     _log(ctx, f"pathing home (~{bucket} out)")
                     home_mins = ctx.bot.mineral_field.closer_than(
-                        15, ctx.bot.start_location
+                        15, ctx.production_location
                     )
                     if home_mins and cy_distance_to(
                         scout.position, ctx.bot.enemy_start_locations[0]
                     ) < 25:
                         patch = cy_closest_to(
-                            position=ctx.bot.start_location, units=home_mins
+                            position=ctx.production_location, units=home_mins
                         )
                         scout.gather(patch)
                     else:
-                        scout.move(ctx.bot.start_location)
+                        scout.move(ctx.production_location)
             return
 
         enemy_main = ctx.bot.enemy_start_locations[0]

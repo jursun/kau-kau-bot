@@ -57,7 +57,7 @@ WARPGATE = UpgradeId.WARPGATERESEARCH
 
 def _chargelot_home_rally(ctx):
     """Nat-front rally — pinning `combat.rally` collapses mineral-line holds."""
-    nat = ctx.mediator.get_own_nat
+    nat = ctx.own_nat
     return nat.towards(
         ctx.bot.enemy_start_locations[0], ctx.build.combat.rally_offset
     )

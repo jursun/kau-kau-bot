@@ -1,8 +1,7 @@
-# KauKauBot openings, run by the ares BuildOrderRunner.
-#
-# Openings are deliberately short: they cover the parts of the game where
-# exact timings matter, then hand off to `bot/core/macro_engine.py` /
-# `BuildDefinition.macro_steps` once `build_order_runner.build_completed` is True.
+# KauKauBot Zerg openings, run by the ares BuildOrderRunner - except Macro
+# Zerg, this file's only build, which deliberately runs an empty
+# OpeningBuildOrder and owns all of its own timings in Python instead (see
+# `Builds:` below and `bot/builds/zerg/macro_zerg.py`).
 #
 # Forcing an opening locally: set `Debug: True` in config.yml (ares then uses
 # the `test_123` opponent id) and put the opening you want first in the
@@ -42,40 +41,13 @@ BuildChoices:
             - Macro Zerg
 
 Builds:
-    # 15 Hatch / 17 Pool into Roach -> Swarm Host (Corruptor if the enemy
-    # shows air). Queens, third hatch and the Roach/Lair/Infestation Pit/
-    # Spire tech tree are all handled dynamically after this opening finishes.
+    # Empty on purpose: Macro Zerg no longer uses the BuildOrderRunner's
+    # OpeningBuildOrder DSL at all - `ConstantWorkerProductionTill` racing
+    # the opening's own steps for minerals (see git history on this file)
+    # was a repeated source of subtle timing bugs. `OpeningBuildOrder` must
+    # still be present (ares reads the key unconditionally), but an empty
+    # list makes `build_order_runner.build_completed` true from frame 0, so
+    # `bot.builds.zerg.macro_zerg` owns every timing itself, in Python,
+    # from the very first frame - see that module for the actual opening.
     Macro Zerg:
-        # Held at 13 (one drone above where we start) rather than the
-        # build's real economy target: `_produce_workers` runs every frame
-        # regardless of which OpeningBuildOrder step is current, competing
-        # with the opening's own steps for the same mineral bank. The
-        # intended sequence is "first ~50 minerals -> the 13th drone (from
-        # a larva), next ~100 minerals -> the 2nd Overlord (from a
-        # different larva)" - at the real target (36), a THIRD drone kept
-        # winning the race for that second block too (a drone only needs
-        # 50 to the Overlord's 100), delaying the Overlord ~1-2s waiting
-        # for the bank to refill after that extra drone purchase. Held at
-        # 13, `_produce_workers` trains exactly the one drone this opening
-        # wants anyway and then stops once that drone is pending or done
-        # (ares counts supply_workers + already_pending against the till —
-        # food_workers alone excludes eggs). That leaves the Overlord's
-        # own step sole claim on the next block of minerals.
-        # bot.builds.zerg.macro_zerg's on_step hook bumps this back up to
-        # the real target the instant the 2nd Overlord is confirmed queued.
-        ConstantWorkerProductionTill: 13
-        AutoSupplyAtSupply: 19
-        OpeningBuildOrder:
-            - 13 overlord
-            - 16 expand
-            - 18 gas
-            - 17 spawningpool
-            - 19 overlord
-            - 19 queen *2
-            - 19 zergling *4
-            - 23 expand
-            - 22 overlord
-            - 30 queen
-            - 30 zerglingmovementspeed
-            - 33 overlord
-            - 36 overlord
+        OpeningBuildOrder: []

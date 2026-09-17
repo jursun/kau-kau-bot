@@ -38,6 +38,8 @@ from sc2.position import Point2
 from ares.behaviors.macro.macro_behavior import MacroBehavior
 from ares.managers.manager_mediator import ManagerMediator
 
+from bot.common.geometry import safe_start_location
+
 if TYPE_CHECKING:
     from ares import AresBot
 
@@ -133,7 +135,7 @@ class BuildMacroHatch(MacroBehavior):
         self, ai: "AresBot", funnel: dict[str, int] | None = None
     ) -> list[Point2]:
         """Cheap filters, in order, recording how many survive each stage."""
-        base: Point2 = ai.start_location
+        base: Point2 = safe_start_location(ai)
         home_height = ai.get_terrain_height(base)
         expansion_sq = self.expansion_clearance**2
         resource_sq = self.resource_clearance**2
@@ -208,7 +210,9 @@ class BuildMacroHatch(MacroBehavior):
 
         # Prefer the open, map-center side of the main (the ramp side), which
         # is where a drone can actually path to the building centre.
-        preferred = Point2(cy_towards(ai.start_location, ai.game_info.map_center, 10.0))
+        preferred = Point2(
+            cy_towards(safe_start_location(ai), ai.game_info.map_center, 10.0)
+        )
         candidates.sort(key=lambda p: cy_distance_to_squared(p, preferred))
 
         for checked, point in enumerate(candidates, start=1):

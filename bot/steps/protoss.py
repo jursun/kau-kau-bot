@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 def _nat_wall_first_pylon_present(ctx: "BotContext") -> bool:
     """True if a pylon occupies (or is building on) the YAML FirstPylon slot."""
-    nat = ctx.mediator.get_own_nat
+    nat = ctx.own_nat
     placements = ctx.mediator.get_placements_dict
     if nat not in placements:
         return False
@@ -57,7 +57,7 @@ def _nat_wall_3x3_available(
     """True if an `is_wall` 3x3 at own nat is free (powered filter optional)."""
     return (
         ctx.mediator.request_building_placement(
-            base_location=ctx.mediator.get_own_nat,
+            base_location=ctx.own_nat,
             structure_type=structure_type,
             wall=True,
             production=True,
@@ -91,7 +91,7 @@ def natural_wall_pylon(gate: Gate = _always) -> MacroStep:
         if _nat_wall_first_pylon_present(ctx):
             return None
 
-        nat = ctx.mediator.get_own_nat
+        nat = ctx.own_nat
         ctx.log_once(
             "macro_nat_wall_pylon",
             "MACRO pylon: placing nat wall FirstPylon for wall power",
@@ -159,7 +159,7 @@ def chrono_boost_army(gate: Gate = _always) -> MacroStep:
 
         # Priority 1: the natural boosts its own probe production, using
         # only its own energy - never borrows from the main.
-        natural = cy_closest_to(ctx.mediator.get_own_nat, townhalls)
+        natural = cy_closest_to(ctx.own_nat, townhalls)
         if (
             natural.orders
             and natural.energy >= CHRONO_ENERGY_COST
@@ -247,7 +247,7 @@ def gateways(
         # still within 1 + wall_natural, take nat wall 3x3 slots.
         use_nat_wall = wall_natural > 0 and total < 1 + wall_natural
         if use_nat_wall:
-            nat = ctx.mediator.get_own_nat
+            nat = ctx.own_nat
             # PoweredPlacementStrategy falls through to non-wall near-pylon
             # when wall slots are unpowered — wait for FirstPylon coverage.
             # If no wall 3x3 remains (claimed / rejected), continue in main.
@@ -318,7 +318,7 @@ def robotics_facility_at_natural_wall(
         if have >= count:
             return None
 
-        nat = ctx.mediator.get_own_nat
+        nat = ctx.own_nat
         if _powered_nat_wall_3x3(ctx, UnitTypeId.ROBOTICSFACILITY):
             ctx.log_once(
                 "macro_robo_nat_wall",

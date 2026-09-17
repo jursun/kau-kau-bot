@@ -99,9 +99,9 @@ def _is_our_expansion(ctx: "BotContext", location: Point2) -> bool:
     `get_enemy_expansions` (every base except the enemy start) and must
     not pull a post-main scout sweep back onto our own side of the map."""
     radius_sq = MAIN_CLEAR_RADIUS**2
-    if cy_distance_to_squared(location, ctx.bot.start_location) <= radius_sq:
+    if cy_distance_to_squared(location, ctx.production_location) <= radius_sq:
         return True
-    return cy_distance_to_squared(location, ctx.mediator.get_own_nat) <= radius_sq
+    return cy_distance_to_squared(location, ctx.own_nat) <= radius_sq
 
 
 def _mark_expansion_scouted(ctx: "BotContext", location: Point2) -> None:
@@ -273,7 +273,7 @@ def rally_point(ctx: "BotContext") -> Point2:
     spawns away from home has to do."""
     if (locator := ctx.build.combat.rally) is not None:
         return locator(ctx)
-    nat: Point2 = ctx.mediator.get_own_nat
+    nat: Point2 = ctx.own_nat
     return nat.towards(ctx.bot.enemy_start_locations[0], ctx.build.combat.rally_offset)
 
 

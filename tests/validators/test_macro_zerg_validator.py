@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
-from sc2.position import Point2
 
 from tests.validators._fakes import FakeAI, _FakeUnit, _FakeUnits
 from tests.validators.macro_zerg_validator import MacroZergValidator
@@ -92,7 +91,7 @@ def _validator() -> MacroZergValidator:
     return MacroZergValidator(ai)
 
 
-def test_all_sixteen_opening_timing_checks_are_reported_in_order() -> None:
+def test_all_fourteen_opening_timing_checks_are_reported_in_order() -> None:
     validator = _validator()
     validator.on_step(0)
 
@@ -103,11 +102,9 @@ def test_all_sixteen_opening_timing_checks_are_reported_in_order() -> None:
         "Natural Hatchery",
         "Gas",
         "Spawning Pool",
-        "2 Queens",
         "4 Zergling",
         "3rd base Hatchery",
         "3 Drone off gas",
-        "3rd Queen @ Main",
         "Speed",
         "4th Overlord",
         "3 Drone on gas",
@@ -120,7 +117,7 @@ def test_all_sixteen_opening_timing_checks_are_reported_in_order() -> None:
 
 def test_a_milestone_hit_before_its_deadline_passes() -> None:
     validator = _validator()
-    validator.ai.time = 10.0  # Overlord's deadline is 13.0s
+    validator.ai.time = 10.0  # Overlord's deadline is 12.0s
     validator.ai._units[UnitTypeId.OVERLORD] = [_FakeUnit(1, UnitTypeId.OVERLORD)]
     validator.ai._pending_counts[UnitTypeId.OVERLORD] = 1  # 1 live + 1 pending = 2
     validator.on_step(0)
@@ -133,7 +130,7 @@ def test_a_milestone_hit_before_its_deadline_passes() -> None:
 
 def test_a_milestone_hit_after_its_deadline_fails() -> None:
     validator = _validator()
-    validator.ai.time = 20.0  # Overlord's deadline is 13.0s
+    validator.ai.time = 20.0  # Overlord's deadline is 12.0s
     validator.ai._pending_counts[UnitTypeId.OVERLORD] = 2
     validator.on_step(0)
 
@@ -141,7 +138,7 @@ def test_a_milestone_hit_after_its_deadline_fails() -> None:
     overlord = next(r for r in result["Stage 2: Opening Timing"] if r.name == "Overlord")
     assert not overlord.passed
     assert "20.0s" in overlord.detail
-    assert "deadline 13s" in overlord.detail
+    assert "deadline 12s" in overlord.detail
 
 
 def test_a_milestone_never_reached_fails_with_a_clear_detail() -> None:
@@ -168,45 +165,6 @@ def test_a_milestone_latches_and_does_not_un_report_once_passed() -> None:
     result = validator.validate()
     pool = next(r for r in result["Stage 2: Opening Timing"] if r.name == "Spawning Pool")
     assert pool.passed
-
-
-def test_third_queen_at_main_requires_both_count_and_position() -> None:
-    """3 queens scattered across expansions (none at the main) must not
-    satisfy this - it's specifically checking the main doesn't go
-    unguarded even as the build expands."""
-    validator = _validator()
-    main = validator.ai.start_location
-    far_away = Point2((main.x + 500.0, main.y + 500.0))
-    validator.ai._units[UnitTypeId.QUEEN] = [
-        _FakeUnit(1, UnitTypeId.QUEEN, position=far_away),
-        _FakeUnit(2, UnitTypeId.QUEEN, position=far_away),
-        _FakeUnit(3, UnitTypeId.QUEEN, position=far_away),
-    ]
-    validator.on_step(0)
-
-    result = validator.validate()
-    at_main = next(
-        r for r in result["Stage 2: Opening Timing"] if r.name == "3rd Queen @ Main"
-    )
-    assert not at_main.passed, "3 queens exist, but none are anywhere near the main"
-
-
-def test_third_queen_at_main_passes_once_one_queen_sits_at_the_main() -> None:
-    validator = _validator()
-    main = validator.ai.start_location
-    elsewhere = Point2((main.x + 500.0, main.y + 500.0))
-    validator.ai._units[UnitTypeId.QUEEN] = [
-        _FakeUnit(1, UnitTypeId.QUEEN, position=main),
-        _FakeUnit(2, UnitTypeId.QUEEN, position=elsewhere),
-        _FakeUnit(3, UnitTypeId.QUEEN, position=elsewhere),
-    ]
-    validator.on_step(0)
-
-    result = validator.validate()
-    at_main = next(
-        r for r in result["Stage 2: Opening Timing"] if r.name == "3rd Queen @ Main"
-    )
-    assert at_main.passed
 
 
 def test_gas_off_requires_gas_to_have_been_staffed_first() -> None:
@@ -249,7 +207,7 @@ def test_gas_pull_off_and_resume_track_in_order() -> None:
 
 def test_lair_milestone_tracks_structure_count() -> None:
     validator = _validator()
-    validator.ai.time = 200.0  # Lair's deadline is 255.0s
+    validator.ai.time = 200.0  # Lair's deadline is 256.0s
     validator.ai._structure_counts[UnitTypeId.LAIR] = 1
     validator.on_step(0)
 
@@ -276,7 +234,7 @@ def test_spores3_requires_three_not_two() -> None:
 
 def test_spores3_passes_once_the_third_is_up() -> None:
     validator = _validator()
-    validator.ai.time = 250.0  # deadline is 270.0s
+    validator.ai.time = 250.0  # deadline is 265.0s
     validator.ai._structure_counts[UnitTypeId.SPORECRAWLER] = 3
     validator.on_step(0)
 

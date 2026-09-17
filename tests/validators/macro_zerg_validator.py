@@ -16,17 +16,25 @@ which do trip the Lair/Hive auto-derivation) used to get away with a bare
 `validate()` override.
 
 Stage 2 (Opening Timing) is a from-scratch addition specific to this
-build's exact opening (see `zerg_builds.yml`'s `Macro Zerg` entry): a
-"must start by real game-time X" deadline for each of its 16 opening
-milestones, both economy and race-timing (unlike `pool_deadline`, which
-is a generic, deliberately loose safety net shared by every Zerg build,
-these are precise regression numbers for THIS opening's own intended
-pace). Nothing here is reusable by another build, so it lives entirely
-in this file rather than `base_validator.py` - `_TimingMilestone` is a
-much simpler tracker than `_StructureTracker`/`_UpgradeTracker` (no
-resource-blocked-frames accounting; the constant timestamps make plain
-"did it start late" reporting all that's needed) and deliberately doesn't
-try to generalize across builds.
+build's exact opening (see `bot.builds.zerg.macro_zerg`'s `_SEQUENCE` -
+the opening is scripted directly in Python there, not in a YAML build
+order): a "must start by real game-time X" deadline for each of its 14
+opening milestones, both economy and race-timing (unlike `pool_deadline`,
+which is a generic, deliberately loose safety net shared by every Zerg
+build, these are precise regression numbers matching the exact supply/
+time build order `macro_zerg.py` implements). Nothing here is reusable by
+another build, so it lives entirely in this file rather than
+`base_validator.py` - `_TimingMilestone` is a much simpler tracker than
+`_StructureTracker`/`_UpgradeTracker` (no resource-blocked-frames
+accounting; the constant timestamps make plain "did it start late"
+reporting all that's needed) and deliberately doesn't try to generalize
+across builds.
+
+Queen has no timing milestone here (it used to: "2 Queens"/"3rd Queen @
+Main"): `macro_zerg.py` no longer scripts Queen production to a fixed
+supply/time at all - it's an always-on "1 per ready townhall, plus 1
+spare" rule with no fixed target to regress against, so a deadline-based
+check would just be measuring townhall-readiness variance, not the build.
 """
 
 from __future__ import annotations
@@ -57,32 +65,29 @@ class MacroZergValidator(BaseValidator):
     BUILD_NAME = "Macro Zerg"
     REPORT_TITLE = "MACRO ZERG VALIDATION REPORT"
 
-    MAIN_QUEEN_RADIUS: float = 15.0
-    """How close a Queen must sit to `start_location` to count as "at the
-    main" for the Stage 2 "3rd Queen @ Main" check - matches the "close
-    enough to belong to this base" radius `steps.zerg.spore_crawlers`
-    already uses (`ai.EXPANSION_GAP_THRESHOLD`, 15) for the same kind of
-    "which base is this near" question."""
-
-    # (internal key, label, deadline in seconds) - order matches the spec
-    # this was built from, and is what Stage 2 reports in.
+    # (internal key, label, deadline in seconds) - matches
+    # `bot.builds.zerg.macro_zerg._SEQUENCE` and its "additional timings"
+    # exactly (0:12, 0:54, 1:10, 1:15, 2:03, 2:15, 2:17, 2:47, 2:59, 3:32,
+    # 3:35, 4:05, 4:16, 4:25 - `gas_off`/`gas_on` come from the
+    # gas-worker-count timings, not the production sequence itself; Natural
+    # Hatchery's deadline is 54s rather than the opening's own 49s target -
+    # a slightly later natural is an accepted trade-off, not a regression),
+    # and is what Stage 2 reports in.
     _OPENING_TIMING_SPEC: tuple[tuple[str, str, float], ...] = (
-        ("overlord2", "Overlord", 13.0),
-        ("natural_hatch", "Natural Hatchery", 49.0),
-        ("gas1", "Gas", 69.0),
+        ("overlord2", "Overlord", 12.0),
+        ("natural_hatch", "Natural Hatchery", 54.0),
+        ("gas1", "Gas", 70.0),
         ("pool", "Spawning Pool", 75.0),
-        ("queens2", "2 Queens", 122.0),
         ("zerglings4", "4 Zergling", 123.0),
-        ("hatch3", "3rd base Hatchery", 136.0),
-        ("gas_off", "3 Drone off gas", 137.0),
-        ("queen3_main", "3rd Queen @ Main", 163.0),
+        ("hatch3", "3rd base Hatchery", 137.0),
+        ("gas_off", "3 Drone off gas", 135.0),
         ("speed", "Speed", 167.0),
         ("overlord4", "4th Overlord", 179.0),
-        ("gas_on", "3 Drone on gas", 215.0),
-        ("roach_warren", "Roach Warren", 217.0),
-        ("gas2", "2nd Gas", 240.0),
-        ("lair", "Lair", 255.0),
-        ("spores3", "3 Spore Crawlers", 270.0),
+        ("gas_on", "3 Drone on gas", 212.0),
+        ("roach_warren", "Roach Warren", 215.0),
+        ("gas2", "2nd Gas", 245.0),
+        ("lair", "Lair", 256.0),
+        ("spores3", "3 Spore Crawlers", 265.0),
     )
 
     def _init_milestones(self) -> None:
@@ -139,15 +144,6 @@ class MacroZergValidator(BaseValidator):
         latch("gas2", self.gas_buildings.amount >= 2)
 
         latch("pool", self.structures(UnitTypeId.SPAWNINGPOOL).amount >= 1)
-
-        queens = self.units(UnitTypeId.QUEEN)
-        queen_count = queens.amount + self.already_pending(UnitTypeId.QUEEN)
-        latch("queens2", queen_count >= 2)
-        at_main = any(
-            queen.position.distance_to(self.start_location) <= self.MAIN_QUEEN_RADIUS
-            for queen in queens
-        )
-        latch("queen3_main", queen_count >= 3 and at_main)
 
         zerglings = self.units(UnitTypeId.ZERGLING).amount + self.already_pending(
             UnitTypeId.ZERGLING

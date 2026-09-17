@@ -6,9 +6,9 @@
 #
 # Forcing an opening locally: set `Debug: True` in config.yml (ares then uses
 # the `test_123` opponent id) and put the opening you want first in the
-# `test_123` cycle below — or use `scripts/smoke_tier.py --build "2base
-# Chargelot All-In"`, which applies race/debug/build overrides in memory
-# without editing this file. See ARCHITECTURE.md gotcha 4.
+# `test_123` cycle below — or use `scripts/harness/smoke_tier.py --build
+# "2base Chargelot All-In"`, which applies race/debug/build overrides in
+# memory without editing this file. See ARCHITECTURE.md gotcha 4.
 
 # Save game opening + result to ./data so ares can switch openings after a loss.
 UseData: True

@@ -10,6 +10,7 @@ from sc2.units import Units
 
 from ares.behaviors.macro.gas_building_controller import GasBuildingController
 from bot.behaviors.protoss.builder import ensure_protoss_builder
+from bot.common.geometry import safe_start_location
 
 if TYPE_CHECKING:
     from ares import AresBot
@@ -49,7 +50,7 @@ class ProtossGasBuildingController(GasBuildingController):
             return False
 
         if not self.closest_to:
-            self.closest_to = ai.start_location
+            self.closest_to = safe_start_location(ai)
 
         geyser = cy_sorted_by_distance_to(available_geysers, self.closest_to)[0]
         worker = ensure_protoss_builder(ai, mediator, geyser.position)

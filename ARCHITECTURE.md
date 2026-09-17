@@ -64,7 +64,7 @@ One file. Nothing else changes.
    `BuildChoices` cycles.
 2. Create `bot/builds/<race>/my_build.py` with a module-level `BUILD`. The
    `name` must match the YAML opening exactly.
-3. Run `python -m tests.test_builds`.
+3. Run `python -m tests.builds.test_builds`.
 
 ```python
 BUILD = BuildDefinition(
@@ -95,7 +95,7 @@ so there is no registry file to edit and no merge conflict when several builds
 land at once. A name that does not resolve raises `UnknownBuild` rather than
 silently substituting a different build; `main.py` catches that at game start,
 logs it at CRITICAL and falls back, so a typo cannot end a ladder game — but
-`tests/test_builds.py` will have caught it first.
+`tests/builds/test_builds.py` will have caught it first.
 
 ## Key concepts
 

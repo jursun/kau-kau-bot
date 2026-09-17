@@ -251,7 +251,7 @@ def chargelot_staging(ctx: "BotContext") -> Point2:
     return Point2(
         cy_towards(
             ctx.mediator.get_enemy_nat,
-            ctx.mediator.get_own_nat,
+            ctx.own_nat,
             CHARGELOT_STAGING_OFFSET,
         )
     )
@@ -786,7 +786,7 @@ def forward_muster_pylon():
             return
 
         # Prefer a free placement cell near staging (toward our nat = safer).
-        home = ctx.mediator.get_own_nat
+        home = ctx.own_nat
         candidates = [Point2(cy_towards(staging, home, 2.0)), staging]
         for radius in (2.0, 3.0, 4.0):
             for i in range(6):
@@ -835,7 +835,7 @@ def escort_warp_prism():
             return
 
         army = _army_anchor(ctx)
-        home = ctx.mediator.get_own_nat
+        home = ctx.own_nat
         enemy = ctx.mediator.get_enemy_nat
         can_warp = _warpgates_ready_to_warp(ctx)
         grid = ctx.mediator.get_air_grid
@@ -1253,7 +1253,7 @@ def harassing_adept():
             not hold_home and ctx.bot.time >= ADEPT_NATURAL_HARASS_TIME
         )
         grid = ctx.mediator.get_ground_grid
-        home = ctx.mediator.get_own_nat
+        home = ctx.own_nat
         rally = targeting.rally_point(ctx)
 
         live_tags = {a.tag for a in adepts}

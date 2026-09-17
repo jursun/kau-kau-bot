@@ -15,6 +15,7 @@ from sc2.units import Units
 from ares.consts import UnitRole
 from ares.managers.manager_mediator import ManagerMediator
 
+from bot.common.geometry import safe_start_location
 from bot.core.state import RunState
 
 if TYPE_CHECKING:
@@ -41,11 +42,42 @@ class BotContext:
 
     @property
     def production_location(self) -> Point2:
-        return self.bot.start_location
+        """Our main base location - see `safe_start_location`'s own
+        comment for why this doesn't just return `self.bot.start_location`
+        directly."""
+        return safe_start_location(self.bot)
 
     @property
     def ready_townhalls(self) -> Units:
         return self.bot.townhalls.ready
+
+    @property
+    def own_nat(self) -> Point2:
+        """Our natural base location - falls back through progressively
+        safer substitutes instead of ever crashing.
+
+        `ManagerMediator.get_own_nat` indexes `[0]` into an internal list
+        that's built once at game start and left empty whenever `AresBot.
+        arcade_mode` is True (`enemy_start_locations`/`townhalls` missing
+        at that point) or a map's own expansion data fails to resolve any
+        reachable expansion at all (see ares' own `_fix_broken_exp_
+        locations`, a similar known-bad-map-data workaround already
+        shipped for Ley Lines) - a real, ares-level edge case unrelated to
+        any one build here, confirmed live: `IndexError: list index out
+        of range` from `TerrainManager.own_nat` mid-game. `get_own_
+        expansions` returns the same underlying list directly (safe to
+        check for emptiness), so this checks that first rather than
+        catching the exception after the fact.
+
+        A second, deeper edge case: python-sc2's own `start_location` is
+        *itself* sometimes `None` - confirmed live: `rally_point` crashed
+        with `AttributeError: 'NoneType' object has no attribute
+        'towards'` from a fallback (this property, before this fix) that
+        assumed `start_location` was always safe. `safe_start_location`
+        (see its own comment) covers that gap."""
+        if self.mediator.get_own_expansions:
+            return self.mediator.get_own_nat
+        return safe_start_location(self.bot)
 
     @property
     def base_count(self) -> int:

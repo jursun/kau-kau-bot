@@ -863,7 +863,10 @@ class BaseValidator:
         print()
 
     def get_score(self) -> Dict[str, int]:
-        """Return a simple score dict for programmatic use."""
+        """Return a simple score dict for programmatic use.
+
+        Only used by `metrics_snapshot` below - see that method's own note
+        before reaching for either of these."""
         stages = self.validate()
         total = 0
         passed = 0
@@ -879,16 +882,23 @@ class BaseValidator:
         }
 
     def metrics_snapshot(self) -> Dict[str, bool | int]:
-        """Every check across every stage, flattened to CSV-friendly
-        columns - lets `scripts/harness_common.py`'s `--metrics` flag
-        capture this validator's pass/fail per milestone across many games
-        in one tier run, the same way `chargelot_metrics` exposes its own
-        dict for `--metrics chargelot_regression_metrics`. `get_score()`'s
-        aggregate pass/total is folded in too; the per-check columns are
-        prefixed by the stage they came from (slugified) since a check name
-        can repeat across stages with a different meaning each time (e.g.
-        "Roach Warren" is both an Opening Timing deadline and a generic
-        Tech Structures "did it ever start" tracker)."""
+        """Every check across every stage, flattened to CSV-friendly,
+        pass/fail-only columns (prefixed by the stage they came from, since
+        a check name can repeat across stages with a different meaning each
+        time - e.g. "Roach Warren" is both an Opening Timing deadline and a
+        generic Tech Structures "did it ever start" tracker).
+
+        NOT the recommended way to validate a build - it collapses every
+        check to a bare bool and drops the actual timing/detail entirely,
+        so a regression like "Overlord is 3s later than it used to be"
+        reads identically to "Overlord never happened". Left in place (not
+        deleted) rather than actively maintained: `scripts/*_tier.py
+        --validate` (which drives this class's `validate()`/`_print_report`
+        to print the full report, detail strings included, at game end) is
+        the real, current way to check a build's timing - read that, or
+        extend it, instead of wiring a new `--metrics validation_metrics`
+        consumer onto this method.
+        """
         snapshot: Dict[str, bool | int] = dict(self.get_score())
         for stage_name, steps in self.validate().items():
             prefix = _slugify(stage_name)
