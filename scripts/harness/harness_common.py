@@ -19,10 +19,8 @@ Each takes the same parameters:
                         bot/main.py's on_end). Omit to skip; only the
                         crash/result columns are written.
     --leave SECONDS     Leave at this game time (game_time_limit). Defaults
-                        to 420 (7:00), matching bot/main.py's
-                        LOCAL_GAME_TIME_LIMIT_SECONDS team-policy default —
-                        passing something larger is a deliberate call, not
-                        a silent extension of that policy.
+                        to 420 (7:00). `run.py` itself has no default leave —
+                        omit `--leave` there to play until the game ends.
     --map NAME          Force a specific map instead of a tier's random
                         pick(s) — targeted testing (e.g. Quick against one
                         known-tricky map).
@@ -355,8 +353,8 @@ def add_tier_args(parser: argparse.ArgumentParser, tier: TierSpec) -> None:
         metavar="SECONDS",
         help=(
             f"Leave at this game time (default {DEFAULT_LEAVE_SECONDS}s / "
-            "7:00 - team policy; pass a larger value deliberately to test "
-            "past it)."
+            "7:00). Harness always passes a limit; omit only on run.py for "
+            "no time limit."
         ),
     )
     parser.add_argument(

@@ -23,10 +23,10 @@ from bot.common.log import log_event
 from bot.core import BotContext, CombatEngine, MacroEngine, RunState, roles
 from bot.core.registry import UnknownBuild, default_build, get_build
 
-# Team policy (Jason via CoS): local + validate end at 7:00 game time via
-# `run_game(..., game_time_limit=...)`. Ladder never passes the limit.
-# Extending past 7:00 needs explicit Jason confirmation via CoS — never silently.
-# Do NOT call `client.leave()` mid-step — ares `_after_step` then hits
+# Harness default leave (`scripts/harness/harness_common.DEFAULT_LEAVE_SECONDS`):
+# 7:00 via `run_game(..., game_time_limit=...)`. `run.py` itself has no
+# default leave — pass `--leave N` there explicitly. Ladder never passes a
+# limit. Do NOT call `client.leave()` mid-step — ares `_after_step` then hits
 # ProtocolError: Not in a game.
 LOCAL_GAME_TIME_LIMIT_SECONDS: float = 7 * 60
 

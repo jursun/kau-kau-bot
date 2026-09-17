@@ -1,12 +1,12 @@
 """KauKauBot entry point.
 
-  python run.py                 # local game vs the built-in computer
+  python run.py                 # local game vs the built-in computer (no time limit)
   python run.py --validate      # local game + rush milestone report at game end
+  python run.py --leave 420     # optional artificial Tie at N game-seconds
   python run.py --LadderServer  # invoked by AI Arena's LadderManager
 
-Local and --validate games end at 7:00 game time via game_time_limit
-(team policy). Ladder never passes that limit. Past 7:00 needs Jason
-confirm via CoS.
+Harness scripts (`scripts/harness/*_tier.py`) still default `--leave` to
+420 (7:00). Ladder never passes a time limit.
 
 Local settings live under `LocalGame:` in config.yml. Bot name / race come
 from `MyBotName` / `MyBotRace` in the same file, which is also what
@@ -44,7 +44,7 @@ from sc2.maps import Map  # noqa: E402
 from sc2.player import Bot, Computer  # noqa: E402
 from sc2.sc2process import SC2Process  # noqa: E402
 
-from bot.main import KauKauBot, LOCAL_GAME_TIME_LIMIT_SECONDS  # noqa: E402
+from bot.main import KauKauBot  # noqa: E402
 
 CONFIG_FILE: str = "config.yml"
 MAP_FILE_EXT: str = "SC2Map"
@@ -268,6 +268,16 @@ def main() -> None:
     parser.add_argument("--opponent-race", type=str, default=None)
     parser.add_argument("--difficulty", type=str, default=None)
     parser.add_argument("--realtime", action="store_true", default=None)
+    parser.add_argument(
+        "--leave",
+        type=int,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Artificial Tie after N game-seconds. Omit for no time limit "
+            "(harness scripts still default to 420)."
+        ),
+    )
     args, _unknown = parser.parse_known_args()
 
     config: dict = load_config()
@@ -311,17 +321,17 @@ def main() -> None:
         f"===== {bot_name} ({race.name}) vs {opponent_race.name} "
         f"{difficulty.name} on {map_name} ====="
     )
-    # Team policy: end local/validate at 7:00. Uses python-sc2's clean
-    # game_time_limit path (on_end fires) — not client.leave() mid-step.
-    logger.info(
-        f"Local game time limit ENABLED - end at "
-        f"{LOCAL_GAME_TIME_LIMIT_SECONDS:.0f}s game time (7:00 team policy)."
-    )
+    if args.leave is not None:
+        logger.info(
+            f"Local game time limit ENABLED - end at {args.leave}s game time."
+        )
+    else:
+        logger.info("Local game time limit OFF - play until the game ends.")
     run_local_game(
         map_obj,
         [bot, Computer(opponent_race, difficulty)],
         realtime=realtime,
-        game_time_limit=int(LOCAL_GAME_TIME_LIMIT_SECONDS),
+        game_time_limit=args.leave,
         local_cfg=local_cfg,
     )
 
