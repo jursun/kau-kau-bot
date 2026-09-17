@@ -42,12 +42,15 @@ plus 1 spare for creep spread, for the whole game, not just the opening's
 first few bases (see its own comment in `macro_steps`).
 `z.spore_crawlers` is the same shape (1 per owned base in the mineral
 line), opening at 4:30 with a 15s missing-base recheck.
-`z.tech_up(INFESTATIONPIT)`/`z.tech_up(SPIRE)` are re-gated on Lair
-existing specifically - `_SEQUENCE`'s own "lair" entry is what actually
-morphs Lair; without this gate, `TechUp` would happily morph it itself
-the moment it's economically able to (it walks prerequisites and morphs
-whatever's missing along the way), well ahead of where the scripted
-sequence wants it.
+`z.tech_up(INFESTATIONPIT)` waits until Tunneling Claws has started
+(Glial/Burrow sit ahead of Claws on the upgrade list, so that also
+keeps Pit from sniping the Glial gas bank) and sits below the upgrade
+steps in `macro_steps`. `z.tech_up(SPIRE)` stays Lair-gated + air-scout
+only - `_SEQUENCE`'s own "lair" entry is what actually morphs Lair;
+without those gates, `TechUp` would happily morph Lair itself the moment
+it's economically able to (it walks prerequisites and morphs whatever's
+missing along the way), well ahead of where the scripted sequence wants
+it.
 `_scripted_gas_scaling` replaces `c.gas_buildings()` outright rather than
 just being re-gated: after 5:00 it grows the gas target by 1 every 20s
 until capped at 6 (`economy.max_gas` is raised to match, so the Stage 1
@@ -111,14 +114,13 @@ docstring for why (`ExpansionController.execute()` never looks at
 *second* Drone from the mineral line, the two colliding at the site -
 confirmed live for the natural).
 
-After the opening, macro steps take Infestation Pit (Swarm Host — cheap,
-passive map-control damage from Locusts, meant to be dug in at each base
-rather than committed to a fight) and, only once the enemy has actually
-shown air units, Spire (Corruptor, anti-air escort). Burrow + Tunneling
-Claws let Roaches burrow-regenerate and reposition between engagements
-without giving up the sustain. From 5:00, army vs upgrade spend is
-supply-based (`intel.army.army_behind_on_supply`): behind on army supply
-→ more units / fewer concurrent upgrades; ahead or even → tech focus.
+After the opening, Glial → Burrow → Tunneling Claws claim gas before
+Infestation Pit (Swarm Host — cheap, passive map-control damage from
+Locusts, meant to be dug in at each base rather than committed to a
+fight). Spire (Corruptor escort) still waits until the enemy has shown
+air. From 5:00, army vs upgrade spend is supply-based
+(`intel.army.army_behind_on_supply`): behind on army supply → more units
+/ fewer concurrent upgrades; ahead or even → tech focus.
 `z.spawn_macro_army` handles the composition switch between these phases
 — see its own docstring for why a static comp dict alone would stall
 production in the Roach-only window. Counter comps from scouting are a
@@ -955,16 +957,8 @@ BUILD = BuildDefinition(
         # see that function's own comment for why (an unplanned early
         # Overlord around 0:44 otherwise).
         c.auto_supply(gate=_scripted_overlords_exhausted),
-        # TechUp morphs further tech (Lair included) itself along the way,
-        # but Lair is already handled by `_SEQUENCE`'s own "lair" entry -
-        # gated on it existing so TechUp doesn't morph it prematurely.
-        z.tech_up(
-            UnitTypeId.INFESTATIONPIT, gate=gates.structure_started(UnitTypeId.LAIR)
-        ),
-        z.tech_up(
-            UnitTypeId.HIVE,
-            gate=gates.structure_started(UnitTypeId.INFESTATIONPIT),
-        ),
+        # Spire only - Pit/Hive sit below Tunneling Claws (see after
+        # `_post_five_army_tech`). Lair itself stays `_SEQUENCE`-owned.
         z.tech_up(
             UnitTypeId.SPIRE,
             gate=gates.all_of(
@@ -987,6 +981,19 @@ BUILD = BuildDefinition(
         _split_production_after_opening,
         _army_before_five,
         _post_five_army_tech,
+        # After Tunneling Claws has started (implies Glial/Burrow already
+        # pending) — was above upgrades and ate the Glial 100/100 bank.
+        z.tech_up(
+            UnitTypeId.INFESTATIONPIT,
+            gate=gates.all_of(
+                gates.structure_started(UnitTypeId.LAIR),
+                gates.upgrade_started(UpgradeId.TUNNELINGCLAWS),
+            ),
+        ),
+        z.tech_up(
+            UnitTypeId.HIVE,
+            gate=gates.structure_started(UnitTypeId.INFESTATIONPIT),
+        ),
         # Mineral sink: >5000 bank → every 30s pull 6 drones for 3 Spine +
         # 3 Spore beside the army (needs creep under the ball).
         z.forward_crawler_wave(),
