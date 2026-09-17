@@ -91,21 +91,22 @@ machinery once this scripted pacing drives the game: `c.gas_workers`'s
 `core.roles.SUPPORT_ROLES` respectively. Live-verify against them rather
 than re-implementing anything for them.
 
-`_claim_third_base_scout` and `_claim_natural_queen_tumor` below predate
+`_claim_natural_scout` and `_claim_natural_queen_tumor` below predate
 this rewrite but are unaffected by it: both key off live game state
 (supply, townhall count, Queen energy/position), not build-order position,
 so they keep working unchanged under the new scripted opening.
-`_claim_natural_scout` is the same idea applied to the natural itself -
-pre-walk a Drone there at 0:40, well ahead of `_SEQUENCE`'s own "expand"
-entry actually landing (~50-55s in practice) - added for this build
-specifically, not inherited from before the rewrite. Both pre-walk
-mechanics rely on `_step_behavior`'s "expand" kind using `Expand
-WithPersistentBuilder`, not plain `ExpansionController`, to actually pick
-up the pre-walked Drone - see that behavior's own docstring for why
-(`ExpansionController.execute()` never looks at `UnitRole.
-PERSISTENT_BUILDER` at all, so without this it always sent a *second*
-Drone from the mineral line, the two colliding at the site - confirmed
-live for the natural).
+`_claim_natural_scout` pre-walks a Drone to the natural at 0:36, well
+ahead of `_SEQUENCE`'s own "expand" entry actually landing (~50-55s in
+practice). The 3rd-base pre-walk used to exist too; it was removed once
+overflow/expansions racing the scripted 3rd was fixed - an early pull at
+2:00 just parked a second Drone at the site while something else built.
+The natural pre-walk relies on `_step_behavior`'s "expand" kind using
+`ExpandWithPersistentBuilder`, not plain `ExpansionController`, to
+actually pick up the pre-walked Drone - see that behavior's own
+docstring for why (`ExpansionController.execute()` never looks at
+`UnitRole.PERSISTENT_BUILDER` at all, so without this it always sent a
+*second* Drone from the mineral line, the two colliding at the site -
+confirmed live for the natural).
 
 After the opening, macro steps take Infestation Pit (Swarm Host — cheap,
 passive map-control damage from Locusts, meant to be dug in at each base
@@ -148,16 +149,17 @@ from ares.behaviors.macro import (
     BuildWorkers,
     ExpansionController,
     GasBuildingController,
-    TechUp,
     UpgradeController,
 )
 from ares.consts import UnitRole
 from sc2.data import Race
+from sc2.ids.ability_id import AbilityId
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 
 from bot.behaviors.zerg import (
     ExpandWithPersistentBuilder,
+    MorphLairAtMain,
     TrainFromLarva,
     pending_larva_trained,
 )
@@ -204,19 +206,20 @@ class _Step:
 # entry) - two Drones squeezed in at 19/20 first, then everything that
 # used to start at 19 shifts up 2 to make room: two always-on Queens (21,
 # 23 - not scripted here at all, see the module docstring on `z.
-# train_queens`), the two Zergling commands (25/26), three explicit Worker
-# steps, and the 3rd base Expand (pushed after all of them, same as
-# before). The Overlord entry is the one deliberate exception - explicitly
-# asked to stay at supply 26 rather than shift with its neighbors; by list
-# order it still only becomes current after the supply-27 Worker ahead of
-# it, so in practice it fires the moment that's issued (supply already
-# past 26 by then) rather than waiting on its own gate specifically.
-# The three Worker steps' targets (22, 23, 24) assume the (4, 21) Auto
-# Worker window settles at ~21 Drones by the time it closes - confirmed
-# live for the original (4, 19)/~19 baseline this was derived from,
-# adjust these three numbers if a run shows a different one (`_step_
-# issued`'s `>=` check makes a too-low target a harmless no-op, never a
-# block, so this only needs correcting if it undershoots).
+# train_queens`), the two Zergling commands (25/26), then the 3rd Expand
+# (must land near 2:17 - confirmed live: leaving it after the worker
+# interleave delayed hatch #3 to ~170s / Speed to the same beat; then
+# gate 29 soft-locked forever at supply 27 = 21 drones + 2 queens + 4
+# lings, because Auto Worker only opens after idx > expand and nothing
+# else spends larva). Gate is 27 to match that live supply so the hatch
+# can start as soon as minerals hit 300 (~2:15). Workers and the 3rd
+# Overlord fill behind the expand; Metabolic Boost sits after that short
+# fill so it can still hit ~2:45 rather than waiting on drones 23/24.
+# The Overlord@26 entry stays at supply 26 on purpose - by list order it
+# only becomes current after worker@22, so it fires as soon as that drone
+# is issued (supply already past 26) rather than waiting on its own gate.
+# Worker targets (22, 23, 24) assume the (4, 21) Auto Worker window
+# settles at ~21 Drones when it closes.
 _SEQUENCE: tuple[_Step, ...] = (
     _Step(12, "worker", 13),
     _Step(13, "overlord", 2),
@@ -225,12 +228,12 @@ _SEQUENCE: tuple[_Step, ...] = (
     _Step(17, "spawning_pool"),
     _Step(25, "zergling", 2),  # 1st command (2 lings) - was 23
     _Step(26, "zergling", 4),  # 2nd command - was 24
-    _Step(27, "worker", 22),  # was 25, target 20
+    _Step(27, "expand", 3),  # 3rd base - gate 27 matches post-ling supply
+    _Step(27, "worker", 22),
     _Step(26, "overlord", 3),  # deliberately NOT shifted - see comment above
-    _Step(29, "worker", 23),  # was 27, target 21
-    _Step(30, "worker", 24),  # was 28, target 22
-    _Step(29, "expand", 3),  # 3rd base - was 27, moved after the interleave above
     _Step(30, "metabolic_boost"),
+    _Step(29, "worker", 23),
+    _Step(30, "worker", 24),
     _Step(33, "overlord", 4),
     _Step(36, "overlord", 5),
     _Step(36, "overlord", 6),
@@ -241,6 +244,16 @@ _SEQUENCE: tuple[_Step, ...] = (
     _Step(54, "zergling", 10),  # 5th
     _Step(57, "lair"),
 )
+
+# Index of the scripted 3rd-base expand - `c.expansions` must not run until
+# this entry has been issued, or it races the opening the moment supply
+# hits 27 (confirmed live: ExpansionController started hatch #3 at 129.6s
+# while `_SEQUENCE` was still on worker@22, supply-locking drone production
+# until the hatch finished ~201s and delaying Metabolic Boost by ~35s).
+_THIRD_EXPAND_INDEX: int = next(
+    i for i, s in enumerate(_SEQUENCE) if s.kind == "expand" and s.target == 3
+)
+
 
 def _step_issued(ctx, step: "_Step") -> bool:
     """True once `step` has been commanded - matches ares' own "build_progress
@@ -279,30 +292,40 @@ def _step_issued(ctx, step: "_Step") -> bool:
     if step.kind == "lair":
         # Unlike every other structure here, Lair is an *upgrade* of an
         # existing Hatchery (UPGRADETOLAIR_LAIR cast on it), not a fresh
-        # Drone-morph - it doesn't show up as UnitTypeId.LAIR in
-        # `structures(...)` until the ~92s morph actually finishes.
-        # `already_pending` is what reflects "commanded" here (confirmed
-        # live: TechUp's own log showed the morph issued within 1s of
-        # target, but `structures(LAIR)` alone stayed at 0 for another 57s).
-        return (
+        # Drone-morph - `structures(LAIR)` stays 0 until the morph
+        # finishes (~57s). Prefer the live townhall order over bare
+        # `already_pending`: confirmed live, a one-frame pending blip
+        # advanced the opening past Lair while the morph hadn't stuck,
+        # and nothing retried until UpgradeController reached
+        # TunnelingClaws ~24s later.
+        if (
             bot.structures(UnitTypeId.LAIR).amount
             + bot.structures(UnitTypeId.HIVE).amount
-            + bot.already_pending(UnitTypeId.LAIR)
             >= 1
+        ):
+            return True
+        return any(
+            any(o.ability.id == AbilityId.UPGRADETOLAIR_LAIR for o in th.orders)
+            for th in bot.townhalls
         )
     raise AssertionError(f"unhandled opening step kind {step.kind!r}")
 
 
 def _step_behavior(ctx, step: "_Step"):
     if step.kind == "worker":
-        return BuildWorkers(to_count=step.target)
+        # Not `BuildWorkers`: that requires `townhalls.idle`, and Zerg
+        # hatches are routinely non-idle while Queens train from them -
+        # confirmed live, worker@22 sat blocked with `idle_townhalls: 0`
+        # / larva available for ~80s after overflow had already raced a
+        # 3rd hatch. `TrainFromLarva` matches the Overlord/Zergling path
+        # and `_step_issued`'s own drone+pending count.
+        return TrainFromLarva(unit_type=UnitTypeId.DRONE, to_count=step.target)
     if step.kind == "overlord":
         return TrainFromLarva(unit_type=UnitTypeId.OVERLORD, to_count=step.target)
     if step.kind == "expand":
         # Not plain `ExpansionController` - see `ExpandWithPersistentBuilder`'s
-        # own docstring for why (it ignores the pre-walked Drone `_claim_
-        # natural_scout`/`_claim_third_base_scout` parked on `UnitRole.
-        # PERSISTENT_BUILDER`, sending a second one instead).
+        # own docstring for why (it prefers the pre-walked Drone
+        # `_claim_natural_scout` parks on `UnitRole.PERSISTENT_BUILDER`).
         return ExpandWithPersistentBuilder(to_count=step.target)
     if step.kind == "gas":
         return GasBuildingController(to_count=step.target)
@@ -325,7 +348,9 @@ def _step_behavior(ctx, step: "_Step"):
             to_count=1,
         )
     if step.kind == "lair":
-        return TechUp(desired_tech=UnitTypeId.LAIR, base_location=ctx.production_location)
+        # Not plain `TechUp`: that morphs `idle_townhalls[0]`, which live-
+        # tested as the natural. Wait for the main hatch instead.
+        return MorphLairAtMain(base_location=ctx.production_location)
     raise AssertionError(f"unhandled opening step kind {step.kind!r}")
 
 
@@ -346,9 +371,12 @@ def _current_opening_step(ctx) -> "_Step | None":
 def _scripted_production(ctx):
     """The scripted opening's single "current step" - see `_SEQUENCE`."""
     step = _current_opening_step(ctx)
-    if step is None or ctx.bot.supply_used < step.supply:
+    if step is None:
         return None
-    if step.kind == "spawning_pool" and not ctx.bot.can_afford(UnitTypeId.SPAWNINGPOOL):
+    bot = ctx.bot
+    if bot.supply_used < step.supply:
+        return None
+    if step.kind == "spawning_pool" and not bot.can_afford(UnitTypeId.SPAWNINGPOOL):
         # `BuildStructure`'s Zerg path (unlike every other ares behavior
         # this module hands back - `TrainFromLarva`, `ExpandWithPersistent
         # Builder`, `GasBuildingController`, `UpgradeController` all check
@@ -396,12 +424,10 @@ _AUTO_WORKER_WINDOWS: tuple[tuple[int, float], ...] = (
     (4, 21),  # after Spawning Pool(17) -> stop at 21, not 25 (explicit
     # request: two Drones squeezed in at 19/20 first, then free mineral
     # priority for the 21/23 Queens and the 25/26 Zerglings instead of
-    # racing them). No window covers 21 through the 3rd base Expand below
-    # - that whole stretch (Zergling x2, 3 explicit Worker steps, an
-    # Overlord) is scripted directly in `_SEQUENCE` now, so Auto Worker
-    # has nothing left to fill in there.
-    (11, 30),  # after the 3rd base Expand(29) -> Metabolic Boost's gate
-    (12, 33),  # after Metabolic Boost(30) -> Overlord's gate
+    # racing them). No window covers 21 through expand@3 - that stretch
+    # (Zergling x2, then the expand itself) is scripted in `_SEQUENCE`.
+    (7, 30),  # after the 3rd base Expand -> Metabolic Boost's gate
+    (10, 33),  # after Metabolic Boost -> Overlord's gate
     (13, 36),  # after Overlord(33) -> Overlord's gate
     (15, 44),  # after the 2nd Overlord@36 -> Roach Warren's gate
     (16, 55),  # after Roach Warren(44) -> 2nd Gas's gate
@@ -498,22 +524,68 @@ def _split_production_after_opening(ctx):
     ever got a chance, delaying it from its 12s deadline to a consistent
     ~14.8s across every opponent/seed tested. Wrapping it so it doesn't run
     at all until the scripted opening is fully spent closes that race the
-    same way `c.expansions`/`c.upgrades` are already re-gated above -
-    `after_wave(1)` still governs its own economy/army re-prioritization
-    once that's true, unchanged.
+    same way `_expansions_after_scripted_third` / `c.upgrades` are re-gated
+    above - `after_wave(1)` still governs its own economy/army
+    re-prioritization once that's true, unchanged.
     """
     if ctx.state.opening_step_index < len(_SEQUENCE):
         return None
     return c.split_production(gate=gates.after_wave(1))(ctx)
 
 
+def _expansions_after_scripted_third(ctx):
+    """4th/5th bases only - never the scripted 3rd.
+
+    `c.expansions(gate=supply>=27)` alone is not enough: supply hits 27
+    while `_SEQUENCE` is still on the post-ling worker/overlord stretch
+    (well before `expand@3`), and `ExpansionController(to_count=max_bases)`
+    happily starts hatch #3 then. That morph drops a Drone and parks us
+    supply-capped until the hatch finishes, which is what pushed Metabolic
+    Boost from ~2:45 to ~3:21. Mirror `_split_production_after_opening`:
+    don't return the controller at all until the scripted 3rd is issued.
+    """
+    if ctx.state.opening_step_index <= _THIRD_EXPAND_INDEX:
+        return None
+    return c.expansions(gate=gates.supply_at_least(27))(ctx)
+
+
+def _overflow_after_scripted_opening(ctx):
+    """Mineral-overflow hatches only after the scripted opening is spent.
+
+    Confirmed live: at 115.8s with a 570 mineral bank (threshold 500),
+    `overflow_hatcheries` → `ExpansionController` queued hatch #3 on a
+    GATHERING Drone - well before `_SEQUENCE` reached `expand@3` (and
+    even before the 2:00 pre-walk). That morph supply-locked the opening
+    until ~3:20 and pushed Metabolic Boost ~35s past its deadline.
+    """
+    if ctx.state.opening_step_index < len(_SEQUENCE):
+        return None
+    return z.overflow_hatcheries(mineral_threshold=500)(ctx)
+
+
+def _lair_commanded(ctx) -> bool:
+    """True once Lair morph is actually on a townhall (or finished).
+
+    Used to hold `c.upgrades` so Burrow can't spend the Lair gas bank
+    while an incomplete warren makes Glial unresearchable - see the
+    upgrades gate comment at the BUILD site.
+    """
+    bot = ctx.bot
+    if bot.structures(UnitTypeId.LAIR).amount or bot.structures(UnitTypeId.HIVE).amount:
+        return True
+    return any(
+        any(o.ability.id == AbilityId.UPGRADETOLAIR_LAIR for o in th.orders)
+        for th in bot.townhalls
+    )
+
+
 # Game-time mark to pull a Drone aside and start it walking toward the
 # natural expansion site - see `_claim_natural_scout`. Time-gated rather
-# than supply-gated (unlike `_claim_third_base_scout` below): the natural
-# is the *first* expansion, so there's no earlier townhall count to key
-# off, and `_SEQUENCE`'s own "expand" entry for it (supply 16) can sit
-# current for a while behind Overlord/Gas/Pool - comfortably ahead of
-# where that entry actually lands in practice (~50-55s, confirmed live).
+# than supply-gated: the natural is the *first* expansion, so there's no
+# earlier townhall count to key off, and `_SEQUENCE`'s own "expand" entry
+# for it (supply 16) can sit current for a while behind Overlord/Gas/Pool
+# - comfortably ahead of where that entry actually lands in practice
+# (~50-55s, confirmed live).
 _NATURAL_SCOUT_AT_TIME: float = 36.0
 
 
@@ -521,19 +593,16 @@ def _claim_natural_scout(ctx) -> None:
     """Pull one already-mining Drone aside, once game time passes 0:36, to
     walk it toward the natural expansion site ahead of `_scripted_
     production` actually placing it, so the travel time overlaps with the
-    wait instead of happening entirely after - same idea as `_claim_third_
-    base_scout` below, just time-gated instead of supply-gated (see
-    `_NATURAL_SCOUT_AT_TIME`'s own comment for why).
+    wait instead of happening entirely after.
 
-    See `_claim_third_base_scout`'s own docstring for why this pulls from
-    the *existing* mining pool via `on_step`, why `UnitRole.
-    PERSISTENT_BUILDER` (not a bare move order) is what keeps `Mining`
-    from dragging the Drone back, why reusing `ExpansionController`'s own
-    next-location lookup is what keeps this walking to the exact spot
-    `_scripted_production` would otherwise pick, and why the Drone is
-    picked via `mediator.select_worker` rather than a bare `closest_to` -
-    all of that applies here unchanged, just for the natural instead of
-    the 3rd base.
+    Pulls from the *existing* mining pool via `on_step` rather than
+    intercepting a freshly-trained one via `on_unit_created`.
+    `UnitRole.PERSISTENT_BUILDER` keeps `Mining` from dragging it back;
+    `ExpandWithPersistentBuilder` is what actually picks it up for the
+    morph (plain `ExpansionController` ignores that role). Location comes
+    from `ExpansionController`'s own next-site lookup so the walk and the
+    build agree; the Drone is picked via `mediator.select_worker` so a
+    mid-mineral-carry isn't yanked mid-trip.
     """
     if ctx.state.natural_scout_claimed:
         return
@@ -554,74 +623,6 @@ def _claim_natural_scout(ctx) -> None:
     ctx.mediator.assign_role(tag=scout.tag, role=UnitRole.PERSISTENT_BUILDER)
     scout.move(location)
     ctx.log(f"MACRO_ZERG pre-walking Drone {scout.tag} toward natural at {location}")
-
-
-# Game-time mark to pull a Drone aside and start it walking toward the 3rd
-# base site - see `_claim_third_base_scout`. Was supply-gated (21) until
-# an explicit request to move this pull later, to 2:00 - converted to a
-# fixed time instead of just raising the supply threshold, matching
-# `_NATURAL_SCOUT_AT_TIME`'s own style, since the request was itself
-# phrased in time ("1:45 -> 2:00"), not supply. Comfortably ahead of the
-# scripted 3rd base expand itself (supply 27, landing ~142s in practice).
-_THIRD_BASE_SCOUT_AT_TIME: float = 120.0
-
-
-def _claim_third_base_scout(ctx) -> None:
-    """Pull one already-mining Drone aside, once game time passes 2:00, to
-    walk it toward the 3rd base site ahead of `_scripted_production`
-    actually placing it, so the travel time overlaps with the wait instead
-    of happening entirely after.
-
-    Pulls from the *existing* mining pool via `on_step` rather than
-    intercepting a freshly-trained one via `on_unit_created` - overlaps
-    the walk with whatever's still queued ahead of the 3rd base in
-    `macro_steps` instead of waiting on a fresh Drone that may not train
-    anywhere near 2:00.
-
-    `UnitRole.PERSISTENT_BUILDER`, not a bare move order left in
-    `GATHERING`, is what keeps `Mining` (scoped to `UnitRole.GATHERING`,
-    reasserting a mineral-patch order every frame) from dragging it back.
-    `_scripted_production` still needs `ExpandWithPersistentBuilder` (not
-    plain `ExpansionController`) to actually pick this Drone up later -
-    see that behavior's own docstring - `PERSISTENT_BUILDER` alone doesn't
-    make ares' worker-selection prefer it. Ares' own auto-persistent-
-    worker assignment (`BuildOrderRunner._assign_persistent_worker`) is
-    Zerg-exempt, so there's no built-in claimant already using this role
-    to conflict with.
-
-    Reuses `ExpansionController`'s own next-location lookup (terrain
-    safety / not-already-taken checks included) rather than a separate
-    one, so this walks to the exact same spot `_scripted_production` would
-    otherwise pick.
-
-    Picks the Drone via `mediator.select_worker` rather than a bare
-    `closest_to` over the `GATHERING` pool - confirmed live, `closest_to`
-    could grab a Drone mid-mineral-carry (just picked up a chunk, en route
-    back to deposit), discarding that trip's minerals the instant it got
-    re-tasked. `select_worker` excludes carrying Drones from its normal
-    pool by default (see its own `is_carrying_resource` filter) and prefers
-    an already-unassigned Drone (e.g. long-distance mining) over pulling
-    one off a patch at all.
-    """
-    if ctx.state.third_base_scout_claimed:
-        return
-    if ctx.bot.time < _THIRD_BASE_SCOUT_AT_TIME:
-        return
-
-    location = ExpansionController(to_count=1)._get_next_expansion_location(
-        ctx.bot, ctx.mediator
-    )
-    if location is None:
-        return  # try again next frame
-
-    scout = ctx.mediator.select_worker(target_position=location)
-    if scout is None:
-        return  # try again next frame
-
-    ctx.state.third_base_scout_claimed = True
-    ctx.mediator.assign_role(tag=scout.tag, role=UnitRole.PERSISTENT_BUILDER)
-    scout.move(location)
-    ctx.log(f"MACRO_ZERG pre-walking Drone {scout.tag} toward 3rd base at {location}")
 
 
 # Radius from the natural townhall a Queen must spawn within to be claimed
@@ -726,7 +727,6 @@ def _macro_zerg_on_step(ctx) -> None:
     """`BuildDefinition` only has one `on_step` slot - all of this
     build's per-frame concerns are called from here."""
     _claim_natural_scout(ctx)
-    _claim_third_base_scout(ctx)
     _claim_natural_queen_tumor(ctx)
 
 
@@ -832,17 +832,24 @@ BUILD = BuildDefinition(
                 gates.structure_started(UnitTypeId.LAIR), intel_army.enemy_has_air_units
             ),
         ),
-        c.expansions(gate=gates.supply_at_least(27)),  # 4th/5th base
+        # 4th/5th only - `_expansions_after_scripted_third` (supply>=27 alone
+        # raced hatch #3 ahead of the scripted expand; see that helper).
+        _expansions_after_scripted_third,
         # Replaces the generic `c.gas_buildings()` continuation outright:
         # see `_scripted_gas_scaling`'s own docstring for the growth rule.
         _scripted_gas_scaling,
         # `UpgradeController` walks prerequisites the same way `TechUp`
         # does - Glial Reconstitution requires Roach Warren, and without
-        # this gate it built one itself at supply 30 (confirmed live:
+        # a warren gate it built one itself at supply 30 (confirmed live:
         # "Building UnitTypeId.ROACHWARREN for UpgradeId.GLIALRECONSTITUTION"
-        # at 2:30), 14 supply ahead of `_SEQUENCE`'s own "roach_warren"
-        # entry, stealing minerals from everything queued in between.
-        c.upgrades(gate=gates.structure_started(UnitTypeId.ROACHWARREN)),
+        # at 2:30). Gating on warren-*started* was still too early: with an
+        # incomplete warren in the structures dict, Glial isn't researchable
+        # yet so the controller falls through to Burrow, which spent the
+        # 100 gas at 212.6s and left Lair `cant_afford` on gas until 252.1
+        # (deadline 256). Gate on Lair commanded instead - Speed is already
+        # done by `_SEQUENCE`, and Glial/Burrow/TunnelingClaws can share the
+        # morph-window gas income.
+        c.upgrades(gate=_lair_commanded),
         # Not `c.split_production(gate=gates.after_wave(1))` directly - see
         # `_split_production_after_opening`'s own comment for why that
         # doesn't actually gate anything.
@@ -865,7 +872,9 @@ BUILD = BuildDefinition(
         # heavy (no native anti-air until Corruptor/Spire comes online).
         z.spore_crawlers(per_base=1, gate=gates.structure_started(UnitTypeId.LAIR)),
         # Last: only fires when nothing above had anywhere to put a mineral
-        # surplus - see the module docstring and the step's own.
-        z.overflow_hatcheries(mineral_threshold=500),
+        # surplus - see the module docstring and the step's own. Gated via
+        # `_overflow_after_scripted_opening` so a 500+ bank mid-opening
+        # cannot race hatch #3 ahead of the script (confirmed live at 115.8s).
+        _overflow_after_scripted_opening,
     ),
 )

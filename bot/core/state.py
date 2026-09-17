@@ -253,10 +253,6 @@ class RunState:
     natural expansion site (see `builds.zerg.macro_zerg._claim_natural_
     scout`) - a one-shot claim, never re-enters even if that Drone dies
     en route."""
-    third_base_scout_claimed: bool = False
-    """Latched once a Drone has been pulled aside to pre-walk toward the
-    3rd base site (see `builds.zerg.macro_zerg._claim_third_base_scout`) -
-    a one-shot claim, never re-enters even if that Drone dies en route."""
     natural_queen_tag: int | None = None
     """Queen pulled onto `UnitRole.QUEEN_CREEP` to spend its starting 25
     energy on a Creep Tumor instead of an inject (see `builds.zerg.

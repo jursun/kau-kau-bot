@@ -159,7 +159,20 @@ class MacroZergValidator(BaseValidator):
 
         latch("roach_warren", self.structures(UnitTypeId.ROACHWARREN).amount >= 1)
 
-        latch("lair", self.structures(UnitTypeId.LAIR).amount >= 1)
+        # Lair is a Hatchery morph: `structures(LAIR)` stays 0 until the
+        # ~57s morph finishes, so latching on the structure alone reported
+        # "started at 309s" when the morph was commanded at ~252s (deadline
+        # 256s). Match the opening's own "commanded" signal - pending or a
+        # live UPGRADETOLAIR order on a townhall.
+        lair_started = (
+            self.structures(UnitTypeId.LAIR).amount >= 1
+            or self.already_pending(UnitTypeId.LAIR) > 0
+            or any(
+                any(o.ability.id.name == "UPGRADETOLAIR_LAIR" for o in th.orders)
+                for th in self.townhalls
+            )
+        )
+        latch("lair", lair_started)
 
         # One per base (`steps.zerg.spore_crawlers(per_base=1)`) - "3" is
         # this opening's own base count by this point (main, natural, 3rd),

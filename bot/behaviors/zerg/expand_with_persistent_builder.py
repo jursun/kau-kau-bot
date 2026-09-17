@@ -23,8 +23,8 @@ class ExpandWithPersistentBuilder(MacroBehavior):
     `ExpansionController.execute()` calls `mediator.select_worker(target_
     position=location)` with no `select_persistent_builder` flag - a Drone
     pre-walked to the expansion site and parked on `UnitRole.
-    PERSISTENT_BUILDER` (see `builds.zerg.macro_zerg._claim_natural_scout`/
-    `_claim_third_base_scout`) is therefore invisible to it: it always
+    PERSISTENT_BUILDER` (see `builds.zerg.macro_zerg._claim_natural_scout`)
+    is therefore invisible to it: it always
     grabs a fresh Drone off the mineral line instead, sending *two* Drones
     to the same spot - confirmed live, the pre-walked one just stood there
     while a second one got the actual build order, the two visibly
