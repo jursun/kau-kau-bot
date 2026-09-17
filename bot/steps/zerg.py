@@ -170,9 +170,19 @@ def evolution_chambers() -> MacroStep:
     return step
 
 
-def spore_crawlers(per_base: int, gate: Gate = _always) -> MacroStep:
+def spore_crawlers(
+    per_base: int,
+    gate: Gate = _always,
+    check_interval: float = 0.0,
+) -> MacroStep:
     """One Spore Crawler (mineral-line placement) per owned base, once `gate`
     passes — capped overall at `per_base * (number of owned townhalls)`.
+
+    Same maintenance shape as `train_queens`: keep the count topped up for
+    every base that exists, for the rest of the game. Optional
+    `check_interval` (seconds) throttles how often the missing-base scan
+    runs — Macro Zerg uses 15s after 4:30 so this does not fight larva
+    production every frame, but still rebuilds a destroyed crawler.
 
     Uses `BuildSporeCrawler` rather than `BuildStructure`: `BuildStructure`
     cannot do this job on Zerg at all, for two separate reasons — see that
@@ -220,6 +230,12 @@ def spore_crawlers(per_base: int, gate: Gate = _always) -> MacroStep:
         if ctx.bot.structure_pending(UnitTypeId.SPORECRAWLER):
             return None
 
+        if check_interval > 0:
+            last = ctx.state.last_spore_check_at
+            if last is not None and ctx.bot.time - last < check_interval:
+                return None
+            ctx.state.last_spore_check_at = ctx.bot.time
+
         bases = list(ctx.bot.owned_expansions)
         existing = ctx.bot.structures(UnitTypeId.SPORECRAWLER)
         if existing.amount >= per_base * len(bases):
@@ -231,7 +247,16 @@ def spore_crawlers(per_base: int, gate: Gate = _always) -> MacroStep:
             if len(existing.closer_than(radius, location)) >= per_base:
                 continue
             plan.add(BuildSporeCrawler(base_location=location))
-        return plan
+        if plan.macros:
+            from bot.common.log import log_event
+
+            log_event(
+                ctx.bot,
+                f"SPORE maintain: {len(plan.macros)} base(s) missing "
+                f"(have {existing.amount}/{per_base * len(bases)})",
+            )
+            return plan
+        return None
 
     return step
 

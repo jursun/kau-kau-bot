@@ -149,6 +149,9 @@ class FakeAI:
         self.supply_used = 14
         self.workers = _Counted(12)
         self.gas_buildings = _Counted(0)
+        # Empty by default; Macro Zerg's Lair latch walks `townhalls` for a
+        # live UPGRADETOLAIR order when `structures(LAIR)` is still 0.
+        self.townhalls = _FakeUnits()
         self.start_location = Point2((100.0, 100.0))
         # `.get_cached_enemy_army` is a plain attribute here (a test sets it
         # directly), standing in for ares' real `ManagerMediator` property.

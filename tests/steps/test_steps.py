@@ -265,6 +265,35 @@ def test_spore_crawlers_returns_none_before_gate() -> None:
     assert z.spore_crawlers(per_base=1, gate=lambda _ctx: False)(ctx) is None
 
 
+def test_spore_crawlers_check_interval_skips_until_due() -> None:
+    """Macro Zerg's 15s recheck must not re-scan every frame."""
+    ctx = _ctx()
+    ctx.bot.time = 270.0
+    ctx.bot.owned_expansions = {Point2((10.0, 10.0)): MagicMock()}
+    ctx.state.last_spore_check_at = 260.0  # 10s ago, interval 15
+
+    assert (
+        z.spore_crawlers(per_base=1, gate=lambda _ctx: True, check_interval=15.0)(ctx)
+        is None
+    )
+    assert ctx.state.last_spore_check_at == 260.0
+
+
+def test_spore_crawlers_check_interval_runs_when_due() -> None:
+    ctx = _ctx()
+    ctx.bot.time = 275.0
+    main = Point2((10.0, 10.0))
+    ctx.bot.owned_expansions = {main: MagicMock()}
+    ctx.state.last_spore_check_at = 260.0  # 15s ago
+
+    plan = z.spore_crawlers(per_base=1, gate=lambda _ctx: True, check_interval=15.0)(
+        ctx
+    )
+
+    assert isinstance(plan, MacroPlan)
+    assert ctx.state.last_spore_check_at == 275.0
+
+
 def test_train_queens_extra_is_not_clipped_by_max_per_townhall() -> None:
     """Regression test: `max_per_townhall` feeds `TrainQueens`'s own
     `min(to_count, len(townhalls) * max_per_townhall)` formula, so passing

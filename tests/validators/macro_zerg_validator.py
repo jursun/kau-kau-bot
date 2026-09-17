@@ -69,11 +69,12 @@ class MacroZergValidator(BaseValidator):
     # (internal key, label, deadline in seconds) - matches
     # `bot.builds.zerg.macro_zerg._SEQUENCE` and its "additional timings"
     # exactly (0:12, 0:50, 1:00, 1:15, 2:03, 2:05, 2:17, 2:47, 2:59, 3:32,
-    # 3:35, 4:05, 4:16, 4:25 - `gas_off`/`gas_on` come from the
+    # 3:35, 4:05, 4:16, 4:30 spores - `gas_off`/`gas_on` come from the
     # gas-worker-count timings, not the production sequence itself),
     # and is what Stage 2 reports in. Natural/Gas/gas-off were tightened
     # after smoke showed consistent ~5-15s headroom on the prior 54/70/135
-    # windows.
+    # windows. Spores open at 4:30 with a 15s missing-base recheck, so the
+    # third crawler is allowed through ~5:30.
     _OPENING_TIMING_SPEC: tuple[tuple[str, str, float], ...] = (
         ("overlord2", "Overlord", 12.0),
         ("natural_hatch", "Natural Hatchery", 50.0),
@@ -88,7 +89,7 @@ class MacroZergValidator(BaseValidator):
         ("roach_warren", "Roach Warren", 215.0),
         ("gas2", "2nd Gas", 245.0),
         ("lair", "Lair", 256.0),
-        ("spores3", "3 Spore Crawlers", 265.0),
+        ("spores3", "3 Spore Crawlers", 330.0),
     )
 
     def _init_milestones(self) -> None:
@@ -174,10 +175,10 @@ class MacroZergValidator(BaseValidator):
         )
         latch("lair", lair_started)
 
-        # One per base (`steps.zerg.spore_crawlers(per_base=1)`) - "3" is
-        # this opening's own base count by this point (main, natural, 3rd),
-        # not a generic per-base check the way the structure count in
-        # Stage 3 is.
+        # One per base (`steps.zerg.spore_crawlers(per_base=1)`), maintenance
+        # opens at 4:30 — "3" is this opening's own base count by then
+        # (main, natural, 3rd), not a generic per-base check the way the
+        # structure count in Stage 3 is.
         latch("spores3", self.structures(UnitTypeId.SPORECRAWLER).amount >= 3)
 
         latch("speed", self.pending_or_complete_upgrade(UpgradeId.ZERGLINGMOVEMENTSPEED))

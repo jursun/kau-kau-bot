@@ -40,12 +40,14 @@ script for the same purchase. `z.train_queens` is the one exception - it's
 always on rather than scripted or re-gated: 1 Queen per ready townhall
 plus 1 spare for creep spread, for the whole game, not just the opening's
 first few bases (see its own comment in `macro_steps`).
-`z.tech_up(INFESTATIONPIT)`/`z.tech_up(SPIRE)`/`z.spore_crawlers` are
-re-gated on `gates.structure_started(UnitTypeId.LAIR)` specifically - `_
-SEQUENCE`'s own "lair" entry is what actually morphs Lair; without this
-gate, `TechUp` would happily morph it itself the moment it's economically
-able to (it walks prerequisites and morphs whatever's missing along the
-way), well ahead of where the scripted sequence wants it.
+`z.spore_crawlers` is the same shape (1 per owned base in the mineral
+line), opening at 4:30 with a 15s missing-base recheck.
+`z.tech_up(INFESTATIONPIT)`/`z.tech_up(SPIRE)` are re-gated on Lair
+existing specifically - `_SEQUENCE`'s own "lair" entry is what actually
+morphs Lair; without this gate, `TechUp` would happily morph it itself
+the moment it's economically able to (it walks prerequisites and morphs
+whatever's missing along the way), well ahead of where the scripted
+sequence wants it.
 `_scripted_gas_scaling` replaces `c.gas_buildings()` outright rather than
 just being re-gated: after 5:30 it grows the gas target by 1 every 30s
 until capped at 6 (`economy.max_gas` is raised to match, so the Stage 1
@@ -811,6 +813,18 @@ BUILD = BuildDefinition(
         # opening's own first three bases specifically; this scales to
         # however many bases actually exist, for the whole game.
         z.train_queens(per_base=1, maximum=6, extra=1),
+        # Same maintenance shape as queens: 1 Spore Crawler per owned base
+        # in the mineral line, forever. Opens at 4:30 and only re-scans for
+        # missing crawlers every 15s so this does not fight larva every
+        # frame, but still rebuilds after losses. Listed next to queens
+        # (before army) so MacroPlan actually reaches it — at the bottom
+        # behind `spawn_macro_army` it never spent (confirmed live: Stage 2
+        # "3 Spore Crawlers" never happened through leave-330).
+        z.spore_crawlers(
+            per_base=1,
+            gate=gates.after_time(270.0),
+            check_interval=15.0,
+        ),
         _scripted_worker_production,
         # ── Post-opening / continuous macro - each re-gated so it only
         # ever continues growth past what the script already established,
@@ -867,10 +881,6 @@ BUILD = BuildDefinition(
         # gated on Roach Warren tech-readiness internally" reasoning here
         # was true for Roach/Swarm Host, not for this fallback branch.
         z.spawn_macro_army(gate=gates.structure_started(UnitTypeId.ROACHWARREN)),
-        # One per base, mineral-line placement — static anti-air so Mutalisk/
-        # air harass can't freely pick off drones while the army is Roach-
-        # heavy (no native anti-air until Corruptor/Spire comes online).
-        z.spore_crawlers(per_base=1, gate=gates.structure_started(UnitTypeId.LAIR)),
         # Last: only fires when nothing above had anywhere to put a mineral
         # surplus - see the module docstring and the step's own. Gated via
         # `_overflow_after_scripted_opening` so a 500+ bank mid-opening

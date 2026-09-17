@@ -250,7 +250,7 @@ def test_spores3_requires_three_not_two() -> None:
 
 def test_spores3_passes_once_the_third_is_up() -> None:
     validator = _validator()
-    validator.ai.time = 250.0  # deadline is 265.0s
+    validator.ai.time = 300.0  # deadline is 330.0s (opens at 4:30)
     validator.ai._structure_counts[UnitTypeId.SPORECRAWLER] = 3
     validator.on_step(0)
 
@@ -259,7 +259,7 @@ def test_spores3_passes_once_the_third_is_up() -> None:
         r for r in result["Stage 2: Opening Timing"] if r.name == "3 Spore Crawlers"
     )
     assert spores.passed, spores.detail
-    assert "250.0s" in spores.detail
+    assert "300.0s" in spores.detail
 
 
 def test_gas_on_never_latches_without_gas_off_happening_first() -> None:

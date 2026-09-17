@@ -274,6 +274,10 @@ class RunState:
     Entries for dead Queens are never removed - harmless, since `Train
     Queens` only ever looks up tags that are still alive in `ai.units
     (QUEEN)`."""
+    last_spore_check_at: float | None = None
+    """Last game time `steps.zerg.spore_crawlers` ran its per-base missing
+    check (see that step's `check_interval`). `None` until the first check
+    after the gate opens."""
     queen_train_cooldown: dict[str, float] = field(default_factory=dict)
     """`TrainQueens`'s own `cooldown_state` - a single `{"last": ai.time}`
     entry it writes after every Queen it trains, persisted here so the
