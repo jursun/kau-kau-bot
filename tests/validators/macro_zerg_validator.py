@@ -45,6 +45,7 @@ from typing import Dict, List, Optional
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 
+from bot.behaviors.zerg.train_from_larva import pending_larva_trained
 from tests.validators.base_validator import (
     STRUCTURE_LABELS,
     BaseValidator,
@@ -145,8 +146,14 @@ class MacroZergValidator(BaseValidator):
 
         latch("pool", self.structures(UnitTypeId.SPAWNINGPOOL).amount >= 1)
 
-        zerglings = self.units(UnitTypeId.ZERGLING).amount + self.already_pending(
-            UnitTypeId.ZERGLING
+        # Count individual Zerglings, not Eggs: `already_pending(ZERGLING)`
+        # is 1 per Egg, but each Egg yields 2 Lings. Same correction the
+        # opening itself uses (`pending_larva_trained`) - without it, Stage
+        # 2 latched only when both Eggs hatched (~+17s late) even though
+        # both morphs were commanded on time (confirmed live: yield hit 4
+        # at 121.5s / deadline 123s; raw egg-count hit 4 at 138.6s).
+        zerglings = self.units(UnitTypeId.ZERGLING).amount + pending_larva_trained(
+            self, UnitTypeId.ZERGLING
         )
         latch("zerglings4", zerglings >= 4)
 

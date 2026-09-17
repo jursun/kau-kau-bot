@@ -115,6 +115,22 @@ def test_all_fourteen_opening_timing_checks_are_reported_in_order() -> None:
     ]
 
 
+def test_four_zergling_latches_on_two_eggs_not_hatched_units() -> None:
+    """Regression: `already_pending(ZERGLING)` counts Eggs (orders), not
+    the 2-per-Egg yield. Two Eggs commanded must count as 4 Zerglings
+    started - matching the opening's own `pending_larva_trained` - or
+    Stage 2 reports ~egg-morph late even when both morphs were on time."""
+    validator = _validator()
+    validator.ai.time = 121.5  # inside the 123s deadline
+    validator.ai._pending_counts[UnitTypeId.ZERGLING] = 2  # 2 Eggs → 4 Lings
+    validator.on_step(0)
+
+    result = validator.validate()
+    lings = next(r for r in result["Stage 2: Opening Timing"] if r.name == "4 Zergling")
+    assert lings.passed, lings.detail
+    assert "121.5s" in lings.detail
+
+
 def test_a_milestone_hit_before_its_deadline_passes() -> None:
     validator = _validator()
     validator.ai.time = 10.0  # Overlord's deadline is 12.0s
