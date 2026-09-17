@@ -649,6 +649,7 @@ def attack_squads(
     squad_radius: float = SQUAD_RADIUS,
     min_engage_range: float | None = None,
     never_retreat: bool = False,
+    kite_types: frozenset = frozenset(),
 ) -> CombatRoutine:
     """Drive each ATTACKING squad at its nearest worthwhile target.
 
@@ -667,9 +668,12 @@ def attack_squads(
     A squad that isn't still forming up and finds a nearby enemy
     (`SQUAD_ENGAGE_RANGE`) engages. Close army comes from
     `bot.intel.enemy_army` (workers stripped); if that list is empty nearby,
-    `_enemies_near` still supplies structures to shoot. How the squad fights
-    depends on local force size (intel army supply), `min_engage_range` and
-    `never_retreat`:
+    `_enemies_near` still supplies structures to shoot. `kite_types` splits
+    the squad first - anything of one of those types always kites via `_
+    kite_maneuver` at `min_engage_range`, unconditionally (not just when
+    outnumbered), and deliberately *without* the influence grid (see below
+    for why). Everything else in the squad falls through to the existing
+    force-size-based dispatch:
 
     - `never_retreat=True`: skip influence-retreat entirely - see `_squad_
       maneuver_commit`'s own docstring for exactly why a comp would want
@@ -681,14 +685,28 @@ def attack_squads(
     - Enemy force strictly smaller than ours: `StutterGroupForward` trades
       as one group toward the destination.
     - Enemy force equal or larger, and `min_engage_range` is set: each unit
-      is driven individually via `_kite_maneuver` - backing away from
-      anything closer than `min_engage_range`, otherwise shooting. Builds
-      that leave `min_engage_range` unset keep group stutter after influence
-      retreat rather than per-unit kite.
+      is driven individually via `_kite_maneuver` (this time *with* the
+      influence grid, matching Four Rax Proxy's Marines) - backing away
+      from anything closer than `min_engage_range`, otherwise shooting.
+      Builds that leave `min_engage_range` unset keep group stutter after
+      influence retreat rather than per-unit kite.
+
+    `kite_types` omits the influence grid on purpose: `KeepUnitSafe` backs
+    a unit off any ground `mediator.is_position_safe` calls unsafe the
+    moment its weapon is on cooldown, regardless of `min_engage_range` -
+    confirmed live as the exact mechanism behind "the majority of our
+    Roaches and Zerglings never attacked" (see `_squad_maneuver_commit`'s
+    own docstring for the full incident). A unit standing at its own
+    `min_engage_range` from a same-range enemy (Roach vs Roach, both range
+    4) sits in that enemy's influence for the entire fight, so passing the
+    grid here would silently reintroduce that bug for exactly the comp
+    `kite_types` is meant to protect. `min_engage_range`'s own crowding
+    check already keeps distance; it doesn't need `KeepUnitSafe`'s help to
+    do it safely.
 
     ATTACKING Zerglings that are already inside an enemy base peel off to
-    prioritize workers (Macro Zerg breach micro) regardless of `never_
-    retreat`.
+    prioritize workers (Macro Zerg breach micro) regardless of any of the
+    above.
     """
 
     def routine(ctx: "BotContext") -> None:
@@ -734,6 +752,18 @@ def attack_squads(
             )
 
             target = rally if mustering else targeting.squad_destination(ctx, position)
+
+            if kite_types and not mustering:
+                kiters = [u for u in group_units if u.type_id in kite_types]
+                if kiters:
+                    for unit in kiters:
+                        ctx.bot.register_behavior(
+                            _kite_maneuver(unit, close_enemy, min_engage_range, target)
+                        )
+                    group_units = [u for u in group_units if u.type_id not in kite_types]
+                    group_tags = {u.tag for u in group_units}
+                    if not group_units:
+                        continue
 
             if (
                 not never_retreat

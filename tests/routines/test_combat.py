@@ -466,6 +466,126 @@ def test_never_retreat_falls_back_to_amove_with_no_close_enemy() -> None:
         _restore_targeting(original)
 
 
+# ── kite_types: Roach kites, Zergling still commits (never_retreat) ────────
+
+
+def test_kite_types_splits_roach_into_per_unit_kiting() -> None:
+    """Regression test for the exact request: Roach (range 4) should
+    maintain 3-4 distance while attacking, same idiom as Marine/Stalker,
+    while Zergling (still in the same squad, still melee) keeps the
+    never_retreat commit behavior it needed already."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original_targeting = _patch_targeting(rally, attack)
+    original_in_range = _patch_in_range({})  # nothing in range for any unit
+    try:
+        ctx = _ctx()
+        roach = _unit(1, Point2((10.0, 10.0)))
+        roach.type_id = UnitTypeId.ROACH
+        zergling = _unit(2, Point2((11.0, 10.0)))
+        zergling.type_id = UnitTypeId.ZERGLING
+        enemy = _unit(90, Point2((12.0, 10.0)))
+        ctx.mediator.get_cached_enemy_army = [enemy]
+        ctx.mediator.get_units_in_range.return_value = [[enemy]]
+        ctx.mediator.get_squads.return_value = [_squad([roach, zergling])]
+
+        combat.attack_squads(
+            never_retreat=True,
+            kite_types=frozenset({UnitTypeId.ROACH}),
+            min_engage_range=3.0,
+        )(ctx)
+
+        # Roach: its own, individually-registered _kite_maneuver.
+        roach_calls = [
+            c
+            for c in ctx.bot.register_behavior.call_args_list
+            if any(getattr(m, "unit", None) is roach for m in c.args[0].micros)
+        ]
+        assert len(roach_calls) == 1
+        assert not any(
+            isinstance(m, KeepUnitSafe) for m in roach_calls[0].args[0].micros
+        ), "kite_types must not receive the influence grid"
+
+        # Zergling: the group-level never_retreat maneuver, Roach excluded.
+        group_calls = [
+            c
+            for c in ctx.bot.register_behavior.call_args_list
+            if any(isinstance(m, StutterGroupForward) for m in c.args[0].micros)
+            or any(isinstance(m, AMoveGroup) for m in c.args[0].micros)
+        ]
+        assert len(group_calls) == 1
+        amove = next(
+            m for m in group_calls[0].args[0].micros if isinstance(m, AMoveGroup)
+        )
+        assert amove.group == [zergling]
+        assert not any(
+            isinstance(m, KeepGroupSafe) for m in group_calls[0].args[0].micros
+        )
+    finally:
+        _restore_targeting(original_targeting)
+        _restore_in_range(original_in_range)
+
+
+def test_kite_types_applies_even_when_our_force_is_larger() -> None:
+    """Unlike the bare `min_engage_range` path (only kites when outnumbered
+    - see `test_attack_squads_stutters_when_ahead_even_with_min_engage_
+    range`), `kite_types` is unconditional: Roach should hold its distance
+    on offense regardless of the force-size comparison."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original_targeting = _patch_targeting(rally, attack)
+    original_in_range = _patch_in_range({})
+    try:
+        ctx = _ctx()
+        roach = _unit(1, Point2((10.0, 10.0)))
+        roach.type_id = UnitTypeId.ROACH
+        weak_enemy = _unit(90, Point2((12.0, 10.0)))  # our force is larger
+        ctx.mediator.get_cached_enemy_army = [weak_enemy]
+        ctx.mediator.get_units_in_range.return_value = [[weak_enemy]]
+        ctx.mediator.get_squads.return_value = [_squad([roach])]
+
+        combat.attack_squads(
+            never_retreat=True,
+            kite_types=frozenset({UnitTypeId.ROACH}),
+            min_engage_range=3.0,
+        )(ctx)
+
+        registered = ctx.bot.register_behavior.call_args.args[0]
+        assert any(getattr(m, "unit", None) is roach for m in registered.micros)
+    finally:
+        _restore_targeting(original_targeting)
+        _restore_in_range(original_in_range)
+
+
+def test_kite_types_skipped_while_still_mustering() -> None:
+    """A squad still forming up should move as one group toward the rally
+    point, not start micro-managing individual kite distance."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original_targeting = _patch_targeting(rally, attack)
+    try:
+        ctx = _ctx()
+        far_from_rally = Point2((rally.x + 50.0, rally.y + 50.0))  # outside MUSTER_RADIUS
+        roach = _unit(1, far_from_rally)
+        roach.type_id = UnitTypeId.ROACH
+        ctx.state.mustering_tags = {roach.tag}
+        ctx.mediator.get_units_from_role.return_value = [roach]  # keep it "alive"
+        ctx.mediator.get_units_in_range.return_value = [[]]
+        ctx.mediator.get_squads.return_value = [_squad([roach])]
+
+        combat.attack_squads(
+            never_retreat=True,
+            kite_types=frozenset({UnitTypeId.ROACH}),
+            min_engage_range=3.0,
+        )(ctx)
+
+        registered = ctx.bot.register_behavior.call_args.args[0]
+        assert not any(getattr(m, "unit", None) is roach for m in registered.micros)
+        assert any(isinstance(m, AMoveGroup) for m in registered.micros)
+    finally:
+        _restore_targeting(original_targeting)
+
+
 def test_attack_squads_stutters_when_ahead_even_with_min_engage_range() -> None:
     """Having a kite range configured must not kite a fight we are winning -
     stutter-step is the aggressive path when our supply is larger."""

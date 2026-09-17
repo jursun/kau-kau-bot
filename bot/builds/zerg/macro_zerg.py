@@ -838,6 +838,16 @@ def _macro_zerg_on_step(ctx) -> None:
     _claim_natural_queen_tumor(ctx)
 
 
+# Roach's own attack range is 4 - retreat once an enemy closes inside 3, so
+# it holds anywhere from 3 to 4 rather than closing to melee. Same idiom as
+# `four_rax_proxy.MARINE_MIN_ENGAGE_RANGE`/`combat.STALKER_MIN_ENGAGE_RANGE`,
+# but deliberately passed via `attack_squads`' `kite_types` (no influence
+# grid) rather than its `min_engage_range` alone - see that parameter's own
+# comment for why handing Roach the grid here would reintroduce the exact
+# "never engaged" bug `never_retreat` was added to fix.
+_ROACH_MIN_ENGAGE_RANGE: float = 3.0
+
+
 BUILD = BuildDefinition(
     name="Macro Zerg",
     label="Macro Zerg (Roach/Swarm Host)",
@@ -886,15 +896,23 @@ BUILD = BuildDefinition(
             combat.release_first_wave_then_stream(muster=True),
             combat.defend_home(),
             combat.defend_with_zerglings(),
-            # never_retreat=True: Roach/Zergling gain nothing from kiting
-            # off a weapon cooldown (Zergling is melee; Roach's whole
-            # identity here is "cheap to hold ground with", not hit-and-
-            # run) - see `_squad_maneuver_commit`'s own docstring for the
-            # live-confirmed bug this fixes (KeepGroupSafe short-circuiting
-            # the whole squad's advance the instant any one member was
-            # mid-cooldown on enemy-influenced ground, which a close-range
-            # brawl makes true almost constantly).
-            combat.attack_squads(never_retreat=True),
+            # never_retreat=True: Zergling (melee, still in this squad for
+            # the breach-worker micro above) gains nothing from kiting off
+            # a weapon cooldown - see `_squad_maneuver_commit`'s own
+            # docstring for the live-confirmed bug this fixes (KeepGroupSafe
+            # short-circuiting the whole squad's advance the instant any one
+            # member was mid-cooldown on enemy-influenced ground, which a
+            # close-range brawl makes true almost constantly). Roach is
+            # split out via kite_types instead: it has an actual ranged
+            # attack (4) worth kiting with, unlike Zergling - see
+            # `_ROACH_MIN_ENGAGE_RANGE`'s own comment for the exact distance
+            # and why it skips the influence grid `never_retreat` also
+            # protects against.
+            combat.attack_squads(
+                never_retreat=True,
+                kite_types=frozenset({UnitTypeId.ROACH}),
+                min_engage_range=_ROACH_MIN_ENGAGE_RANGE,
+            ),
             combat.dig_in_swarm_hosts(),
             combat.escort_corruptors(),
             overseer_routines.manage_overseers(),
