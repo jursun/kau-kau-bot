@@ -145,6 +145,8 @@ energy on a Creep Tumor before it ever injects, by parking it on
 `UnitRole.QUEEN_CREEP` — the same pool `routines.creep.spread_creep`
 already drives with ares' own `QueenSpreadCreep` — until a tumor is
 confirmed, then handing it back to `UnitRole.QUEEN_INJECT` for normal duty.
+`_claim_main_queen_tumor` does the same for the main, once the 3rd Queen
+(`z.train_queens`'s own "+1 extra" slot, not either base's first) exists.
 """
 
 from __future__ import annotations
@@ -731,6 +733,41 @@ def _claim_natural_scout(ctx) -> None:
 _NATURAL_QUEEN_RADIUS: float = 15.0
 
 
+def _creep_tumor_tags(ctx) -> frozenset[int]:
+    """Tags of every Creep Tumor (mid-cast or burrowed) that exists right
+    now - the raw material both `_claim_natural_queen_tumor`/`_claim_main_
+    queen_tumor` snapshot as a baseline at claim time, then diff against
+    later to detect "a *new* one appeared" rather than "one exists".
+
+    That distinction is load-bearing, not stylistic: ares' own `QueenSpread
+    Creep` (what `routines.creep.spread_creep` drives a `QUEEN_CREEP`-role
+    Queen with) doesn't place the first tumor near the claiming townhall at
+    all - once total map creep coverage is low (always true this early), it
+    walks the tumor chain toward `mediator.get_enemy_nat` instead, so a
+    fixed-radius "did it land near home" check never actually saw either
+    Queen's tumor (confirmed live - see git history on this module for the
+    abandoned proximity-radius attempt). A bare "does any tumor exist"
+    check has its own, different bug once a *second* claim mechanism
+    exists: an already-placed tumor from an earlier, already-finished claim
+    keeps existing on the map, so it satisfies the next claim's "done"
+    check on its very first frame, before that Queen has moved or cast
+    anything at all (confirmed live: the main's claim logged "pulled" and
+    "back on inject duty" in the same frame). Diffing against a baseline
+    fixes both: no assumption about where the tumor lands, and no
+    confusion with a tumor some earlier claim already placed.
+
+    Creep Tumors are structures, not units, in this API (`bot.units(...)`
+    never matches them - confirmed live: without checking `structures(...)`
+    specifically, a claimed Queen just kept casting indefinitely, walking
+    the whole opening creep chain toward the enemy natural instead of
+    handing back after its first tumor).
+    """
+    tumors = ctx.bot.structures(UnitTypeId.CREEPTUMORQUEEN) | ctx.bot.structures(
+        UnitTypeId.CREEPTUMORBURROWED
+    )
+    return frozenset(t.tag for t in tumors)
+
+
 def _claim_natural_queen_tumor(ctx) -> None:
     """One-shot: spend the natural's Queen's starting 25 energy on a Creep
     Tumor instead of its first inject, then hand it back to normal inject
@@ -746,10 +783,12 @@ def _claim_natural_queen_tumor(ctx) -> None:
     only ever promotes a *new* creep queen when its pool is empty, so once
     this claims one, the two routines hand off cleanly with no double-claim.
 
-    Detects "done" by tracked Creep Tumor count rather than an energy
-    threshold: energy can drift above 25 while the queen is still walking to
-    a valid edge, so "some tumor now exists" is the more reliable signal
-    that the one-shot cast already fired.
+    Detects "done" by diffing `_creep_tumor_tags` against the baseline
+    snapshotted at claim time (see that function's own comment for why a
+    plain existence or proximity check both fail) rather than an energy
+    threshold: energy can drift above 25 while the queen is still walking
+    to a valid edge, so "a new tumor now exists" is the more reliable
+    signal that the one-shot cast already fired.
     """
     if ctx.state.natural_queen_tumor_done:
         return
@@ -774,6 +813,7 @@ def _claim_natural_queen_tumor(ctx) -> None:
             return  # try again next frame
         queen = candidates.closest_to(natural)
         ctx.state.natural_queen_tag = queen.tag
+        ctx.state.natural_queen_tumor_baseline = _creep_tumor_tags(ctx)
         ctx.mediator.assign_role(tag=queen.tag, role=UnitRole.QUEEN_CREEP)
         ctx.log(f"MACRO_ZERG natural Queen {queen.tag} pulled for opening creep tumor")
         return
@@ -788,19 +828,80 @@ def _claim_natural_queen_tumor(ctx) -> None:
         ctx.state.natural_queen_tag = None
         return
 
-    # Creep Tumors are structures, not units, in this API (`bot.units(...)`
-    # never matches them - confirmed live: without this the Queen just kept
-    # casting indefinitely, walking the whole opening creep chain toward the
-    # enemy natural instead of handing back after its first tumor).
-    tumors = ctx.bot.structures(UnitTypeId.CREEPTUMORQUEEN) | ctx.bot.structures(
-        UnitTypeId.CREEPTUMORBURROWED
-    )
-    if not tumors:
-        return  # still walking to a placement spot
+    if _creep_tumor_tags(ctx) <= ctx.state.natural_queen_tumor_baseline:
+        return  # still walking to a placement spot - no new tumor yet
 
     ctx.state.natural_queen_tumor_done = True
     ctx.mediator.assign_role(tag=tag, role=UnitRole.QUEEN_INJECT)
     ctx.log(f"MACRO_ZERG natural Queen {tag} back on inject duty")
+
+
+# Total (live + pending) Queen count that must exist before pulling one for
+# the main's own opening Creep Tumor - see `_claim_main_queen_tumor`. `z.
+# train_queens(per_base=1, maximum=6, extra=1)`'s own "+1 extra" slot is
+# exactly this 3rd Queen (main and natural each already hold their own 1 by
+# the time a 3rd trains at all), so claiming it here doesn't compete with
+# either base's first, inject-critical Queen the way claiming Queen #1 or #2
+# would.
+_MAIN_QUEEN_TUMOR_AT_COUNT: int = 3
+
+
+def _claim_main_queen_tumor(ctx) -> None:
+    """One-shot: once the 3rd Queen exists, spend a Queen's energy on a
+    Creep Tumor at the main instead of its next inject, then hand it back
+    to normal inject duty - same idiom as `_claim_natural_queen_tumor`
+    (see its own docstring for the role-reassignment/`spread_creep`
+    hand-off reasoning, all identical here), just gated on total Queen
+    count instead of townhall count, and targeting the main instead of the
+    natural.
+
+    Also waits for `natural_queen_tumor_done` before claiming anything, on
+    top of the Queen-count gate: `_creep_tumor_tags`' baseline-diff still
+    needs the *other* claim to not be actively adding tumors of its own
+    while this one's baseline is fixed, or a tumor the natural's Queen
+    places mid-walk would misread as this claim's own "done" signal. In
+    practice this costs nothing - the natural's claim always starts first
+    (townhall-count-gated, so it fires well before a 3rd Queen can even
+    exist) - it just also has to *finish* before this one begins.
+    """
+    if ctx.state.main_queen_tumor_done:
+        return
+
+    if ctx.state.main_queen_tag is None:
+        if not ctx.state.natural_queen_tumor_done:
+            return  # let the natural's claim finish first - see docstring
+        have = ctx.bot.units(UnitTypeId.QUEEN).amount + ctx.bot.already_pending(
+            UnitTypeId.QUEEN
+        )
+        if have < _MAIN_QUEEN_TUMOR_AT_COUNT:
+            return  # 3rd queen not trained yet
+        main = ctx.production_location
+        candidates = ctx.mediator.get_units_from_role(
+            role=UnitRole.QUEEN_INJECT, unit_type=UnitTypeId.QUEEN
+        ).filter(lambda q: q.energy >= 25 and q.distance_to(main) < _NATURAL_QUEEN_RADIUS)
+        if not candidates:
+            return  # try again next frame
+        queen = candidates.closest_to(main)
+        ctx.state.main_queen_tag = queen.tag
+        ctx.state.main_queen_tumor_baseline = _creep_tumor_tags(ctx)
+        ctx.mediator.assign_role(tag=queen.tag, role=UnitRole.QUEEN_CREEP)
+        ctx.log(f"MACRO_ZERG main Queen {queen.tag} pulled for opening creep tumor")
+        return
+
+    tag = ctx.state.main_queen_tag
+    still_claimed = ctx.mediator.get_units_from_role(
+        role=UnitRole.QUEEN_CREEP, unit_type=UnitTypeId.QUEEN
+    )
+    if not any(q.tag == tag for q in still_claimed):
+        ctx.state.main_queen_tag = None
+        return
+
+    if _creep_tumor_tags(ctx) <= ctx.state.main_queen_tumor_baseline:
+        return  # still walking to a placement spot - no new tumor yet
+
+    ctx.state.main_queen_tumor_done = True
+    ctx.mediator.assign_role(tag=tag, role=UnitRole.QUEEN_INJECT)
+    ctx.log(f"MACRO_ZERG main Queen {tag} back on inject duty")
 
 
 def _macro_zerg_on_unit_created(ctx, unit) -> None:
@@ -836,6 +937,7 @@ def _macro_zerg_on_step(ctx) -> None:
     build's per-frame concerns are called from here."""
     _claim_natural_scout(ctx)
     _claim_natural_queen_tumor(ctx)
+    _claim_main_queen_tumor(ctx)
 
 
 # Roach's own attack range is 4 - retreat once an enemy closes inside 3, so

@@ -258,9 +258,24 @@ class RunState:
     energy on a Creep Tumor instead of an inject (see `builds.zerg.
     macro_zerg._claim_natural_queen_tumor`) - cleared once handed back to
     `UnitRole.QUEEN_INJECT`, or if it dies before ever placing the tumor."""
+    natural_queen_tumor_baseline: frozenset[int] = frozenset()
+    """Creep Tumor tags that already existed at the moment `natural_queen_
+    tag` was claimed - "done" means a tumor *not* in this set has appeared,
+    not just "a tumor exists somewhere" (confirmed live as necessary once a
+    second claim mechanism, `_claim_main_queen_tumor`, was added: an
+    already-placed tumor from an earlier claim persists on the map, so a
+    bare existence check let a freshly-claimed Queen read as "done" the
+    very next frame, before it had walked or cast anything at all)."""
     natural_queen_tumor_done: bool = False
     """Latched once the pulled Queen's tumor is confirmed - never re-enters,
     even if that Queen later dies."""
+    main_queen_tag: int | None = None
+    """Same idea as `natural_queen_tag`, for the main instead - see
+    `builds.zerg.macro_zerg._claim_main_queen_tumor`."""
+    main_queen_tumor_baseline: frozenset[int] = frozenset()
+    """Same idea as `natural_queen_tumor_baseline`, for the main instead."""
+    main_queen_tumor_done: bool = False
+    """Same idea as `natural_queen_tumor_done`, for the main instead."""
     queen_home_townhall: dict[int, int] = field(default_factory=dict)
     """Queen tag -> the townhall tag nearest it *at creation*, snapshotted
     once in `builds.zerg.macro_zerg._macro_zerg_on_unit_created` rather
