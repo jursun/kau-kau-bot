@@ -155,6 +155,15 @@ def supply_at_least(supply: int) -> Gate:
     return gate
 
 
+def army_supply_at_least(supply: float) -> Gate:
+    """True once `supply_army` (workers/overlords excluded) hits `supply`."""
+
+    def gate(ctx: "BotContext") -> bool:
+        return float(ctx.bot.supply_army) >= supply
+
+    return gate
+
+
 def training_started(unit_type: UnitTypeId) -> Gate:
     """True once at least one is queued or in production - not merely
     unlocked. `already_pending` counts anything in a production queue, so

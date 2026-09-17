@@ -53,7 +53,8 @@ CHARGELOT_FLOOD_COMP: dict[UnitTypeId, dict[str, float | int]] = {
 # Macro Zerg: Roach frontline, Swarm Host for cheap map-control chip damage,
 # a Zergling trickle for creep escort / worker-line defense. See
 # `steps.zerg.spawn_macro_army` for the phased fallback used before
-# Infestation Pit is up, and the Corruptor variant below.
+# Infestation Pit is up, the Corruptor variant below, and the ling-heavy
+# comps when mineral:gas > 5:1.
 ROACH_SWARM_HOST_COMP: dict[UnitTypeId, dict[str, float | int]] = {
     UnitTypeId.ROACH: {"proportion": 0.65, "priority": 0},
     UnitTypeId.SWARMHOSTMP: {"proportion": 0.25, "priority": 1},
@@ -68,6 +69,29 @@ ROACH_SWARM_HOST_CORRUPTOR_COMP: dict[UnitTypeId, dict[str, float | int]] = {
     UnitTypeId.CORRUPTOR: {"proportion": 0.15, "priority": 0},
     UnitTypeId.ZERGLING: {"proportion": 0.10, "priority": 2},
 }
+
+# Mineral-flooded / gas-starved (minerals:gas > 5:1): spend larva on
+# Zerglings instead of Roaches. Used by `steps.zerg.spawn_macro_army`.
+LING_HEAVY_ROACH_COMP: dict[UnitTypeId, dict[str, float | int]] = {
+    UnitTypeId.ZERGLING: {"proportion": 0.80, "priority": 0},
+    UnitTypeId.ROACH: {"proportion": 0.20, "priority": 1},
+}
+
+LING_HEAVY_SWARM_COMP: dict[UnitTypeId, dict[str, float | int]] = {
+    UnitTypeId.ZERGLING: {"proportion": 0.60, "priority": 0},
+    UnitTypeId.ROACH: {"proportion": 0.20, "priority": 1},
+    UnitTypeId.SWARMHOSTMP: {"proportion": 0.20, "priority": 2},
+}
+
+LING_HEAVY_CORRUPTOR_COMP: dict[UnitTypeId, dict[str, float | int]] = {
+    UnitTypeId.ZERGLING: {"proportion": 0.50, "priority": 0},
+    UnitTypeId.ROACH: {"proportion": 0.15, "priority": 1},
+    UnitTypeId.SWARMHOSTMP: {"proportion": 0.15, "priority": 2},
+    UnitTypeId.CORRUPTOR: {"proportion": 0.20, "priority": 0},
+}
+
+# How skewed mineral:gas must be before Macro Zerg flips to ling-heavy.
+GAS_STARVED_MINERAL_RATIO: float = 5.0
 
 # Ordered upgrade path. `UpgradeController` walks this list in order and
 # auto-techs (evo chamber -> lair -> hive) for whatever it can't research yet.
@@ -118,10 +142,13 @@ SWARM_HOST_ROLE: UnitRole = UnitRole.CONTROL_GROUP_TWO
 CORRUPTOR_ROLE: UnitRole = UnitRole.CONTROL_GROUP_THREE
 
 # Macro Zerg: Zergling is a dedicated home defender, never an offensive unit
-# (see `consts.ROACH_SWARM_HOST_COMP`'s own framing of its slice as a
-# "trickle for creep escort / worker-line defense") — kept out of
-# `Army.types` so `release_waves()` can never sweep it into an attack wave,
-# same unused-slot trick as above. Safe to key this off unit type alone
-# (rather than per-build) only because Macro Zerg is currently the only
-# Zerg build; revisit if a second one wants Zergling on offense.
+# How many Zerglings Macro Zerg keeps on `ZERGLING_DEFENDER_ROLE` at home;
+# extras join the army wave (`army.types` includes Zergling).
+HOME_ZERGLING_CAP: int = 6
+
+# Permanent home-defender role for that home cap — see
+# `builds.zerg.macro_zerg._macro_zerg_on_unit_created`. Safe to key this off
+# unit type alone (rather than per-build) only because Macro Zerg is
+# currently the only Zerg build; revisit if a second one wants different
+# home/attack splits.
 ZERGLING_DEFENDER_ROLE: UnitRole = UnitRole.CONTROL_GROUP_FOUR

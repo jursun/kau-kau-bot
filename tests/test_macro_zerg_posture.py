@@ -159,6 +159,15 @@ def test_assign_overseer_roles_clears_dead() -> None:
     assert ctx.state.overseer_army_tag == 1
 
 
+def test_army_supply_gate() -> None:
+    from bot.routines import gates
+
+    ctx = _ctx(supply_army=39)
+    assert not gates.army_supply_at_least(40)(ctx)
+    ctx.bot.supply_army = 40
+    assert gates.army_supply_at_least(40)(ctx)
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failures = 0

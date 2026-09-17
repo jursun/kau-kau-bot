@@ -378,6 +378,37 @@ def test_auto_supply_returns_none_before_its_gate() -> None:
     assert c.auto_supply(gate=lambda _ctx: False)(ctx) is None
 
 
+def test_gas_starved_when_mineral_gas_ratio_exceeds_five() -> None:
+    ctx = _ctx()
+    ctx.bot.minerals = 600
+    ctx.bot.vespene = 100
+    assert z._gas_starved(ctx)
+    ctx.bot.vespene = 150
+    assert not z._gas_starved(ctx)
+    ctx.bot.vespene = 0
+    ctx.bot.minerals = 50
+    assert z._gas_starved(ctx)
+
+
+def test_spawn_macro_army_prefers_lings_when_gas_starved() -> None:
+    ctx = _ctx()
+    ctx.bot.minerals = 800
+    ctx.bot.vespene = 50
+    ctx.bot.tech_requirement_progress = MagicMock(
+        side_effect=lambda t: 1.0 if t == UnitTypeId.ROACH else 0.0
+    )
+    ready = MagicMock()
+    ready.__bool__ = lambda self: False
+    ctx.bot.structures = MagicMock(
+        return_value=MagicMock(ready=ready, amount=0)
+    )
+    behavior = z.spawn_macro_army(gate=lambda _c: True)(ctx)
+    assert isinstance(behavior, SpawnController)
+    comp = behavior.army_composition_dict
+    assert UnitTypeId.ZERGLING in comp
+    assert comp[UnitTypeId.ZERGLING]["proportion"] > comp[UnitTypeId.ROACH]["proportion"]
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failures = 0

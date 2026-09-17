@@ -523,18 +523,13 @@ def defend_home() -> CombatRoutine:
 
 
 def defend_with_zerglings() -> CombatRoutine:
-    """Zergling is a permanent home defender, never promoted to an attack
-    wave — see `consts.ZERGLING_DEFENDER_ROLE` and `core.roles.SUPPORT_ROLES`
-    for why it's kept out of `Army.types` (`ROACH_SWARM_HOST_COMP` already
-    frames its slice of the composition as a "trickle for creep escort /
-    worker-line defense", not an offensive unit).
+    """Drive Zerglings parked on `ZERGLING_DEFENDER_ROLE` as home defenders.
 
-    Mirrors `defend_home()`'s hold/engage logic exactly, but reads
-    `ZERGLING_DEFENDER_ROLE` directly instead of going through
-    `ctx.units_in_role` (scoped to `army.types`, which no longer includes
-    Zergling), and keeps its own hold map (`ctx.state.zergling_defender_
-    hold`) so it doesn't compete with Roach for the same slots while Roach
-    is still sitting in DEFENDING ahead of the next wave release.
+    Macro Zerg peels the first `HOME_ZERGLING_CAP` Zerglings onto this role
+    (`builds.zerg.macro_zerg._macro_zerg_on_unit_created`); extras stay in
+    `army.types` / DEFENDING and join attack waves. Mirrors `defend_home()`'s
+    hold/engage logic, reading the defender role directly and keeping its
+    own hold map (`ctx.state.zergling_defender_hold`).
     """
 
     def routine(ctx: "BotContext") -> None:
@@ -566,6 +561,43 @@ def defend_with_zerglings() -> CombatRoutine:
                 ctx.bot.register_behavior(maneuver)
 
     return routine
+
+
+def _near_enemy_base(ctx: "BotContext", position: Point2) -> bool:
+    """True when `position` sits in an enemy mineral line / townhall radius."""
+    radius = ctx.bot.EXPANSION_GAP_THRESHOLD
+    radius_sq = radius * radius
+    for th in ctx.bot.enemy_structures:
+        if th.type_id not in {
+            UnitTypeId.COMMANDCENTER,
+            UnitTypeId.ORBITALCOMMAND,
+            UnitTypeId.PLANETARYFORTRESS,
+            UnitTypeId.NEXUS,
+            UnitTypeId.HATCHERY,
+            UnitTypeId.LAIR,
+            UnitTypeId.HIVE,
+        }:
+            continue
+        if cy_distance_to_squared(position, th.position) <= radius_sq:
+            return True
+    for loc in ctx.bot.enemy_start_locations:
+        if cy_distance_to_squared(position, loc) <= radius_sq:
+            return True
+    return False
+
+
+def _breach_worker_target(ctx: "BotContext", unit: Unit) -> Unit | None:
+    """Closest enemy worker when this unit is breaching an enemy base."""
+    if not _near_enemy_base(ctx, unit.position):
+        return None
+    workers = [
+        e
+        for e in _enemies_near(ctx, unit.position, SQUAD_ENGAGE_RANGE)
+        if e.type_id in WORKER_TYPES
+    ]
+    if not workers:
+        return None
+    return cy_closest_to(position=unit.position, units=workers)
 
 
 def attack_squads(
@@ -600,6 +632,9 @@ def attack_squads(
       anything closer than `min_engage_range`, otherwise shooting. Builds
       that leave `min_engage_range` unset keep group stutter after influence
       retreat rather than per-unit kite.
+
+    ATTACKING Zerglings that are already inside an enemy base peel off to
+    prioritize workers (Macro Zerg breach micro).
     """
 
     def routine(ctx: "BotContext") -> None:
@@ -622,6 +657,23 @@ def attack_squads(
                 ctx.state.mustering_tags -= mustering
                 mustering = set()
 
+            # Zerglings breaching an enemy base prioritize workers.
+            group_units = []
+            group_tags = set()
+            for unit in squad.squad_units:
+                if unit.type_id == UnitTypeId.ZERGLING and not mustering:
+                    worker = _breach_worker_target(ctx, unit)
+                    if worker is not None:
+                        if not _already_attacking(unit, worker):
+                            maneuver = CombatManeuver()
+                            maneuver.add(AttackTarget(unit=unit, target=worker))
+                            ctx.bot.register_behavior(maneuver)
+                        continue
+                group_units.append(unit)
+                group_tags.add(unit.tag)
+            if not group_units:
+                continue
+
             close_army = _intel_army_near(ctx, position, SQUAD_ENGAGE_RANGE)
             close_enemy = close_army or _enemies_near(
                 ctx, position, SQUAD_ENGAGE_RANGE
@@ -632,9 +684,9 @@ def attack_squads(
             if (
                 close_army
                 and min_engage_range is not None
-                and not _our_force_larger(ctx, squad.squad_units, close_army)
+                and not _our_force_larger(ctx, group_units, close_army)
             ):
-                for unit in squad.squad_units:
+                for unit in group_units:
                     ctx.bot.register_behavior(
                         _kite_maneuver(
                             unit, close_army, min_engage_range, target, grid=grid
@@ -644,8 +696,8 @@ def attack_squads(
 
             ctx.bot.register_behavior(
                 _squad_maneuver_with_influence_retreat(
-                    group=squad.squad_units,
-                    group_tags=squad.tags,
+                    group=group_units,
+                    group_tags=group_tags,
                     group_position=position,
                     target=target,
                     close_enemy=close_enemy,

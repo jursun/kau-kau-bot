@@ -20,7 +20,14 @@ from bot.behaviors.zerg import (
     TrainQueens,
 )
 from bot.builds.definition import _always
-from bot.consts import ROACH_SWARM_HOST_COMP, ROACH_SWARM_HOST_CORRUPTOR_COMP
+from bot.consts import (
+    GAS_STARVED_MINERAL_RATIO,
+    LING_HEAVY_CORRUPTOR_COMP,
+    LING_HEAVY_ROACH_COMP,
+    LING_HEAVY_SWARM_COMP,
+    ROACH_SWARM_HOST_COMP,
+    ROACH_SWARM_HOST_CORRUPTOR_COMP,
+)
 from bot.core.types import Gate, MacroStep
 from bot.intel.army import enemy_has_air_units
 from bot.steps import common
@@ -328,6 +335,9 @@ def spawn_macro_army(gate: Gate = _always) -> MacroStep:
     comp for that window instead. Once Spire is up and the enemy has shown
     air (`intel.army.enemy_has_air_units`), fold Corruptor in.
 
+    When mineral:gas > `GAS_STARVED_MINERAL_RATIO` (5:1), flip to the
+    ling-heavy comps so larva spends on Zerglings instead of Roaches.
+
     TODO: scout-based counter composition (see intel.army composition).
     For now: Roach + Swarm Host; Corruptor only if enemy air. Roaches will
     use Burrow + Tunneling Claws to leave the front and heal; Swarm Hosts
@@ -343,19 +353,40 @@ def spawn_macro_army(gate: Gate = _always) -> MacroStep:
         if not gate(ctx):
             return None
         # TODO: pick counter comp from scouted enemy army composition.
+        gas_starved = _gas_starved(ctx)
         roach_ready = ctx.bot.tech_requirement_progress(UnitTypeId.ROACH) >= 1.0
         swarm_host_ready = (
             ctx.bot.tech_requirement_progress(UnitTypeId.SWARMHOSTMP) >= 1.0
         )
-        if roach_ready and not swarm_host_ready:
+        air = (
+            ctx.bot.structures(UnitTypeId.SPIRE).ready
+            and enemy_has_air_units(ctx)
+        )
+        if gas_starved:
+            if air:
+                comp = LING_HEAVY_CORRUPTOR_COMP
+            elif roach_ready and not swarm_host_ready:
+                comp = LING_HEAVY_ROACH_COMP
+            else:
+                comp = LING_HEAVY_SWARM_COMP
+        elif roach_ready and not swarm_host_ready:
             comp = _roach_only_comp
-        elif ctx.bot.structures(UnitTypeId.SPIRE).ready and enemy_has_air_units(ctx):
+        elif air:
             comp = ROACH_SWARM_HOST_CORRUPTOR_COMP
         else:
             comp = ROACH_SWARM_HOST_COMP
         return SpawnController(dict(comp), spawn_target=None)
 
     return step
+
+
+def _gas_starved(ctx: "BotContext") -> bool:
+    """True when minerals:gas exceeds 5:1 (or gas is empty with minerals)."""
+    minerals = float(ctx.bot.minerals)
+    gas = float(ctx.bot.vespene)
+    if gas <= 0:
+        return minerals > 0
+    return minerals / gas > GAS_STARVED_MINERAL_RATIO
 
 
 LING_SPEED: UpgradeId = UpgradeId.ZERGLINGMOVEMENTSPEED

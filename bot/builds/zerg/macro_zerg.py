@@ -173,7 +173,7 @@ from bot.behaviors.zerg import (
     pending_larva_trained,
 )
 from bot.builds.definition import Army, BuildDefinition, Combat, Economy
-from bot.consts import ROACH_SWARM_HOST_COMP
+from bot.consts import HOME_ZERGLING_CAP, ROACH_SWARM_HOST_COMP, ZERGLING_DEFENDER_ROLE
 from bot.intel import army as intel_army
 from bot.routines import combat, creep, gates, overseers as overseer_routines, scouting
 from bot.steps import common as c
@@ -803,17 +803,24 @@ def _claim_natural_queen_tumor(ctx) -> None:
 
 
 def _macro_zerg_on_unit_created(ctx, unit) -> None:
-    """Snapshot which townhall trained a new Queen, once, at the one
+    """Queen home snapshot + peel a home Zergling cap off the army.
+
+    Queens: snapshot which townhall trained a new Queen, once, at the one
     moment that's unambiguous - see `TrainQueens`'s own `home_townhall`
-    docstring for why a live-position lookup later can't be trusted
-    (`InjectLarva` sends the closest *available* Queen to whichever
-    townhall needs an inject next, not necessarily the one that trained
-    it, so a Queen can be standing at a different base entirely by the
-    time anything re-checks). A Queen spawns essentially on top of the
-    townhall that trained it, so "closest ready townhall right now" is
-    exact at creation even though it stops being trustworthy moments
-    later.
+    docstring for why a live-position lookup later can't be trusted.
+
+    Zerglings: `army.types` includes Zergling so extras join attack waves,
+    but the first `HOME_ZERGLING_CAP` stay on `ZERGLING_DEFENDER_ROLE` for
+    `combat.defend_with_zerglings`.
     """
+    if unit.type_id == UnitTypeId.ZERGLING:
+        home = ctx.mediator.get_units_from_role(
+            role=ZERGLING_DEFENDER_ROLE, unit_type=UnitTypeId.ZERGLING
+        )
+        if len(home) < HOME_ZERGLING_CAP:
+            ctx.mediator.assign_role(tag=unit.tag, role=ZERGLING_DEFENDER_ROLE)
+        return
+
     if unit.type_id != UnitTypeId.QUEEN:
         return
     townhalls = ctx.bot.townhalls.ready
@@ -845,11 +852,10 @@ BUILD = BuildDefinition(
     ),
     army=Army(
         comp=ROACH_SWARM_HOST_COMP,
-        # Zergling is deliberately not in `types`: it's a dedicated home
-        # defender (`core.roles.SUPPORT_ROLES`, `combat.defend_with_
-        # zerglings`), never promoted to an attack wave — Roach alone is
-        # the offensive component here.
-        types=frozenset({UnitTypeId.ROACH}),
+        # Roach + Zergling both wave-eligible; the first
+        # `HOME_ZERGLING_CAP` Zerglings are peeled onto
+        # `ZERGLING_DEFENDER_ROLE` in `_macro_zerg_on_unit_created`.
+        types=frozenset({UnitTypeId.ROACH, UnitTypeId.ZERGLING}),
         upgrades=(
             UpgradeId.ZERGLINGMOVEMENTSPEED,
             UpgradeId.GLIALRECONSTITUTION,  # Roach speed
@@ -885,9 +891,11 @@ BUILD = BuildDefinition(
             creep.spread_tumors(),
             scouting.air_scout(UnitTypeId.OVERLORD),
         ),
-        # Roach mobility online is the gate — no scripted leave time, waves
-        # keep releasing/growing off this same gate for the rest of the game.
-        wave_gate=gates.upgrade_started(UpgradeId.GLIALRECONSTITUTION),
+        # Leave once Glial has started *and* army supply is at least 40.
+        wave_gate=gates.all_of(
+            gates.upgrade_started(UpgradeId.GLIALRECONSTITUTION),
+            gates.army_supply_at_least(40),
+        ),
         wave1_min=10,
         wave_growth=1.15,
         wave_stage_label="Roach Pushes",
