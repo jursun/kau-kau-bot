@@ -90,7 +90,7 @@ class MacroZergValidator(BaseValidator):
         ("gas1", "Gas", 60.0),
         ("pool", "Spawning Pool", 75.0),
         ("zerglings4", "4 Zergling", 123.0),
-        ("hatch3", "3rd base Hatchery", 137.0),
+        ("hatch3", "3rd base Hatchery", 142.0),
         ("gas_off", "3 Drone off gas", 125.0),
         ("speed", "Speed", 167.0),
         ("overlord4", "4th Overlord", 179.0),

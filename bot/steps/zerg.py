@@ -9,8 +9,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ares.behaviors.macro import ExpansionController, MacroPlan, SpawnController, TechUp
+from ares.consts import ID, TARGET
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
+from sc2.position import Point2
 
 from bot.behaviors.zerg import (
     BuildMacroHatch,
@@ -179,6 +181,39 @@ def evolution_chambers() -> MacroStep:
     return step
 
 
+def _spore_crawlers_en_route_near(ctx: "BotContext", location: Point2, radius: float) -> int:
+    """How many Spore Crawler workers are currently dispatched (order
+    issued, not yet arrived/placed) toward a point within `radius` of
+    `location` - the per-base version of `ai.structure_pending`, which
+    counts bot-wide and would gate every *other* base's turn behind
+    whichever one already has a worker walking, for that worker's entire
+    ~20s+ walk-and-build time.
+
+    Confirmed live as the actual cause of the "3 Spore Crawlers" deadline
+    consistently missing across maps: gated bot-wide, 3 crawlers built
+    strictly one after another took ~88s from the gate opening (each ~23-
+    25s to complete, no overlap at all) against a 60s window - not a
+    minerals problem (440+ banked the moment the gate opened both times).
+
+    Reads `ManagerMediator.get_building_tracker_dict` directly rather than
+    `ai.already_pending`/`ai.structure_pending` (both bot-wide, by design,
+    for exactly the counting problem their own docstrings describe) - each
+    entry there is one dispatched worker, keyed by its own tag, with the
+    structure type (`ID`) and target position (`TARGET`) it's walking to.
+    """
+    count = 0
+    for info in ctx.mediator.get_building_tracker_dict.values():
+        if info.get(ID) != UnitTypeId.SPORECRAWLER:
+            continue
+        target = info.get(TARGET)
+        if target is None:
+            continue
+        pos = getattr(target, "position", target)
+        if pos.distance_to(location) < radius:
+            count += 1
+    return count
+
+
 def spore_crawlers(
     per_base: int,
     gate: Gate = _always,
@@ -212,15 +247,18 @@ def spore_crawlers(
 
     Two throttles, not one:
 
-    - `ai.structure_pending(SPORECRAWLER)` gates the whole step: a
+    - `_spore_crawlers_en_route_near` gates each base individually: a
       dispatched worker walking to build doesn't show up in `structures()`
       until it arrives, so counting only placed structures would re-request
       a build for the same still-"uncovered" base on every frame of that
-      walk. `structure_pending` is a combined ready-or-pending count, so
-      nothing new is requested anywhere while one crawler is already in
-      flight — bot-wide, not just at the base in question, which is a
-      stricter throttle than strictly necessary but fine, since only one
-      crawler was ever going to get built at a time regardless.
+      walk - see that function's own docstring for why this must be
+      per-base rather than the bot-wide `ai.structure_pending(SPORECRAWLER)`
+      an earlier version used. That bot-wide gate blocked every *other*
+      base's turn behind whichever one worker was already walking, for that
+      worker's entire ~20s+ walk-and-build time - confirmed live as the
+      actual cause of "3 Spore Crawlers" consistently missing its deadline
+      across maps (3 bases built strictly one after another took ~88s
+      against a 60s window, not a minerals problem).
     - The explicit `per_base * len(owned bases)` total cap is a second,
       independent ceiling on top of that: an explicit invariant ("never
       more than one Spore Crawler per townhall") that holds even if the
@@ -229,14 +267,16 @@ def spore_crawlers(
       credited to both.
 
     Bundled into their own `MacroPlan` so a base that already has enough
-    doesn't block the next base's turn on the same frame (see
-    `MacroPlan.execute`, which stops at the first behavior that acts).
+    (or already has a worker en route) doesn't block a *different* base's
+    turn on the same frame (see `MacroPlan.execute`, which stops at the
+    first behavior that acts - so only one dispatch actually happens per
+    frame regardless, but which base gets first refusal now rotates
+    instead of always re-trying whichever base is first in `owned_
+    expansions` until its own worker finally arrives).
     """
 
     def step(ctx: "BotContext"):
         if not gate(ctx):
-            return None
-        if ctx.bot.structure_pending(UnitTypeId.SPORECRAWLER):
             return None
 
         if check_interval > 0:
@@ -253,7 +293,9 @@ def spore_crawlers(
         radius = ctx.bot.EXPANSION_GAP_THRESHOLD
         plan = MacroPlan()
         for location in bases:
-            if len(existing.closer_than(radius, location)) >= per_base:
+            have = len(existing.closer_than(radius, location))
+            have += _spore_crawlers_en_route_near(ctx, location, radius)
+            if have >= per_base:
                 continue
             plan.add(BuildSporeCrawler(base_location=location))
         if plan.macros:

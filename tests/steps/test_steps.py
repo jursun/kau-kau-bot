@@ -22,6 +22,7 @@ from ares.behaviors.macro import (
     MacroPlan,
     SpawnController,
 )
+from ares.consts import ID, TARGET
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
 
@@ -49,6 +50,7 @@ def _ctx(supply_workers: float = 10.0, supply_army: float = 10.0) -> BotContext:
     bot.structures.return_value.amount = 0
     bot.structures.return_value.closer_than.return_value = []
     bot.structure_pending.return_value = 0
+    bot.mediator.get_building_tracker_dict = {}
 
     build = MagicMock()
     build.economy.worker_target = 60
@@ -231,18 +233,47 @@ def test_spore_crawlers_caps_at_one_per_owned_townhall() -> None:
     assert z.spore_crawlers(per_base=1, gate=lambda _ctx: True)(ctx) is None
 
 
-def test_spore_crawlers_waits_while_one_is_already_in_flight() -> None:
-    # Regression test: a worker already dispatched to build a spore crawler
-    # doesn't show up in `structures()` until it actually starts, which can
-    # take several seconds of walking. Without this gate, every frame in
-    # that window re-requests a build for the same still-"uncovered" base —
-    # a real game piled several crawlers onto one base this way.
+def test_spore_crawlers_waits_on_the_base_a_worker_is_already_en_route_to() -> None:
+    """Regression test: a worker already dispatched to build a spore
+    crawler doesn't show up in `structures()` until it actually arrives,
+    which can take several seconds of walking. Without checking the
+    building tracker too, every frame in that window re-requests a build
+    for the same still-"uncovered" base - a real game piled several
+    crawlers onto one base this way.
+
+    Per-base, not bot-wide (`ai.structure_pending`) - see `_spore_crawlers_
+    en_route_near`'s own docstring for why a bot-wide gate here is itself a
+    live-confirmed bug: it blocks every *other* base's turn behind
+    whichever one worker is already walking, for that worker's entire
+    ~20s+ trip, which alone blew the "3 Spore Crawlers" deadline out to
+    ~88s for 3 bases against a 60s window.
+    """
     ctx = _ctx()
-    ctx.bot.owned_expansions = {Point2((10.0, 10.0)): MagicMock()}
-    ctx.bot.structure_pending.return_value = 1
+    base = Point2((10.0, 10.0))
+    ctx.bot.owned_expansions = {base: MagicMock()}
+    ctx.bot.mediator.get_building_tracker_dict = {
+        999: {ID: UnitTypeId.SPORECRAWLER, TARGET: base}
+    }
 
     assert z.spore_crawlers(per_base=1, gate=lambda _ctx: True)(ctx) is None
-    ctx.bot.structure_pending.assert_called_with(UnitTypeId.SPORECRAWLER)
+
+
+def test_spore_crawlers_does_not_wait_on_a_different_bases_en_route_worker() -> None:
+    """The per-base fix's whole point: one base's in-flight worker must not
+    block a *different* base's turn."""
+    ctx = _ctx()
+    covered = Point2((10.0, 10.0))
+    missing = Point2((200.0, 200.0))
+    ctx.bot.owned_expansions = {covered: MagicMock(), missing: MagicMock()}
+    ctx.bot.mediator.get_building_tracker_dict = {
+        999: {ID: UnitTypeId.SPORECRAWLER, TARGET: covered}
+    }
+
+    plan = z.spore_crawlers(per_base=1, gate=lambda _ctx: True)(ctx)
+
+    assert isinstance(plan, MacroPlan)
+    assert len(plan.macros) == 1
+    assert plan.macros[0].base_location == missing
 
 
 def test_spore_crawlers_collapses_a_macro_hatch_onto_its_base() -> None:
