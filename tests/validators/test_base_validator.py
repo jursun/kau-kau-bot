@@ -362,6 +362,71 @@ def test_structure_completed_is_latched_once_ready() -> None:
     assert tracker.completed and tracker.completed_time == 90.0
 
 
+def test_lair_started_uses_already_pending_not_just_the_finished_morph() -> None:
+    """Regression test for the exact user report: Stage 2's own Lair check
+    (already_pending-aware) and Stage 3's generic tracker showed two
+    different times for the same morph. Lair morphs *from* an existing
+    Hatchery - the Hatchery keeps type_id HATCHERY for the whole ~57s morph
+    and only flips to LAIR the instant it finishes, so `structures(LAIR).
+    amount` alone doesn't reflect "started" until completion. `already_
+    pending(LAIR)` catches the morph the moment it's commanded, matching
+    Stage 2's own signal."""
+    ai = FakeAI()
+    validator = BaseValidator(ai)
+    tracker = _StructureTracker(UnitTypeId.LAIR, "Lair")
+    validator._structures.append(tracker)
+
+    ai.time = 239.0  # morph just commanded - not yet a LAIR-typed object
+    ai._pending_counts[UnitTypeId.LAIR] = 1
+    validator.on_step(0)
+
+    assert tracker.started and tracker.started_time == 239.0
+    assert not tracker.completed
+
+    ai.time = 296.0  # ~57s later, the morph actually finishes
+    ai._pending_counts[UnitTypeId.LAIR] = 0
+    ai._structure_counts[UnitTypeId.LAIR] = 1
+    ai._structure_ready_counts[UnitTypeId.LAIR] = 1
+    validator.on_step(0)
+
+    assert tracker.completed and tracker.completed_time == 296.0
+    assert tracker.started_time == 239.0, "started must not move once latched"
+
+
+def test_hive_gets_the_same_already_pending_fix_as_lair() -> None:
+    """Hive morphs from Lair the same way Lair morphs from Hatchery - same
+    fix, same reasoning."""
+    ai = FakeAI()
+    validator = BaseValidator(ai)
+    tracker = _StructureTracker(UnitTypeId.HIVE, "Hive")
+    validator._structures.append(tracker)
+
+    ai.time = 500.0
+    ai._pending_counts[UnitTypeId.HIVE] = 1
+    validator.on_step(0)
+
+    assert tracker.started and tracker.started_time == 500.0
+
+
+def test_a_freshly_built_structure_is_not_double_counted_via_already_pending() -> None:
+    """Guard against the exact double-counting risk the Lair/Hive fix must
+    avoid: a structure built fresh from a worker (not a morph) shows up in
+    both `.amount` (under construction) and `already_pending` (ares' own
+    "buildings already in progress" signal) for the SAME physical
+    structure - summing them for a `target > 1` check would let one
+    Evolution Chamber under construction masquerade as two."""
+    ai = FakeAI()
+    validator = BaseValidator(ai)
+    tracker = _StructureTracker(UnitTypeId.EVOLUTIONCHAMBER, "Evolution Chamber", target=2)
+    validator._structures.append(tracker)
+
+    ai._structure_counts[UnitTypeId.EVOLUTIONCHAMBER] = 1
+    ai._pending_counts[UnitTypeId.EVOLUTIONCHAMBER] = 1  # same chamber, double-signaled
+    validator.on_step(0)
+
+    assert not tracker.started, "one chamber under construction must not satisfy an x2 target"
+
+
 # ── Resource-shortage reason: mineral vs vespene, for the informational ────
 # ── Stage 3/4 report ─────────────────────────────────────────────────────
 

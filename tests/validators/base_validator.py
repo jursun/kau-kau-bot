@@ -142,6 +142,21 @@ STRUCTURE_LABELS: Dict[UnitTypeId, str] = {
     UnitTypeId.SPIRE: "Spire",
 }
 
+_MORPH_STRUCTURES: frozenset = frozenset({UnitTypeId.LAIR, UnitTypeId.HIVE})
+"""Structures that morph *from* an existing townhall rather than building
+fresh from a worker. The townhall keeps its old `type_id` for the whole
+~57s/~100s morph and only flips to the new one the instant it finishes, so
+`structures(X).amount` - the generic "started" signal every other
+`_StructureTracker` uses - doesn't fire until completion, not commencement,
+for these two specifically. Confirmed live: Stage 2's own dedicated Lair
+check (`MacroZergValidator._track_opening_timing`) already had to work
+around exactly this ("`structures(LAIR)` alone stayed at 0 for another
+57s" after the morph was actually commanded) by also checking `already_
+pending`. `_track_structures` below applies that same fix generically, for
+any build that tracks either of these two - safe to do unconditionally
+since both always have `target == 1` (there is no "2 Lairs" milestone to
+double-count the way an `x2` Evolution Chamber target could)."""
+
 
 @dataclass
 class _UpgradeTracker:
@@ -563,6 +578,8 @@ class BaseValidator:
             if tracker.started:
                 continue
             existing = self.structures(tracker.structure).amount
+            if tracker.structure in _MORPH_STRUCTURES:
+                existing += self.already_pending(tracker.structure)
             if existing >= tracker.target:
                 tracker.started = True
                 tracker.started_time = self.time
