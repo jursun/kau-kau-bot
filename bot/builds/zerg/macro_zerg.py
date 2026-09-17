@@ -116,9 +116,13 @@ passive map-control damage from Locusts, meant to be dug in at each base
 rather than committed to a fight) and, only once the enemy has actually
 shown air units, Spire (Corruptor, anti-air escort). Burrow + Tunneling
 Claws let Roaches burrow-regenerate and reposition between engagements
-without giving up the sustain. `z.spawn_macro_army` handles the
-composition switch between these phases — see its own docstring for why a
-static comp dict alone would stall production in the Roach-only window.
+without giving up the sustain. From 5:00, army vs upgrade spend is
+supply-based (`intel.army.army_behind_on_supply`): behind on army supply
+→ more units / fewer concurrent upgrades; ahead or even → tech focus.
+`z.spawn_macro_army` handles the composition switch between these phases
+— see its own docstring for why a static comp dict alone would stall
+production in the Roach-only window. Counter comps from scouting are a
+placeholder; baseline is Roach + Swarm Host (+ Corruptor on air).
 
 This is a continuous macro identity, not a scripted all-in leave time:
 `combat.release_waves()` releases (and grows) waves on its own repeating
@@ -151,6 +155,7 @@ from ares.behaviors.macro import (
     BuildStructure,
     BuildWorkers,
     ExpansionController,
+    MacroPlan,
     UpgradeController,
 )
 from ares.consts import UnitRole
@@ -163,13 +168,14 @@ from bot.behaviors.zerg import (
     ExpandWithPersistentBuilder,
     MorphLairAtMain,
     TrainFromLarva,
+    UpgradeSlots,
     ZergGasBuildingController,
     pending_larva_trained,
 )
 from bot.builds.definition import Army, BuildDefinition, Combat, Economy
 from bot.consts import ROACH_SWARM_HOST_COMP
 from bot.intel import army as intel_army
-from bot.routines import combat, creep, gates, scouting
+from bot.routines import combat, creep, gates, overseers as overseer_routines, scouting
 from bot.steps import common as c
 from bot.steps import zerg as z
 
@@ -517,6 +523,90 @@ def _scripted_gas_scaling(ctx):
     return ZergGasBuildingController(to_count=target)
 
 
+# Post-5:00 army vs tech posture (see module docstring).
+_POST_FIVE: float = 300.0
+
+_AIR_UPGRADES: tuple[UpgradeId, ...] = (
+    UpgradeId.ZERGFLYERWEAPONSLEVEL1,
+    UpgradeId.ZERGFLYERARMORSLEVEL1,
+    UpgradeId.ZERGFLYERWEAPONSLEVEL2,
+    UpgradeId.ZERGFLYERARMORSLEVEL2,
+    UpgradeId.ZERGFLYERWEAPONSLEVEL3,
+    UpgradeId.ZERGFLYERARMORSLEVEL3,
+)
+
+
+def _has_extra_upgrade_budget(ctx) -> bool:
+    """200 supply or no larva left — spend floating cash on upgrades."""
+    return ctx.bot.supply_used >= 200 or not ctx.bot.larva
+
+
+def _upgrade_slot_target(ctx) -> int:
+    """Concurrent researches: army-behind → 1(+1 extra); else 2(+1 extra)."""
+    base = 1 if intel_army.army_behind_on_supply(ctx) else 2
+    if _has_extra_upgrade_budget(ctx):
+        return base + 1
+    return base
+
+
+def _desired_upgrades(ctx) -> list[UpgradeId]:
+    upgrades = list(ctx.build.army.upgrades)
+    if intel_army.enemy_has_air_units(ctx):
+        upgrades.extend(_AIR_UPGRADES)
+    return upgrades
+
+
+def _upgrades_before_five(ctx):
+    """Pre-5:00: Glial/Burrow/Claws once Lair is commanded (unchanged)."""
+    if ctx.bot.time >= _POST_FIVE:
+        return None
+    return c.upgrades(gate=_lair_commanded)(ctx)
+
+
+def _army_before_five(ctx):
+    if ctx.bot.time >= _POST_FIVE:
+        return None
+    return z.spawn_macro_army(
+        gate=gates.structure_started(UnitTypeId.ROACHWARREN)
+    )(ctx)
+
+
+def _post_five_army_tech(ctx):
+    """From 5:00: nest army + UpgradeSlots by scouted supply posture."""
+    if ctx.bot.time < _POST_FIVE:
+        return None
+    if not _lair_commanded(ctx):
+        # Still protect Lair gas bank before morph is commanded.
+        army = z.spawn_macro_army(
+            gate=gates.structure_started(UnitTypeId.ROACHWARREN)
+        )(ctx)
+        return army
+
+    behind = intel_army.army_behind_on_supply(ctx)
+    slots = _upgrade_slot_target(ctx)
+    prioritize = _has_extra_upgrade_budget(ctx)
+    upgrades = UpgradeSlots(
+        upgrade_list=_desired_upgrades(ctx),
+        base_location=ctx.production_location,
+        max_slots=slots,
+        prioritize=prioritize,
+    )
+    army = z.spawn_macro_army(
+        gate=gates.structure_started(UnitTypeId.ROACHWARREN)
+    )(ctx)
+    if army is None:
+        return upgrades
+
+    plan = MacroPlan()
+    if behind:
+        plan.add(army)
+        plan.add(upgrades)
+    else:
+        plan.add(upgrades)
+        plan.add(army)
+    return plan
+
+
 def _split_production_after_opening(ctx):
     """`c.split_production`'s own `gate` only reorders `BuildWorkers`
     against `SpawnController` priority - it does NOT stop either from
@@ -765,7 +855,16 @@ BUILD = BuildDefinition(
             UpgradeId.GLIALRECONSTITUTION,  # Roach speed
             UpgradeId.BURROW,
             UpgradeId.TUNNELINGCLAWS,  # full use of burrowed Roach regen
+            UpgradeId.ZERGMISSILEWEAPONSLEVEL1,
+            UpgradeId.ZERGGROUNDARMORSLEVEL1,
+            UpgradeId.ZERGMISSILEWEAPONSLEVEL2,
+            UpgradeId.ZERGGROUNDARMORSLEVEL2,
+            UpgradeId.ZERGMISSILEWEAPONSLEVEL3,
+            UpgradeId.ZERGGROUNDARMORSLEVEL3,
         ),
+        # Second Evo from 5:00 so ground +1/+1 can research in parallel.
+        evolution_chambers=2,
+        evolution_chamber_gate=gates.after_time(_POST_FIVE),
     ),
     # The scripted opening's own Spawning Pool step lands well past the
     # ~15-20s of an immediate-pool opening (Natural Expand comes first); the
@@ -781,6 +880,7 @@ BUILD = BuildDefinition(
             combat.attack_squads(),
             combat.dig_in_swarm_hosts(),
             combat.escort_corruptors(),
+            overseer_routines.manage_overseers(),
             creep.spread_creep(),
             creep.spread_tumors(),
             scouting.air_scout(UnitTypeId.OVERLORD),
@@ -833,6 +933,12 @@ BUILD = BuildDefinition(
             gate=gates.after_time(270.0),
             check_interval=15.0,
         ),
+        # Maintain 3 Overseers once Lair exists (home / army / scout roles
+        # in `routines.overseers.manage_overseers`).
+        z.overseers(
+            to_count=3,
+            gate=gates.structure_started(UnitTypeId.LAIR),
+        ),
         _scripted_worker_production,
         # ── Post-opening / continuous macro - each re-gated so it only
         # ever continues growth past what the script already established,
@@ -849,46 +955,31 @@ BUILD = BuildDefinition(
             UnitTypeId.INFESTATIONPIT, gate=gates.structure_started(UnitTypeId.LAIR)
         ),
         z.tech_up(
+            UnitTypeId.HIVE,
+            gate=gates.structure_started(UnitTypeId.INFESTATIONPIT),
+        ),
+        z.tech_up(
             UnitTypeId.SPIRE,
             gate=gates.all_of(
                 gates.structure_started(UnitTypeId.LAIR), intel_army.enemy_has_air_units
             ),
         ),
+        z.evolution_chambers(),
         # 4th/5th only - `_expansions_after_scripted_third` (supply>=27 alone
         # raced hatch #3 ahead of the scripted expand; see that helper).
         _expansions_after_scripted_third,
         # Replaces the generic `c.gas_buildings()` continuation outright:
         # see `_scripted_gas_scaling`'s own docstring for the growth rule.
         _scripted_gas_scaling,
-        # `UpgradeController` walks prerequisites the same way `TechUp`
-        # does - Glial Reconstitution requires Roach Warren, and without
-        # a warren gate it built one itself at supply 30 (confirmed live:
-        # "Building UnitTypeId.ROACHWARREN for UpgradeId.GLIALRECONSTITUTION"
-        # at 2:30). Gating on warren-*started* was still too early: with an
-        # incomplete warren in the structures dict, Glial isn't researchable
-        # yet so the controller falls through to Burrow, which spent the
-        # 100 gas at 212.6s and left Lair `cant_afford` on gas until 252.1
-        # (deadline 256). Gate on Lair commanded instead - Speed is already
-        # done by `_SEQUENCE`, and Glial/Burrow/TunnelingClaws can share the
-        # morph-window gas income.
-        c.upgrades(gate=_lair_commanded),
+        # Pre-5:00 upgrades (Glial/Burrow/Claws) once Lair is commanded;
+        # from 5:00 `_post_five_army_tech` owns upgrade concurrency + army.
+        _upgrades_before_five,
         # Not `c.split_production(gate=gates.after_wave(1))` directly - see
         # `_split_production_after_opening`'s own comment for why that
         # doesn't actually gate anything.
         _split_production_after_opening,
-        # Gated on Roach Warren existing - NOT redundant with its own
-        # internal Roach-tech-readiness check. `SpawnController`'s "only
-        # one tech-ready unit in the comp" escape hatch (`over_produce_
-        # on_low_tech`) fires for *Zergling* the moment Spawning Pool
-        # exists, well before Roach Warren - confirmed live: with nothing
-        # else claiming the frame between the scripted opening's own
-        # supply gates, this alone raced from supply 17 to 25 in a single
-        # `on_step` call, producing Zerglings ungoverned by `_SEQUENCE`'s
-        # own "zergling" entries and starving the 19/21 Queens of the
-        # minerals they were supposed to get first. The original "already
-        # gated on Roach Warren tech-readiness internally" reasoning here
-        # was true for Roach/Swarm Host, not for this fallback branch.
-        z.spawn_macro_army(gate=gates.structure_started(UnitTypeId.ROACHWARREN)),
+        _army_before_five,
+        _post_five_army_tech,
         # Last: only fires when nothing above had anywhere to put a mineral
         # surplus - see the module docstring and the step's own. Gated via
         # `_overflow_after_scripted_opening` so a 500+ bank mid-opening

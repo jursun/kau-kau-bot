@@ -265,20 +265,31 @@ def spine_crawlers(count: int, gate: Gate = _always) -> MacroStep:
     return common.structure(UnitTypeId.SPINECRAWLER, count, gate)
 
 
-def overseers(per_wave: int = 1, maximum: int = 3, gate: Gate = _always) -> MacroStep:
-    """Keep one Overseer per attack wave released so far, capped at `maximum`.
+def overseers(
+    per_wave: int = 1,
+    maximum: int = 3,
+    gate: Gate = _always,
+    to_count: int | None = None,
+) -> MacroStep:
+    """Morph Overlords into Overseers.
 
-    `MorphOverseers` handles the Lair-tech check itself, so this step is
-    safe to list before Lair even exists. See `routines.combat.escort_overseers`
-    for what actually sends them along with the army.
+    With `to_count`, maintain that many at all times (Macro Zerg: 3 after
+    Lair). Otherwise keep one per attack wave released so far, capped at
+    `maximum` (legacy wave-scaled path).
+
+    `MorphOverseers` handles the Lair-tech check itself. See
+    `routines.overseers.manage_overseers` for home/army/scout roles.
     """
 
     def step(ctx: "BotContext"):
         if not gate(ctx):
             return None
-        target = min(maximum, ctx.state.wave_number * per_wave)
-        if target <= 0:
-            return None
+        if to_count is not None:
+            target = to_count
+        else:
+            target = min(maximum, ctx.state.wave_number * per_wave)
+            if target <= 0:
+                return None
         return MorphOverseers(to_count=target)
 
     return step
@@ -316,6 +327,11 @@ def spawn_macro_army(gate: Gate = _always) -> MacroStep:
     two-member population is met - fall back to a renormalized 2-member
     comp for that window instead. Once Spire is up and the enemy has shown
     air (`intel.army.enemy_has_air_units`), fold Corruptor in.
+
+    TODO: scout-based counter composition (see intel.army composition).
+    For now: Roach + Swarm Host; Corruptor only if enemy air. Roaches will
+    use Burrow + Tunneling Claws to leave the front and heal; Swarm Hosts
+    siege fortified positions (`combat.dig_in_swarm_hosts`).
     """
 
     _roach_only_comp: dict[UnitTypeId, dict[str, float | int]] = {
@@ -326,6 +342,7 @@ def spawn_macro_army(gate: Gate = _always) -> MacroStep:
     def step(ctx: "BotContext"):
         if not gate(ctx):
             return None
+        # TODO: pick counter comp from scouted enemy army composition.
         roach_ready = ctx.bot.tech_requirement_progress(UnitTypeId.ROACH) >= 1.0
         swarm_host_ready = (
             ctx.bot.tech_requirement_progress(UnitTypeId.SWARMHOSTMP) >= 1.0

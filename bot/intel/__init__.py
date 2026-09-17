@@ -5,7 +5,9 @@ read/state layer combat and QA consume.
 """
 
 from bot.intel.army import (
+    army_behind_on_supply,
     enemy_army,
+    enemy_army_supply,
     enemy_army_tags,
     enemy_army_type_ids,
     enemy_has_air_units,
@@ -23,7 +25,9 @@ from bot.intel.tech import SeenTech, observe_seen_tech
 __all__ = [
     "OpponentNotes",
     "SeenTech",
+    "army_behind_on_supply",
     "enemy_army",
+    "enemy_army_supply",
     "enemy_army_tags",
     "enemy_army_type_ids",
     "enemy_has_air_units",

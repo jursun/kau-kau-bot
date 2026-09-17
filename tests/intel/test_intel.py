@@ -16,7 +16,9 @@ from bot.core.state import RunState
 from bot.intel import (
     OpponentNotes,
     SeenTech,
+    army_behind_on_supply,
     enemy_army,
+    enemy_army_supply,
     enemy_army_tags,
     enemy_army_type_ids,
     filter_non_workers,
@@ -64,6 +66,45 @@ def test_enemy_army_empty_when_missing() -> None:
     ctx = BotContext(bot=bot, build=MagicMock(), state=RunState())
     assert enemy_army(ctx) == []
     assert enemy_army_tags(ctx) == frozenset()
+
+
+def test_enemy_army_supply_sums_combat_units() -> None:
+    ctx = _ctx(
+        [
+            _unit(1, UnitTypeId.ZEALOT),
+            _unit(2, UnitTypeId.PROBE),
+            _unit(3, UnitTypeId.STALKER),
+        ]
+    )
+    ctx.bot.calculate_supply_cost.side_effect = lambda t: {
+        UnitTypeId.ZEALOT: 2.0,
+        UnitTypeId.STALKER: 2.0,
+        UnitTypeId.PROBE: 1.0,
+    }[t]
+    assert enemy_army_supply(ctx) == 4.0
+
+
+def test_army_behind_on_supply_false_when_enemy_unseen() -> None:
+    ctx = _ctx([])
+    ctx.bot.supply_army = 10
+    assert enemy_army_supply(ctx) == 0.0
+    assert not army_behind_on_supply(ctx)
+
+
+def test_army_behind_on_supply_when_enemy_has_more() -> None:
+    ctx = _ctx([_unit(1, UnitTypeId.ZEALOT), _unit(2, UnitTypeId.ZEALOT)])
+    ctx.bot.calculate_supply_cost.return_value = 2.0
+    ctx.bot.supply_army = 2
+    assert army_behind_on_supply(ctx)
+
+
+def test_army_behind_on_supply_false_when_we_match_or_lead() -> None:
+    ctx = _ctx([_unit(1, UnitTypeId.ZEALOT)])
+    ctx.bot.calculate_supply_cost.return_value = 2.0
+    ctx.bot.supply_army = 2
+    assert not army_behind_on_supply(ctx)
+    ctx.bot.supply_army = 6
+    assert not army_behind_on_supply(ctx)
 
 
 def test_filter_non_workers() -> None:

@@ -46,3 +46,30 @@ def enemy_has_air_units(ctx: BotContext) -> bool:
     Macro Zerg's reactive Spire/Corruptor branch (see `steps.zerg.tech_up`/
     `spawn_macro_army`)."""
     return any(unit.is_flying for unit in enemy_army(ctx))
+
+
+def enemy_army_supply(ctx: BotContext) -> float:
+    """Scouted enemy combat supply this frame (workers already stripped).
+
+    Sums `calculate_supply_cost` over `enemy_army`. Returns 0 when nothing
+    is visible — callers that decide army-vs-tech posture should treat that
+    as "not behind" so fog does not trigger army panic.
+    """
+    army = enemy_army(ctx)
+    if not army:
+        return 0.0
+    return float(
+        sum(ctx.bot.calculate_supply_cost(unit.type_id) for unit in army)
+    )
+
+
+def army_behind_on_supply(ctx: BotContext) -> bool:
+    """True when visible enemy army supply exceeds ours.
+
+    Empty/unseen enemy army → False (tech focus). Used by Macro Zerg's
+    post-5:00 army-vs-tech posture.
+    """
+    enemy = enemy_army_supply(ctx)
+    if enemy <= 0:
+        return False
+    return enemy > float(ctx.bot.supply_army)

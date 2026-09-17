@@ -294,6 +294,12 @@ class RunState:
     _sticky_hold_point`, but kept in its own map since Zergling is on a
     dedicated defender role rather than `UnitRole.DEFENDING` (see
     `routines.combat.defend_with_zerglings`)."""
+    overseer_home_tag: int | None = None
+    """Overseer parked at home for detection (see `routines.overseers`)."""
+    overseer_army_tag: int | None = None
+    """Overseer escorting the main ATTACKING squad."""
+    overseer_scout_tag: int | None = None
+    """Overseer skirting enemy bases for intel."""
     opening_step_index: int = 0
     """Position in `builds.zerg.macro_zerg._SEQUENCE` - a persisted,
     monotonically-increasing index (never re-derived from scratch, never
