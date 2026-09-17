@@ -101,6 +101,21 @@ class MacroZergValidator(BaseValidator):
         ("spores3", "3 Spore Crawlers", 330.0),
     )
 
+    # Stage 3's display order - not the order any of the trackers actually
+    # get created in (some come from the base class's own upgrade-driven
+    # auto-derivation, some are appended by hand below, and duplicates get
+    # skipped depending on which upgrades a given game happens to declare),
+    # so the list is explicitly re-sorted against this at the end of `_init_
+    # milestones` instead of relying on construction order to read sensibly.
+    _STRUCTURE_ORDER: tuple = (
+        UnitTypeId.EVOLUTIONCHAMBER,
+        UnitTypeId.ROACHWARREN,
+        UnitTypeId.LAIR,
+        UnitTypeId.INFESTATIONPIT,
+        UnitTypeId.HIVE,
+        UnitTypeId.SPIRE,
+    )
+
     def _init_milestones(self) -> None:
         super()._init_milestones()
         # Tunneling Claws already requires Lair, so the base class's own
@@ -118,6 +133,7 @@ class MacroZergValidator(BaseValidator):
             )
             if structure not in already
         )
+        self._structures.sort(key=lambda t: self._STRUCTURE_ORDER.index(t.structure))
 
         self._opening_timing: Dict[str, _TimingMilestone] = {
             key: _TimingMilestone(label, deadline)

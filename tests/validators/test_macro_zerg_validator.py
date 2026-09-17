@@ -108,6 +108,29 @@ def test_stage_3_tracks_the_full_roach_swarm_host_tech_chain() -> None:
     )
 
 
+def test_stage_3_reports_in_the_declared_tech_order_not_construction_order() -> None:
+    """Regression test: some of these trackers come from the base class's
+    own upgrade-driven auto-derivation, others are appended by hand, and
+    which upgrades a game declares changes which path creates which one -
+    none of that should leak into the printed order. Roach Warren in
+    particular must land right after Evolution Chamber, ahead of Lair, at
+    the user's explicit request."""
+    ai = FakeAI(
+        upgrades=(
+            UpgradeId.ZERGMELEEWEAPONSLEVEL1,  # auto-derives Evolution Chamber
+            UpgradeId.BURROW,
+            UpgradeId.TUNNELINGCLAWS,
+        ),
+        wave_stage_label="Roach Pushes",
+    )
+    validator = MacroZergValidator(ai)
+    validator.on_step(0)
+
+    names = [step.name for step in validator.validate()["Stage 3: Tech Structures"]]
+
+    assert names == ["Evolution Chamber", "Roach Warren", "Lair", "Infestation Pit", "Spire"]
+
+
 # ── Stage 2: opening timing ─────────────────────────────────────────────────
 
 
