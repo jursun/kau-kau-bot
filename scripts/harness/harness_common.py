@@ -18,9 +18,9 @@ Each takes the same parameters:
                         "chargelot_regression_metrics" — see
                         bot/main.py's on_end). Omit to skip; only the
                         crash/result columns are written.
-    --leave SECONDS     Leave at this game time (game_time_limit). Defaults
-                        to 420 (7:00). `run.py` itself has no default leave —
-                        omit `--leave` there to play until the game ends.
+    --leave SECONDS     Optional artificial Tie at this game time
+                        (game_time_limit). Omit for no time limit (same as
+                        `run.py`). Pass `--leave 420` for the old 7:00 cut.
     --map NAME          Force a specific map instead of a tier's random
                         pick(s) — targeted testing (e.g. Quick against one
                         known-tricky map).
@@ -76,8 +76,8 @@ from scripts.harness.smoke_common import (  # noqa: E402
     resolve_smoke_settings,
 )
 
-DEFAULT_LEAVE_SECONDS: int = 7 * 60
-"""bot/main.py's LOCAL_GAME_TIME_LIMIT_SECONDS (7:00 team policy)."""
+SUGGESTED_LEAVE_SECONDS: int = 7 * 60
+"""Common cut for timed harness runs (`--leave 420`). Not applied by default."""
 
 ALL_RACES: tuple[Race, ...] = (Race.Terran, Race.Zerg, Race.Protoss)
 
@@ -349,12 +349,11 @@ def add_tier_args(parser: argparse.ArgumentParser, tier: TierSpec) -> None:
     parser.add_argument(
         "--leave",
         type=int,
-        default=DEFAULT_LEAVE_SECONDS,
+        default=None,
         metavar="SECONDS",
         help=(
-            f"Leave at this game time (default {DEFAULT_LEAVE_SECONDS}s / "
-            "7:00). Harness always passes a limit; omit only on run.py for "
-            "no time limit."
+            "Artificial Tie after N game-seconds. Omit for no time limit "
+            f"(pass --leave {SUGGESTED_LEAVE_SECONDS} for a 7:00 cut)."
         ),
     )
     parser.add_argument(
