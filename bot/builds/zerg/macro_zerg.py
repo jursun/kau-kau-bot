@@ -53,7 +53,7 @@ missing along the way), well ahead of where the scripted sequence wants
 it.
 `_scripted_gas_scaling` replaces `c.gas_buildings()` outright rather than
 just being re-gated: after 5:00 it grows the gas target by 1 every 20s
-until capped at 6 (`economy.max_gas` is raised to match, so the Stage 1
+until capped at 8 (`economy.max_gas` is raised to match, so the Stage 1
 "Extractor Cap Respected" validator check stays meaningful). New Extractors
 prefer main → natural → 3rd → 4th → … (`ZergGasBuildingController`).
 
@@ -489,7 +489,7 @@ def _scripted_worker_production(ctx):
 _GAS_SCALE_START: float = 300.0  # 5:00
 _GAS_SCALE_INTERVAL: float = 20.0
 _GAS_SCALE_BASE: int = 2  # matches `_SEQUENCE`'s own final gas target
-_GAS_SCALE_MAX: int = 6
+_GAS_SCALE_MAX: int = 8
 
 
 # `c.auto_supply()`'s own gate (see its call site in `macro_steps`): true
@@ -958,11 +958,11 @@ BUILD = BuildDefinition(
     label="Macro Zerg (Roach/Swarm Host)",
     race=Race.Zerg,
     economy=Economy(
-        worker_target=60,
+        worker_target=80,
         workers_per_base=22,
         max_bases=5,
         gas_per_base=2,
-        max_gas=6,  # matches `_GAS_SCALE_MAX` - see `_scripted_gas_scaling`
+        max_gas=8,  # matches `_GAS_SCALE_MAX` - see `_scripted_gas_scaling`
         workers_per_gas=3,
         long_distance_mine=True,
     ),

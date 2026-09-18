@@ -26,11 +26,13 @@ def test_gas_scale_opens_at_five_minutes_with_third_extractor() -> None:
     assert _gas_scale_target(300.0) == 3
 
 
-def test_gas_scale_grows_every_twenty_seconds_to_cap_six() -> None:
+def test_gas_scale_grows_every_twenty_seconds_to_cap_eight() -> None:
     assert _gas_scale_target(320.0) == 4
     assert _gas_scale_target(340.0) == 5
     assert _gas_scale_target(360.0) == 6
-    assert _gas_scale_target(400.0) == 6
+    assert _gas_scale_target(380.0) == 7
+    assert _gas_scale_target(400.0) == 8
+    assert _gas_scale_target(440.0) == 8
 
 
 def test_preferred_bases_are_main_natural_then_distance() -> None:
