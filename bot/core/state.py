@@ -273,7 +273,11 @@ class RunState:
     """Same idea as `natural_queen_tag`, for the main instead - see
     `builds.zerg.macro_zerg._claim_main_queen_tumor`."""
     main_queen_tumor_baseline: frozenset[int] = frozenset()
-    """Same idea as `natural_queen_tumor_baseline`, for the main instead."""
+    """Main-*plateau* Creep Tumor tags present when `main_queen_tag` was
+    claimed (see `builds.zerg.macro_zerg._main_area_tumor_tags`). "Done"
+    means `_MAIN_OPENING_TUMORS` *new* tags in that area, not any tumor
+    anywhere — otherwise a natural-side tumor (or QueenSpreadCreep walking
+    the forward chain) would clear the claim without covering the main."""
     main_queen_tumor_done: bool = False
     """Same idea as `natural_queen_tumor_done`, for the main instead."""
     queen_home_townhall: dict[int, int] = field(default_factory=dict)

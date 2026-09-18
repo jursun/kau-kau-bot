@@ -27,6 +27,10 @@ def spread_creep() -> CombatRoutine:
     queen this promotes in the first place — without it, `len(injectors)`
     would never exceed `base_count` and nothing would ever be spared.
 
+    Skips the Queen currently claimed by Macro Zerg's main-plateau opening
+    tumors (`state.main_queen_tag`): that claim drives placement itself so
+    `QueenSpreadCreep` cannot walk her out toward the enemy natural.
+
     If the creep queen dies, `get_units_from_role` simply stops returning
     it, so the `if not creep_queens` branch fires again next frame and a
     fresh one is promoted automatically — no separate death-tracking needed.
@@ -48,8 +52,19 @@ def spread_creep() -> CombatRoutine:
             ctx.mediator.assign_role(tag=newest.tag, role=UnitRole.QUEEN_CREEP)
             return
 
-        queen = creep_queens[0]
-        ctx.bot.register_behavior(QueenSpreadCreep(unit=queen))
+        main_claim = (
+            ctx.state.main_queen_tag
+            if (
+                ctx.state.main_queen_tag is not None
+                and not ctx.state.main_queen_tumor_done
+            )
+            else None
+        )
+        for queen in creep_queens:
+            if main_claim is not None and queen.tag == main_claim:
+                continue
+            ctx.bot.register_behavior(QueenSpreadCreep(unit=queen))
+            return
 
     return routine
 

@@ -150,14 +150,18 @@ energy on a Creep Tumor before it ever injects, by parking it on
 `UnitRole.QUEEN_CREEP` — the same pool `routines.creep.spread_creep`
 already drives with ares' own `QueenSpreadCreep` — until a tumor is
 confirmed, then handing it back to `UnitRole.QUEEN_INJECT` for normal duty.
-`_claim_main_queen_tumor` does the same for the main, once the 3rd Queen
-(`z.train_queens`'s own "+1 extra" slot, not either base's first) exists.
+`_claim_main_queen_tumor` pulls the 3rd Queen (`z.train_queens`' "+1
+extra") and *directly* plants two tumors on the main high-ground rim
+(vision + full creep coverage) — it does not use `QueenSpreadCreep`, which
+paths toward the enemy natural when map coverage is low and walked the
+Queen outside the natural instead (confirmed live).
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from math import cos, floor, pi, sin
 
 from ares.behaviors.macro import (
     BuildStructure,
@@ -167,10 +171,13 @@ from ares.behaviors.macro import (
     UpgradeController,
 )
 from ares.consts import UnitRole
+from cython_extensions import cy_distance_to_squared, cy_towards
+from cython_extensions.general_utils import cy_has_creep
 from sc2.data import Race
 from sc2.ids.ability_id import AbilityId
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
+from sc2.position import Point2
 
 from bot.behaviors.zerg import (
     ExpandWithPersistentBuilder,
@@ -840,39 +847,136 @@ def _claim_natural_queen_tumor(ctx) -> None:
 
 
 # Total (live + pending) Queen count that must exist before pulling one for
-# the main's own opening Creep Tumor - see `_claim_main_queen_tumor`. `z.
+# the main's own opening Creep Tumors - see `_claim_main_queen_tumor`. `z.
 # train_queens(per_base=1, maximum=6, extra=1)`'s own "+1 extra" slot is
 # exactly this 3rd Queen (main and natural each already hold their own 1 by
 # the time a 3rd trains at all), so claiming it here doesn't compete with
 # either base's first, inject-critical Queen the way claiming Queen #1 or #2
 # would.
 _MAIN_QUEEN_TUMOR_AT_COUNT: int = 3
+# How many Creep Tumors to plant on the main plateau before handing the
+# Queen back. Two covers the rim for vision + fills creep the natural
+# chain never reaches.
+_MAIN_OPENING_TUMORS: int = 2
+# Stay on the main high ground — past this, a spot is "outside" the main.
+_MAIN_TUMOR_AREA_RADIUS: float = 18.0
+# Keep successive main tumors apart so they cover different rim arcs.
+_MAIN_TUMOR_CLEARANCE: float = 9.0
+
+
+def _main_area_tumor_tags(ctx) -> frozenset[int]:
+    """Creep Tumors currently sitting on the main plateau (not the natural)."""
+    main = ctx.production_location
+    home_height = ctx.bot.get_terrain_height(main)
+    radius_sq = _MAIN_TUMOR_AREA_RADIUS**2
+    tags: set[int] = set()
+    tumors = ctx.bot.structures(UnitTypeId.CREEPTUMORQUEEN) | ctx.bot.structures(
+        UnitTypeId.CREEPTUMORBURROWED
+    )
+    for tumor in tumors:
+        if cy_distance_to_squared(tumor.position, main) > radius_sq:
+            continue
+        if ctx.bot.get_terrain_height(tumor.position) != home_height:
+            continue
+        tags.add(tumor.tag)
+    return frozenset(tags)
+
+
+def _pick_main_tumor_spot(ctx, queen) -> Point2 | None:
+    """Creep-edge tile on the main high ground, clear of existing tumors."""
+    main = ctx.production_location
+    home_height = ctx.bot.get_terrain_height(main)
+    area_sq = _MAIN_TUMOR_AREA_RADIUS**2
+    clear_sq = _MAIN_TUMOR_CLEARANCE**2
+    existing = [
+        t.position
+        for t in (
+            ctx.bot.structures(UnitTypeId.CREEPTUMORQUEEN)
+            | ctx.bot.structures(UnitTypeId.CREEPTUMORBURROWED)
+        )
+        if cy_distance_to_squared(t.position, main) <= area_sq
+    ]
+    creep_grid = ctx.mediator.get_creep_grid
+
+    def _usable(point: Point2) -> bool:
+        if cy_distance_to_squared(point, main) > area_sq:
+            return False
+        if ctx.bot.get_terrain_height(point) != home_height:
+            return False
+        if not cy_has_creep(creep_grid, point):
+            return False
+        if not ctx.bot.in_pathing_grid(point):
+            return False
+        return all(cy_distance_to_squared(point, e) >= clear_sq for e in existing)
+
+    edge = ctx.mediator.find_nearby_creep_edge_position(
+        position=main,
+        search_radius=_MAIN_TUMOR_AREA_RADIUS,
+        unit_tag=queen.tag,
+        cache_result=False,
+    )
+    if edge is not None and _usable(edge):
+        return Point2(edge)
+
+    # Prefer the rim toward the natural / map center (high-ground edge
+    # vision), then fill remaining arcs around the hatch.
+    nat = ctx.own_nat
+    toward = Point2(cy_towards(main, nat, 12.0)) if nat is not None else Point2(
+        cy_towards(main, ctx.bot.game_info.map_center, 12.0)
+    )
+    candidates: list[Point2] = [toward]
+    for radius in (8.0, 11.0, 14.0, 16.0):
+        for index in range(12):
+            angle = 2.0 * pi * index / 12
+            candidates.append(
+                Point2(
+                    (
+                        floor(main.x + radius * cos(angle)) + 0.5,
+                        floor(main.y + radius * sin(angle)) + 0.5,
+                    )
+                )
+            )
+    candidates.sort(key=lambda p: cy_distance_to_squared(p, toward))
+    for point in candidates:
+        if _usable(point):
+            return point
+    return None
+
+
+def _drive_main_queen_tumor(ctx, queen) -> None:
+    """Move/cast a main-claim Queen onto a main-plateau tumor spot."""
+    if queen.is_using_ability(AbilityId.BUILD_CREEPTUMOR):
+        return
+    spot = _pick_main_tumor_spot(ctx, queen)
+    if spot is None:
+        # Stay on the plateau while energy recharges / creep fills.
+        if cy_distance_to_squared(queen.position, ctx.production_location) > 36.0:
+            queen.move(ctx.production_location)
+        return
+    if cy_distance_to_squared(queen.position, spot) > 25.0:
+        queen.move(spot)
+        return
+    if AbilityId.BUILD_CREEPTUMOR_QUEEN in queen.abilities:
+        queen(AbilityId.BUILD_CREEPTUMOR_QUEEN, spot)
 
 
 def _claim_main_queen_tumor(ctx) -> None:
-    """One-shot: once the 3rd Queen exists, spend a Queen's energy on a
-    Creep Tumor at the main instead of its next inject, then hand it back
-    to normal inject duty - same idiom as `_claim_natural_queen_tumor`
-    (see its own docstring for the role-reassignment/`spread_creep`
-    hand-off reasoning, all identical here), just gated on total Queen
-    count instead of townhall count, and targeting the main instead of the
-    natural.
+    """Once the 3rd Queen exists, plant `_MAIN_OPENING_TUMORS` on the main
+    high ground, then hand her back to inject.
 
-    Also waits for `natural_queen_tumor_done` before claiming anything, on
-    top of the Queen-count gate: `_creep_tumor_tags`' baseline-diff still
-    needs the *other* claim to not be actively adding tumors of its own
-    while this one's baseline is fixed, or a tumor the natural's Queen
-    places mid-walk would misread as this claim's own "done" signal. In
-    practice this costs nothing - the natural's claim always starts first
-    (townhall-count-gated, so it fires well before a 3rd Queen can even
-    exist) - it just also has to *finish* before this one begins.
+    Does **not** hand off to `QueenSpreadCreep`: that behavior paths toward
+    `get_enemy_nat` while map creep coverage is low, so the Queen walked
+    past the natural and planted next to the forward tumor chain instead of
+    covering the main rim (confirmed live). Placement is driven here each
+    frame via `_drive_main_queen_tumor`; `spread_creep` skips this tag while
+    the claim is active.
     """
     if ctx.state.main_queen_tumor_done:
         return
 
     if ctx.state.main_queen_tag is None:
         if not ctx.state.natural_queen_tumor_done:
-            return  # let the natural's claim finish first - see docstring
+            return  # let the natural's claim finish first - see older docstring
         have = ctx.bot.units(UnitTypeId.QUEEN).amount + ctx.bot.already_pending(
             UnitTypeId.QUEEN
         )
@@ -886,25 +990,34 @@ def _claim_main_queen_tumor(ctx) -> None:
             return  # try again next frame
         queen = candidates.closest_to(main)
         ctx.state.main_queen_tag = queen.tag
-        ctx.state.main_queen_tumor_baseline = _creep_tumor_tags(ctx)
+        ctx.state.main_queen_tumor_baseline = _main_area_tumor_tags(ctx)
         ctx.mediator.assign_role(tag=queen.tag, role=UnitRole.QUEEN_CREEP)
-        ctx.log(f"MACRO_ZERG main Queen {queen.tag} pulled for opening creep tumor")
+        ctx.log(
+            f"MACRO_ZERG main Queen {queen.tag} pulled for "
+            f"{_MAIN_OPENING_TUMORS} main-plateau creep tumors"
+        )
         return
 
     tag = ctx.state.main_queen_tag
     still_claimed = ctx.mediator.get_units_from_role(
         role=UnitRole.QUEEN_CREEP, unit_type=UnitTypeId.QUEEN
     )
-    if not any(q.tag == tag for q in still_claimed):
+    queen = next((q for q in still_claimed if q.tag == tag), None)
+    if queen is None:
         ctx.state.main_queen_tag = None
         return
 
-    if _creep_tumor_tags(ctx) <= ctx.state.main_queen_tumor_baseline:
-        return  # still walking to a placement spot - no new tumor yet
+    placed = _main_area_tumor_tags(ctx) - ctx.state.main_queen_tumor_baseline
+    if len(placed) < _MAIN_OPENING_TUMORS:
+        _drive_main_queen_tumor(ctx, queen)
+        return
 
     ctx.state.main_queen_tumor_done = True
     ctx.mediator.assign_role(tag=tag, role=UnitRole.QUEEN_INJECT)
-    ctx.log(f"MACRO_ZERG main Queen {tag} back on inject duty")
+    ctx.log(
+        f"MACRO_ZERG main Queen {tag} back on inject duty "
+        f"({len(placed)} main tumors placed)"
+    )
 
 
 def _macro_zerg_on_unit_created(ctx, unit) -> None:

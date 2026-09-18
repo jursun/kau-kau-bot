@@ -80,6 +80,39 @@ def test_creep_queen_gets_driven_once_promoted() -> None:
     assert registered.unit is queen
 
 
+def test_spread_creep_skips_main_opening_claim_queen() -> None:
+    """Main-plateau claim drives placement itself — don't QueenSpreadCreep her
+    toward the enemy natural."""
+    ctx = _ctx()
+    main_claim = _queen(3)
+    other = _queen(9)
+    ctx.state.main_queen_tag = 3
+    ctx.state.main_queen_tumor_done = False
+    ctx.mediator.get_units_from_role.side_effect = _role_lookup(
+        creep_queens=[main_claim, other]
+    )
+
+    creep.spread_creep()(ctx)
+
+    registered = ctx.bot.register_behavior.call_args.args[0]
+    assert isinstance(registered, QueenSpreadCreep)
+    assert registered.unit is other
+
+
+def test_spread_creep_idle_when_only_main_claim_queen() -> None:
+    ctx = _ctx()
+    main_claim = _queen(3)
+    ctx.state.main_queen_tag = 3
+    ctx.state.main_queen_tumor_done = False
+    ctx.mediator.get_units_from_role.side_effect = _role_lookup(
+        creep_queens=[main_claim]
+    )
+
+    creep.spread_creep()(ctx)
+
+    ctx.bot.register_behavior.assert_not_called()
+
+
 def _tumor(tag: int) -> MagicMock:
     tumor = MagicMock()
     tumor.tag = tag
