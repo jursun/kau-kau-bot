@@ -318,6 +318,11 @@ class RunState:
     """Overseer escorting the main ATTACKING squad."""
     overseer_scout_tag: int | None = None
     """Overseer skirting enemy bases for intel."""
+    changeling_destinations: dict[int, Point2] = field(default_factory=dict)
+    """Changeling tag → sticky opponent-base Point2. Assigned once (and only
+    reassigned if that base is no longer an opponent target) so
+    `routines.overseers._spread_changelings` does not thrash every frame
+    when unit-list order shuffles."""
     opening_step_index: int = 0
     """Position in `builds.zerg.macro_zerg._SEQUENCE` - a persisted,
     monotonically-increasing index (never re-derived from scratch, never

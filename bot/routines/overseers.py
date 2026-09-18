@@ -3,6 +3,9 @@
 Macro Zerg maintains three Overseers after Lair: home detection, army
 detection, and enemy-base scouting. Roles are sticky by tag in `RunState`
 and only reassigned when a tagged Overseer dies.
+
+Changelings get a sticky opponent-base destination (also in `RunState`) so
+frame-to-frame unit-list reshuffles cannot bounce them between targets.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ from sc2.ids.ability_id import AbilityId
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
 
+from bot.consts import ALL_TOWNHALL_TYPES
 from bot.core.types import CombatRoutine
 from bot.routines import targeting
 
@@ -40,6 +44,12 @@ _CHANGELING_TYPES: frozenset[UnitTypeId] = frozenset(
 )
 
 _SPAWN_CHANGELING = AbilityId.SPAWNCHANGELING_SPAWNCHANGELING
+
+# Sit for vision once this close; re-issuing AMove on top of the tile is
+# what made parked changelings jitter in place.
+_CHANGELING_ARRIVE_SQ: float = 3.0**2
+# Snap visible townhalls / sticky dests onto the same base slot.
+_BASE_MATCH_SQ: float = 10.0**2
 
 
 def _alive_overseers(ctx: "BotContext") -> dict[int, "Unit"]:
@@ -124,23 +134,84 @@ def _cast_changelings(ctx: "BotContext") -> None:
             ctx.bot.register_behavior(UseAbility(_SPAWN_CHANGELING, overseer))
 
 
+def _near_any(point: Point2, bases: list[Point2]) -> Point2 | None:
+    for base in bases:
+        if cy_distance_to_squared(point, base) <= _BASE_MATCH_SQ:
+            return base
+    return None
+
+
+def opponent_base_targets(ctx: "BotContext") -> list[Point2]:
+    """Enemy start + enemy-side expansions + any visible enemy townhalls.
+
+    Expansions closer to us than to the enemy start are skipped so we do
+    not park vision on our own half of the map.
+    """
+    enemy_starts = list(ctx.bot.enemy_start_locations)
+    if not enemy_starts:
+        return []
+    enemy_start = enemy_starts[0]
+    our_start = ctx.production_location
+
+    bases: list[Point2] = []
+    for loc in enemy_starts:
+        if _near_any(loc, bases) is None:
+            bases.append(Point2(loc))
+
+    expansions = getattr(ctx.mediator, "get_enemy_expansions", None) or []
+    for item in expansions:
+        loc = item[0] if isinstance(item, tuple) else item
+        if cy_distance_to_squared(loc, enemy_start) >= cy_distance_to_squared(
+            loc, our_start
+        ):
+            continue
+        if _near_any(loc, bases) is None:
+            bases.append(Point2(loc))
+
+    townhalls = ctx.bot.enemy_structures.of_type(ALL_TOWNHALL_TYPES)
+    for th in townhalls:
+        if _near_any(th.position, bases) is None:
+            bases.append(Point2(th.position))
+    return bases
+
+
+def _least_covered_base(
+    bases: list[Point2], assigned: dict[int, Point2]
+) -> Point2:
+    """Prefer opponent bases that currently have the fewest changelings."""
+    counts = {id(b): 0 for b in bases}
+    for dest in assigned.values():
+        matched = _near_any(dest, bases)
+        if matched is not None:
+            counts[id(matched)] += 1
+    return min(bases, key=lambda b: (counts[id(b)], cy_distance_to_squared(b, bases[0])))
+
+
 def _spread_changelings(ctx: "BotContext") -> None:
-    changelings = [
-        u for u in ctx.bot.units if u.type_id in _CHANGELING_TYPES
-    ]
-    if not changelings:
+    changelings = [u for u in ctx.bot.units if u.type_id in _CHANGELING_TYPES]
+    dests = ctx.state.changeling_destinations
+    alive_tags = {u.tag for u in changelings}
+    for tag in list(dests):
+        if tag not in alive_tags:
+            del dests[tag]
+
+    bases = opponent_base_targets(ctx)
+    if not bases:
         return
-    owned = set(ctx.bot.owned_expansions.keys())
-    targets = [
-        loc
-        for loc in ctx.bot.expansion_locations_list
-        if loc not in owned
-    ]
-    if not targets:
-        targets = list(ctx.bot.enemy_start_locations)
-    for i, unit in enumerate(changelings):
-        target = targets[i % len(targets)]
-        ctx.bot.register_behavior(AMove(unit=unit, target=target))
+
+    for unit in changelings:
+        current = dests.get(unit.tag)
+        matched = _near_any(current, bases) if current is not None else None
+        if matched is None:
+            dests.pop(unit.tag, None)
+            matched = _least_covered_base(bases, dests)
+            dests[unit.tag] = matched
+        else:
+            # Canonicalize onto the live base list entry.
+            dests[unit.tag] = matched
+
+        if cy_distance_to_squared(unit.position, matched) > _CHANGELING_ARRIVE_SQ:
+            ctx.bot.register_behavior(AMove(unit=unit, target=matched))
 
 
 def manage_overseers() -> CombatRoutine:

@@ -205,6 +205,79 @@ def test_assign_overseer_roles_clears_dead() -> None:
     assert ctx.state.overseer_army_tag == 1
 
 
+def test_opponent_base_targets_enemy_side_and_visible_halls() -> None:
+    from bot.routines.overseers import opponent_base_targets
+
+    enemy_main = Point2((100.0, 100.0))
+    enemy_nat = Point2((80.0, 100.0))
+    our_main = Point2((10.0, 10.0))
+    our_side = Point2((20.0, 10.0))
+    ctx = _ctx()
+    ctx.bot.enemy_start_locations = [enemy_main]
+    ctx.bot.start_location = our_main
+    ctx.bot.mediator = SimpleNamespace(
+        get_enemy_expansions=[(enemy_nat, 1.0), (our_side, 50.0)]
+    )
+    hall = MagicMock()
+    hall.position = Point2((60.0, 100.0))  # enemy third-ish
+    structures = MagicMock()
+    structures.of_type = MagicMock(return_value=[hall])
+    ctx.bot.enemy_structures = structures
+
+    bases = opponent_base_targets(ctx)
+    assert enemy_main in bases
+    assert enemy_nat in bases
+    assert hall.position in bases
+    assert our_side not in bases
+
+
+def test_spread_changelings_sticky_and_no_move_when_arrived() -> None:
+    from bot.routines.overseers import _spread_changelings
+
+    enemy_main = Point2((100.0, 100.0))
+    enemy_nat = Point2((80.0, 100.0))
+    ctx = _ctx()
+    ctx.bot.enemy_start_locations = [enemy_main]
+    ctx.bot.start_location = Point2((10.0, 10.0))
+    ctx.bot.mediator = SimpleNamespace(
+        get_enemy_expansions=[(enemy_nat, 1.0)]
+    )
+    structures = MagicMock()
+    structures.of_type = MagicMock(return_value=[])
+    ctx.bot.enemy_structures = structures
+
+    far = MagicMock()
+    far.tag = 1
+    far.type_id = UnitTypeId.CHANGELING
+    far.position = Point2((10.0, 10.0))
+    near = MagicMock()
+    near.tag = 2
+    near.type_id = UnitTypeId.CHANGELINGZEALOT
+    near.position = Point2((100.5, 100.0))  # already on enemy main
+
+    # Pre-seed sticky dests so arrival/no-move is independent of assign order.
+    ctx.state.changeling_destinations = {1: enemy_nat, 2: enemy_main}
+
+    ctx.bot.units = [far, near]
+    _spread_changelings(ctx)
+    first = dict(ctx.state.changeling_destinations)
+    ctx.bot.register_behavior.reset_mock()
+    ctx.bot.units = [near, far]
+    _spread_changelings(ctx)
+    assert ctx.state.changeling_destinations == first
+    assert first[1] == enemy_nat
+    assert first[2] == enemy_main
+
+    moves = [
+        call.args[0]
+        for call in ctx.bot.register_behavior.call_args_list
+        if call.args and getattr(call.args[0], "target", None) is not None
+    ]
+    # Only the far changeling should move after the reorder pass.
+    assert {m.unit.tag for m in moves} == {1}
+    assert all(m.target == enemy_nat for m in moves)
+
+
 def test_army_supply_gate() -> None:
     from bot.routines import gates
 
