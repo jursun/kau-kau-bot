@@ -1314,6 +1314,42 @@ def _swarm_host_points(ctx: "BotContext") -> list[Point2]:
     ]
 
 
+_ROACH_REGEN_BURROW_BELOW: float = 0.25
+"""Burrow to regenerate once health drops strictly below this fraction."""
+_ROACH_REGEN_UNBURROW_AT: float = 1.0
+"""Unburrow only once health is fully restored."""
+
+
+def regen_burrow_roaches() -> CombatRoutine:
+    """Burrow hurt Roaches to regenerate; unburrow at full health.
+
+    Requires Burrow researched. Surface Roaches under 25% HP burrow in place;
+    `ROACHBURROWED` stay down until health is 100%, then unburrow to rejoin
+    combat. Registered after `attack_squads`/`defend_*` so the burrow/unburrow
+    command wins the frame over AMove/kite. Burrowed Roaches are
+    `UnitTypeId.ROACHBURROWED`, so they fall out of `army.types` squads
+    automatically until they surface again.
+    """
+
+    def routine(ctx: "BotContext") -> None:
+        if UpgradeId.BURROW not in ctx.bot.state.upgrades:
+            return
+
+        for roach in ctx.bot.units(UnitTypeId.ROACH):
+            if roach.health_percentage >= _ROACH_REGEN_BURROW_BELOW:
+                continue
+            ctx.bot.register_behavior(
+                UseAbility(AbilityId.BURROWDOWN_ROACH, roach)
+            )
+
+        for roach in ctx.bot.units(UnitTypeId.ROACHBURROWED):
+            if roach.health_percentage < _ROACH_REGEN_UNBURROW_AT:
+                continue
+            ctx.bot.register_behavior(UseAbility(AbilityId.BURROWUP_ROACH, roach))
+
+    return routine
+
+
 def dig_in_swarm_hosts() -> CombatRoutine:
     """Park Swarm Hosts at a forward point per owned base and let Spawn
     Locusts do the work - no squad clustering, no AMove-into-melee, and

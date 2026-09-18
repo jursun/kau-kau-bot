@@ -23,12 +23,14 @@ from ares.behaviors.combat.individual import (
     KeepUnitSafe,
     MoveToSafeTarget,
     ShootTargetInRange,
+    UseAbility,
 )
 from ares.consts import UnitRole
 from ares.managers.squad_manager import UnitSquad
 from cython_extensions import cy_distance_to
 from sc2.ids.ability_id import AbilityId
 from sc2.ids.unit_typeid import UnitTypeId
+from sc2.ids.upgrade_id import UpgradeId
 from sc2.position import Point2
 
 from bot.core.context import BotContext
@@ -1238,6 +1240,70 @@ def test_nudge_idle_army_skips_mustering_and_drop_load() -> None:
     combat.nudge_idle_army(interval_s=0.0)(ctx)
 
     mustering.attack.assert_not_called()
+
+
+def test_regen_burrow_roaches_burrows_below_25_percent() -> None:
+    ctx = _ctx()
+    ctx.bot.state.upgrades = {UpgradeId.BURROW}
+    hurt = _unit(1)
+    hurt.health_percentage = 0.24
+    healthy = _unit(2)
+    healthy.health_percentage = 0.25
+
+    def _units(unit_type):
+        if unit_type == UnitTypeId.ROACH:
+            return [hurt, healthy]
+        if unit_type == UnitTypeId.ROACHBURROWED:
+            return []
+        return []
+
+    ctx.bot.units = MagicMock(side_effect=_units)
+
+    combat.regen_burrow_roaches()(ctx)
+
+    registered = [c.args[0] for c in ctx.bot.register_behavior.call_args_list]
+    assert len(registered) == 1
+    assert isinstance(registered[0], UseAbility)
+    assert registered[0].ability == AbilityId.BURROWDOWN_ROACH
+    assert registered[0].unit is hurt
+
+
+def test_regen_burrow_roaches_unburrows_at_full_health() -> None:
+    ctx = _ctx()
+    ctx.bot.state.upgrades = {UpgradeId.BURROW}
+    full = _unit(1)
+    full.health_percentage = 1.0
+    healing = _unit(2)
+    healing.health_percentage = 0.99
+
+    def _units(unit_type):
+        if unit_type == UnitTypeId.ROACH:
+            return []
+        if unit_type == UnitTypeId.ROACHBURROWED:
+            return [full, healing]
+        return []
+
+    ctx.bot.units = MagicMock(side_effect=_units)
+
+    combat.regen_burrow_roaches()(ctx)
+
+    registered = [c.args[0] for c in ctx.bot.register_behavior.call_args_list]
+    assert len(registered) == 1
+    assert isinstance(registered[0], UseAbility)
+    assert registered[0].ability == AbilityId.BURROWUP_ROACH
+    assert registered[0].unit is full
+
+
+def test_regen_burrow_roaches_noop_without_burrow_upgrade() -> None:
+    ctx = _ctx()
+    ctx.bot.state.upgrades = set()
+    hurt = _unit(1)
+    hurt.health_percentage = 0.1
+    ctx.bot.units = MagicMock(return_value=[hurt])
+
+    combat.regen_burrow_roaches()(ctx)
+
+    ctx.bot.register_behavior.assert_not_called()
 
 
 if __name__ == "__main__":
