@@ -2,6 +2,7 @@
 
 from bot.behaviors.zerg.build_macro_hatch import BuildMacroHatch
 from bot.behaviors.zerg.build_spore_crawler import BuildSporeCrawler
+from bot.behaviors.zerg.build_zerg_structure import BuildZergStructure
 from bot.behaviors.zerg.expand_with_persistent_builder import (
     ExpandWithPersistentBuilder,
 )
@@ -17,6 +18,7 @@ from bot.behaviors.zerg.upgrade_slots import UpgradeSlots, count_pending_upgrade
 __all__ = [
     "BuildMacroHatch",
     "BuildSporeCrawler",
+    "BuildZergStructure",
     "ExpandWithPersistentBuilder",
     "ForwardCrawlerWave",
     "InjectLarva",

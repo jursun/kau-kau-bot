@@ -46,11 +46,11 @@ line), opening at 4:30 with a 15s missing-base recheck.
 (Glial/Burrow sit ahead of Claws on the upgrade list, so that also
 keeps Pit from sniping the Glial gas bank) and sits below the upgrade
 steps in `macro_steps`. `z.tech_up(SPIRE)` stays Lair-gated + air-scout
-only - `_SEQUENCE`'s own "lair" entry is what actually morphs Lair;
-without those gates, `TechUp` would happily morph Lair itself the moment
-it's economically able to (it walks prerequisites and morphs whatever's
-missing along the way), well ahead of where the scripted sequence wants
-it.
+only; both Pit and Spire place via `BuildZergStructure` (not ares
+`BuildStructure`/`request_zerg_placement`, which stuck a Spire Drone in
+main while Voidrays were on the map). Lair itself stays `_SEQUENCE`-
+owned — without those gates, `TechUp` would happily morph Lair itself
+the moment it's economically able to.
 `_scripted_gas_scaling` replaces `c.gas_buildings()` outright rather than
 just being re-gated: after 5:00 it grows the gas target by 1 every 20s
 until capped at 8 (`economy.max_gas` is raised to match, so the Stage 1

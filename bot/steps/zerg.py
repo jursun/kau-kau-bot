@@ -17,6 +17,7 @@ from sc2.position import Point2
 from bot.behaviors.zerg import (
     BuildMacroHatch,
     BuildSporeCrawler,
+    BuildZergStructure,
     ForwardCrawlerWave,
     InjectLarva,
     MorphOverseers,
@@ -408,23 +409,28 @@ def overseers(
 
 
 def tech_up(desired_tech: UnitTypeId, gate: Gate = _always) -> MacroStep:
-    """Tech toward a structure whose prerequisite chain `TechUp` understands
-    (e.g. Infestation Pit / Spire, both of which need Lair first) - handles
-    the Hatchery->Lair morph internally, so no separate Lair step is needed.
+    """Tech toward a structure whose prerequisite chain needs Lair/Hive.
 
-    `common.structure()` can't be used for this: `BuildStructure` (which it
-    wraps) declines outright if a prerequisite is missing rather than
-    building it - `LAIR`/`HIVE` aren't even in ares' own
-    `STRUCTURE_TO_BUILDING_SIZE` dict, so it categorically cannot build
-    them. `TechUp` walks `UNIT_TECH_REQUIREMENT` itself and morphs
-    whatever's missing along the way (Lair included) before attempting
-    `desired_tech`.
+    Hatchery→Lair / Lair→Hive morphs still go through ares `TechUp`.
+    Placeable buildings (Spire, Infestation Pit, …) use `BuildZergStructure`
+    instead of ares `BuildStructure`: the Zerg path of `BuildStructure` is
+    `request_zerg_placement`, which leaks forever and parks Drones on
+    unreachable spots — confirmed live for Spire (commanded twice vs
+    Voidrays, never started, Drone stuck in main).
     """
 
     def step(ctx: "BotContext"):
         if not gate(ctx):
             return None
-        return TechUp(desired_tech=desired_tech, base_location=ctx.production_location)
+        if desired_tech in {UnitTypeId.LAIR, UnitTypeId.HIVE}:
+            return TechUp(
+                desired_tech=desired_tech, base_location=ctx.production_location
+            )
+        return BuildZergStructure(
+            base_location=ctx.production_location,
+            structure_id=desired_tech,
+            to_count=1,
+        )
 
     return step
 
