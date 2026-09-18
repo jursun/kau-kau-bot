@@ -27,6 +27,10 @@ Each takes the same parameters:
     --opponent RACE     Force a specific opponent race (Terran/Zerg/Protoss)
                         instead of a tier's random/all pick — targeted
                         testing (e.g. Quick against one known-tricky race).
+    --kill-workers SPEC Stress-test opening resilience: debug-kill workers
+                        at scripted times, e.g. "45:2,120:5" loses 2 workers
+                        at 0:45 then 5 more at 2:00. See
+                        scripts/harness/scenarios.py. Omit for a normal run.
 
 Always stepped (Realtime: False) with the FastWindow corner client
 (FastWindow: True) for the quickest possible execution — there is no
@@ -69,6 +73,10 @@ from run import (  # noqa: E402
     resolve_map,
     resolve_map_list,
     run_local_game,
+)
+from scripts.harness.scenarios import (  # noqa: E402
+    attach_worker_loss_scenario,
+    parse_worker_loss_spec,
 )
 from scripts.harness.smoke_common import (  # noqa: E402
     SmokeSettings,
@@ -204,12 +212,15 @@ def _play_one(
     metrics_attr: str | None,
     leave: int | None,
     local_cfg: dict | None,
+    kill_workers: str | None = None,
 ) -> GameRow:
     logger.info(
         f"===== {tier.name.upper()} {settings.build or '(no build forced)'} "
         f"vs {opponent.name} {tier.difficulty.name} on {map_name} ====="
     )
     bot = build_smoke_bot(validate, settings)
+    if kill_workers:
+        attach_worker_loss_scenario(bot, parse_worker_loss_spec(kill_workers))
     metrics_box: dict[str, Any] = {}
 
     if metrics_attr:
@@ -387,6 +398,16 @@ def add_tier_args(parser: argparse.ArgumentParser, tier: TierSpec) -> None:
         help="Attach the build's rush validator (report at each game end).",
     )
     parser.add_argument(
+        "--kill-workers",
+        default=None,
+        metavar="SPEC",
+        help=(
+            'Stress-test opening resilience: debug-kill workers at scripted '
+            'times, e.g. "45:2,120:5" loses 2 workers at 0:45 then 5 more '
+            "at 2:00. See scripts/harness/scenarios.py. Omit for a normal run."
+        ),
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=None,
@@ -462,6 +483,7 @@ def run_tier(tier: TierSpec, argv: list[str] | None = None) -> int:
                 metrics_attr=args.metrics,
                 leave=args.leave,
                 local_cfg=local_cfg,
+                kill_workers=args.kill_workers,
             )
         )
 
