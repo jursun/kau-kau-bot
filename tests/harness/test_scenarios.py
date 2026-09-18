@@ -8,6 +8,7 @@ unit`, the same style `tests/validators/_fakes.py` uses elsewhere.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from sc2.position import Point2
@@ -42,10 +43,30 @@ def test_parse_worker_loss_spec_rejects_a_malformed_chunk() -> None:
         parse_worker_loss_spec("45")
 
 
+def test_parse_worker_loss_spec_defaults_target_to_closest() -> None:
+    events = parse_worker_loss_spec("45:2")
+
+    assert events == (WorkerLossEvent(at_time=45.0, count=2, target="closest"),)
+
+
+def test_parse_worker_loss_spec_accepts_an_explicit_gas_target() -> None:
+    events = parse_worker_loss_spec("90:3:gas")
+
+    assert events == (WorkerLossEvent(at_time=90.0, count=3, target="gas"),)
+
+
+def test_parse_worker_loss_spec_rejects_an_unknown_target() -> None:
+    with pytest.raises(ValueError):
+        parse_worker_loss_spec("90:3:scv")
+
+
 class _FakeUnits(list):
     @property
     def tags(self) -> list[int]:
         return [u.tag for u in self]
+
+    def take(self, n: int) -> "_FakeUnits":
+        return _FakeUnits(self[:n])
 
 
 class _FakeWorker:
@@ -55,12 +76,16 @@ class _FakeWorker:
 
 
 class _FakeWorkers(list):
-    """Stands in for `BotAI.workers`: `.closest_n_units` only, since that's
-    all the scenario reads."""
+    """Stands in for `BotAI.workers`: `.closest_n_units`/`.tags_in`, since
+    that's all the scenario reads."""
 
     def closest_n_units(self, position: Point2, n: int) -> _FakeUnits:
         by_distance = sorted(self, key=lambda u: u.position.distance_to(position))
         return _FakeUnits(by_distance[:n])
+
+    def tags_in(self, tags) -> _FakeUnits:
+        tags = set(tags)
+        return _FakeUnits(u for u in self if u.tag in tags)
 
 
 class _FakeClient:
@@ -79,13 +104,19 @@ class _FakeClient:
 
 
 class _FakeBot:
-    def __init__(self, worker_count: int):
+    def __init__(self, worker_count: int, gas_worker_tags: tuple[int, ...] = ()):
         self.time = 0.0
         self.start_location = Point2((0.0, 0.0))
         self.workers = _FakeWorkers(
             _FakeWorker(i, Point2((float(i), 0.0))) for i in range(worker_count)
         )
         self.client = _FakeClient(self.workers)
+        # `get_worker_to_vespene_dict` is a `@property` on the real
+        # `ManagerMediator`, not a method - match that shape here so a
+        # `_victims` regression to calling it would fail this fake too.
+        self.mediator = SimpleNamespace(
+            get_worker_to_vespene_dict={t: 999 for t in gas_worker_tags}
+        )
         self.on_step_calls: list[int] = []
 
         async def on_step(iteration: int) -> None:
@@ -154,3 +185,27 @@ def test_no_workers_left_logs_and_does_not_crash() -> None:
     _run(bot.on_step(0))  # should not raise
 
     assert bot.client.kill_calls == []
+
+
+def test_gas_target_kills_only_workers_assigned_to_a_geyser() -> None:
+    """Workers 0/1 are on gas (closest to home too - a "closest" target
+    would also grab them) but 7/8/9, far from home, are the actual gas
+    trio; only the "gas" target should find them via the geyser dict."""
+    bot = _FakeBot(worker_count=10, gas_worker_tags=(7, 8, 9))
+    attach_worker_loss_scenario(bot, (WorkerLossEvent(at_time=90.0, count=3, target="gas"),))
+
+    bot.time = 90.0
+    _run(bot.on_step(0))
+
+    assert bot.client.kill_calls == [[7, 8, 9]]
+
+
+def test_gas_target_with_no_gas_workers_logs_and_does_not_crash() -> None:
+    bot = _FakeBot(worker_count=6, gas_worker_tags=())
+    attach_worker_loss_scenario(bot, (WorkerLossEvent(at_time=10.0, count=3, target="gas"),))
+
+    bot.time = 10.0
+    _run(bot.on_step(0))  # should not raise
+
+    assert bot.client.kill_calls == []
+    assert len(bot.workers) == 6

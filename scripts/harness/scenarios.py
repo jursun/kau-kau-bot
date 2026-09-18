@@ -16,42 +16,66 @@ from typing import Any
 
 from loguru import logger
 
+_TARGETS: frozenset[str] = frozenset({"closest", "gas"})
+
 
 @dataclass(frozen=True)
 class WorkerLossEvent:
     at_time: float
     count: int
+    target: str = "closest"
+    """Which workers to kill: "closest" (default) picks the `count` workers
+    nearest `bot.start_location` - where a real mineral-line runby lands.
+    "gas" instead picks from workers ares' `ResourceManager` currently has
+    assigned to a geyser (`mediator.get_worker_to_vespene_dict`) - for
+    testing a harass that specifically snipes gas rather than the whole
+    mineral line."""
 
 
 def parse_worker_loss_spec(spec: str) -> tuple[WorkerLossEvent, ...]:
-    """Parse "TIME:COUNT[,TIME:COUNT...]" (seconds, worker count).
+    """Parse "TIME:COUNT[:TARGET][,TIME:COUNT[:TARGET]...]" (seconds, worker
+    count, optional "closest"/"gas" - defaults to "closest").
 
-    e.g. "45:2,120:5" -> lose 2 workers at 0:45, then 5 more at 2:00.
-    Events are returned sorted by time regardless of input order, since
-    `attach_worker_loss_scenario` fires them in that order.
+    e.g. "45:2,90:3:gas" -> lose 2 workers closest to home at 0:45, then the
+    3 workers on gas at 1:30. Events are returned sorted by time regardless
+    of input order, since `attach_worker_loss_scenario` fires them in order.
     """
     events = []
     for chunk in spec.split(","):
         chunk = chunk.strip()
         if not chunk:
             continue
-        time_str, _, count_str = chunk.partition(":")
-        if not count_str:
+        parts = chunk.split(":")
+        if len(parts) not in (2, 3):
             raise ValueError(
-                f"Bad worker-loss event {chunk!r}, expected TIME:COUNT"
+                f"Bad worker-loss event {chunk!r}, expected TIME:COUNT[:TARGET]"
             )
-        events.append(WorkerLossEvent(at_time=float(time_str), count=int(count_str)))
+        time_str, count_str, *rest = parts
+        target = rest[0] if rest else "closest"
+        if target not in _TARGETS:
+            raise ValueError(
+                f"Bad worker-loss target {target!r} in {chunk!r}, "
+                f"expected one of {sorted(_TARGETS)}"
+            )
+        events.append(
+            WorkerLossEvent(at_time=float(time_str), count=int(count_str), target=target)
+        )
     return tuple(sorted(events, key=lambda e: e.at_time))
+
+
+def _victims(bot: Any, event: WorkerLossEvent) -> Any:
+    if event.target == "gas":
+        # `get_worker_to_vespene_dict` is a `@property` on ManagerMediator,
+        # not a method - no call parens.
+        gas_tags = set(bot.mediator.get_worker_to_vespene_dict.keys())
+        return bot.workers.tags_in(gas_tags).take(event.count)
+    return bot.workers.closest_n_units(bot.start_location, event.count)
 
 
 def attach_worker_loss_scenario(bot: Any, events: tuple[WorkerLossEvent, ...]) -> None:
     """Wrap `bot.on_step` to debug-kill `count` workers the first frame
     `bot.time >= at_time`, once per event, then leave the build to react on
-    its own from there.
-
-    Victims are the workers closest to `bot.start_location` - where a real
-    mineral-line runby lands - rather than an arbitrary/oldest pick, which
-    could grab a build-order scout instead of an actual gatherer.
+    its own from there. See `WorkerLossEvent.target` for victim selection.
     """
     if not events:
         return
@@ -62,17 +86,18 @@ def attach_worker_loss_scenario(bot: Any, events: tuple[WorkerLossEvent, ...]) -
     async def on_step_with_worker_loss(iteration: int) -> None:
         while pending and bot.time >= pending[0].at_time:
             event = pending.pop(0)
-            victims = bot.workers.closest_n_units(bot.start_location, event.count)
+            victims = _victims(bot, event)
             if not victims:
                 logger.warning(
-                    f"Worker-loss scenario: no workers left to kill "
-                    f"(wanted {event.count} at {event.at_time}s)"
+                    f"Worker-loss scenario: no {event.target!r} workers to "
+                    f"kill (wanted {event.count} at {event.at_time}s)"
                 )
                 continue
             await bot.client.debug_kill_unit(victims.tags)
             logger.info(
-                f"Worker-loss scenario: killed {len(victims)} workers at "
-                f"t={bot.time:.1f}s (requested {event.count} at {event.at_time}s)"
+                f"Worker-loss scenario: killed {len(victims)} {event.target!r} "
+                f"workers at t={bot.time:.1f}s (requested {event.count} at "
+                f"{event.at_time}s)"
             )
         await original_on_step(iteration)
 

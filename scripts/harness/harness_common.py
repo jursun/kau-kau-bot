@@ -28,9 +28,11 @@ Each takes the same parameters:
                         instead of a tier's random/all pick — targeted
                         testing (e.g. Quick against one known-tricky race).
     --kill-workers SPEC Stress-test opening resilience: debug-kill workers
-                        at scripted times, e.g. "45:2,120:5" loses 2 workers
-                        at 0:45 then 5 more at 2:00. See
-                        scripts/harness/scenarios.py. Omit for a normal run.
+                        at scripted times, e.g. "45:2,90:3:gas" loses 2
+                        workers closest to home at 0:45, then the 3 workers
+                        on gas at 1:30 ("closest"/"gas", default "closest").
+                        See scripts/harness/scenarios.py. Omit for a normal
+                        run.
 
 Always stepped (Realtime: False) with the FastWindow corner client
 (FastWindow: True) for the quickest possible execution — there is no
@@ -403,8 +405,10 @@ def add_tier_args(parser: argparse.ArgumentParser, tier: TierSpec) -> None:
         metavar="SPEC",
         help=(
             'Stress-test opening resilience: debug-kill workers at scripted '
-            'times, e.g. "45:2,120:5" loses 2 workers at 0:45 then 5 more '
-            "at 2:00. See scripts/harness/scenarios.py. Omit for a normal run."
+            'times, e.g. "45:2,90:3:gas" loses 2 workers closest to home at '
+            '0:45, then the 3 workers on gas at 1:30 ("closest"/"gas", '
+            "default \"closest\"). See scripts/harness/scenarios.py. Omit "
+            "for a normal run."
         ),
     )
     parser.add_argument(
