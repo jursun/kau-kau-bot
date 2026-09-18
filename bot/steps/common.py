@@ -473,12 +473,23 @@ def gas_buildings(gate: Gate = _always) -> MacroStep:
     return step
 
 
-def upgrades(gate: Gate = _always) -> MacroStep:
+def upgrades(gate: Gate = _always, prioritize: bool = False) -> MacroStep:
+    """`prioritize=True` holds MacroPlan spend (minerals/gas both, not just
+    whichever resource the upgrade needs) once the next upgrade is
+    researchable but not yet affordable - see `UpgradeController.prioritize`'s
+    own docstring. Without it, a cheap, frequent purchase lower in the same
+    `macro_steps` list (Roach production's 25 gas a pop) can keep draining
+    the bank in small bites forever, so the 100-gas threshold for something
+    like Glial Reconstitution never gets reached - confirmed live: Glial
+    stuck at "never (shortage)" for 100+ seconds with `prioritize=False`."""
+
     def step(ctx: "BotContext"):
         if not gate(ctx) or not ctx.build.army.upgrades:
             return None
         return UpgradeController(
-            list(ctx.build.army.upgrades), base_location=ctx.production_location
+            list(ctx.build.army.upgrades),
+            base_location=ctx.production_location,
+            prioritize=prioritize,
         )
 
     return step

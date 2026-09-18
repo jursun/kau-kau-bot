@@ -21,9 +21,11 @@ from ares.behaviors.macro import (
     ExpansionController,
     MacroPlan,
     SpawnController,
+    UpgradeController,
 )
 from ares.consts import ID, TARGET
 from sc2.ids.unit_typeid import UnitTypeId
+from sc2.ids.upgrade_id import UpgradeId
 from sc2.position import Point2
 
 from bot.behaviors.zerg import (
@@ -58,6 +60,35 @@ def _ctx(supply_workers: float = 10.0, supply_army: float = 10.0) -> BotContext:
     build.army.comp = {UnitTypeId.ZERGLING: {"proportion": 1.0, "priority": 0}}
 
     return BotContext(bot=bot, build=build, state=RunState())
+
+
+# --- common.upgrades --------------------------------------------------
+
+
+def test_upgrades_step_defaults_to_not_prioritizing_spend() -> None:
+    ctx = _ctx()
+    ctx.build.army.upgrades = (UpgradeId.GLIALRECONSTITUTION,)
+
+    controller = c.upgrades()(ctx)
+
+    assert isinstance(controller, UpgradeController)
+    assert controller.prioritize is False
+
+
+def test_upgrades_step_forwards_prioritize_to_upgrade_controller() -> None:
+    """Regression test: `prioritize=True` must reach the real
+    `UpgradeController`, not just get accepted and dropped - see
+    `common.upgrades`'s own docstring for why a build needs this to stop a
+    cheap, frequent purchase lower in `macro_steps` (Roach production)
+    from perpetually draining the bank an expensive upgrade needs."""
+    ctx = _ctx()
+    ctx.build.army.upgrades = (UpgradeId.GLIALRECONSTITUTION,)
+
+    controller = c.upgrades(prioritize=True)(ctx)
+
+    assert isinstance(controller, UpgradeController)
+    assert controller.prioritize is True
+    assert controller.upgrade_list == [UpgradeId.GLIALRECONSTITUTION]
 
 
 def test_split_production_favors_economy_before_gate() -> None:

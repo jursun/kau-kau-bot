@@ -118,11 +118,16 @@ After the opening, Glial → Burrow → Tunneling Claws claim gas before
 Infestation Pit (Swarm Host — cheap, passive map-control damage from
 Locusts, meant to be dug in at each base rather than committed to a
 fight). Spire (Corruptor escort) still waits until the enemy has shown
-air. From 5:00, army vs upgrade spend is supply-based
-(`intel.army.army_behind_on_supply`): behind on army supply → more units
-/ fewer concurrent upgrades; ahead or even → tech focus.
-`z.spawn_macro_army` handles the composition switch between these phases
-— see its own docstring for why a static comp dict alone would stall
+air. Once Lair is commanded, `_reserve_upgrade_bank` always gets first
+look at the frame's spend, ahead of both `SpawnController`s below it,
+so the next upgrade's bank actually accumulates instead of leaking to
+army production a few gas at a time - see its own docstring for the
+live-confirmed bug this replaces. Concurrent-upgrade slot count and
+army-vs-tech spend priority are supply-based (`intel.army.
+army_behind_on_supply`): behind on army supply → more units / fewer
+concurrent upgrades and army wins ties; ahead or even → tech focus.
+`z.spawn_macro_army` handles the composition switch between phases —
+see its own docstring for why a static comp dict alone would stall
 production in the Roach-only window. Counter comps from scouting are a
 placeholder; baseline is Roach + Swarm Host (+ Corruptor on air).
 
@@ -559,55 +564,53 @@ def _desired_upgrades(ctx) -> list[UpgradeId]:
     return upgrades
 
 
-def _upgrades_before_five(ctx):
-    """Pre-5:00: Glial/Burrow/Claws once Lair is commanded (unchanged)."""
-    if ctx.bot.time >= _POST_FIVE:
+def _reserve_upgrade_bank(ctx):
+    """Whole game, once Lair is commanded: hold the bank for whichever
+    upgrade is next, so we're always banking enough to keep at least one
+    upgrade going rather than leaving it to however much gas happens to be
+    left over once everything else has taken its cut.
+
+    Must sit *above* `_spawn_macro_army`/`_split_production_after_opening`
+    in `macro_steps` - both include their own `SpawnController`, which has
+    no idea an upgrade wants the gas. Below them (the original placement,
+    pre-5:00 only), the reservation was routinely bypassed the moment
+    `_split_production_after_opening` claimed the frame first: confirmed
+    live via a temporary diagnostic that vespene sawtoothed 19 -> 81 -> 8 ->
+    100 -> 37 for 100+ seconds post-5:00, climbing while this check held
+    but getting drained back down every time `_split_production_after_
+    opening`'s own Roach spend won the frame instead - Glial Reconstitution
+    itself sat in "shortage" that whole stretch. Moving the check up here
+    (ahead of everything that spends army-comp gas) means nothing below it
+    can touch the bank until this has had first look, every frame.
+
+    `prioritize` (see `UpgradeSlots`'s own docstring) is `not behind`: while
+    genuinely behind on army supply, this still starts an upgrade that's
+    already affordable outright (never a downside - `UpgradeController`
+    checks affordability before `prioritize`), but won't *hold* the bank
+    against `army` below - a deliberate call to favor defense over teching
+    when actually behind, not a rule this reservation should override.
+    """
+    if not _lair_commanded(ctx):
         return None
-    return c.upgrades(gate=_lair_commanded)(ctx)
+    behind = intel_army.army_behind_on_supply(ctx)
+    return UpgradeSlots(
+        upgrade_list=_desired_upgrades(ctx),
+        base_location=ctx.production_location,
+        max_slots=_upgrade_slot_target(ctx),
+        prioritize=not behind,
+    )
 
 
-def _army_before_five(ctx):
-    if ctx.bot.time >= _POST_FIVE:
-        return None
+def _spawn_macro_army(ctx):
+    """Actual Roach/Swarm Host production, whole game. Sits below
+    `_reserve_upgrade_bank` (that reservation always gets first look) and
+    below `_split_production_after_opening` (economy still gets its own
+    priority there) - this is what fires whenever neither of those had
+    anything to spend on this frame.
+    """
     return z.spawn_macro_army(
         gate=gates.structure_started(UnitTypeId.ROACHWARREN)
     )(ctx)
-
-
-def _post_five_army_tech(ctx):
-    """From 5:00: nest army + UpgradeSlots by scouted supply posture."""
-    if ctx.bot.time < _POST_FIVE:
-        return None
-    if not _lair_commanded(ctx):
-        # Still protect Lair gas bank before morph is commanded.
-        army = z.spawn_macro_army(
-            gate=gates.structure_started(UnitTypeId.ROACHWARREN)
-        )(ctx)
-        return army
-
-    behind = intel_army.army_behind_on_supply(ctx)
-    slots = _upgrade_slot_target(ctx)
-    prioritize = _has_extra_upgrade_budget(ctx)
-    upgrades = UpgradeSlots(
-        upgrade_list=_desired_upgrades(ctx),
-        base_location=ctx.production_location,
-        max_slots=slots,
-        prioritize=prioritize,
-    )
-    army = z.spawn_macro_army(
-        gate=gates.structure_started(UnitTypeId.ROACHWARREN)
-    )(ctx)
-    if army is None:
-        return upgrades
-
-    plan = MacroPlan()
-    if behind:
-        plan.add(army)
-        plan.add(upgrades)
-    else:
-        plan.add(upgrades)
-        plan.add(army)
-    return plan
 
 
 def _split_production_after_opening(ctx):
@@ -1094,7 +1097,8 @@ BUILD = BuildDefinition(
         # Overlord around 0:44 otherwise).
         c.auto_supply(gate=_scripted_overlords_exhausted),
         # Spire only - Pit/Hive sit below Tunneling Claws (see after
-        # `_post_five_army_tech`). Lair itself stays `_SEQUENCE`-owned.
+        # `_reserve_upgrade_bank`/`_spawn_macro_army`). Lair itself stays
+        # `_SEQUENCE`-owned.
         z.tech_up(
             UnitTypeId.SPIRE,
             gate=gates.all_of(
@@ -1108,15 +1112,15 @@ BUILD = BuildDefinition(
         # Replaces the generic `c.gas_buildings()` continuation outright:
         # see `_scripted_gas_scaling`'s own docstring for the growth rule.
         _scripted_gas_scaling,
-        # Pre-5:00 upgrades (Glial/Burrow/Claws) once Lair is commanded;
-        # from 5:00 `_post_five_army_tech` owns upgrade concurrency + army.
-        _upgrades_before_five,
+        # Whole game once Lair is commanded (Glial/Burrow/Claws, then the
+        # rest of `Army.upgrades`) - see its own docstring for why this
+        # must outrank both of the SpawnControllers below.
+        _reserve_upgrade_bank,
         # Not `c.split_production(gate=gates.after_wave(1))` directly - see
         # `_split_production_after_opening`'s own comment for why that
         # doesn't actually gate anything.
         _split_production_after_opening,
-        _army_before_five,
-        _post_five_army_tech,
+        _spawn_macro_army,
         # After Tunneling Claws has started (implies Glial/Ground Carapace
         # 1/Burrow already pending) — was above upgrades and ate the Glial
         # 100/100 bank.

@@ -1,4 +1,4 @@
-"""Unit tests for Macro Zerg post-5:00 posture helpers and UpgradeSlots.
+"""Unit tests for Macro Zerg's army-vs-upgrade posture helpers and UpgradeSlots.
 
     python -m tests.test_macro_zerg_posture
 """
@@ -97,12 +97,13 @@ def test_count_pending_upgrades() -> None:
     )
 
 
-def test_post_five_orders_army_first_when_behind() -> None:
-    ctx = _ctx(supply_army=2, time=310.0)
-    enemy = MagicMock()
-    enemy.type_id = UnitTypeId.ZEALOT
-    enemy.is_flying = False
-    ctx.bot.mediator = SimpleNamespace(get_cached_enemy_army=[enemy, enemy, enemy])
+def _army_ready_ctx(**bot_attrs) -> BotContext:
+    """`_ctx()` plus enough state that `z.spawn_macro_army` (inside
+    `_spawn_macro_army`) returns a real `SpawnController` (Lair/Roach
+    Warren done, Roach tech-ready) - shared by the tests below, though
+    `_reserve_upgrade_bank` itself no longer depends on it (it returns the
+    `UpgradeSlots` behavior directly, not nested inside a combined plan)."""
+    ctx = _ctx(time=310.0, **bot_attrs)
 
     def structures(unit_type):
         amount = 1 if unit_type in (UnitTypeId.LAIR, UnitTypeId.ROACHWARREN) else 0
@@ -119,11 +120,56 @@ def test_post_five_orders_army_first_when_behind() -> None:
     ctx.bot.tech_requirement_progress = MagicMock(
         side_effect=lambda t: 1.0 if t == UnitTypeId.ROACH else 0.0
     )
-    plan = mz._post_five_army_tech(ctx)
-    assert plan is not None
-    assert len(plan.macros) == 2
-    assert plan.macros[0].__class__.__name__ == "SpawnController"
-    assert isinstance(plan.macros[1], UpgradeSlots)
+    return ctx
+
+
+def _with_enemy_army(ctx: BotContext, count: int = 3) -> None:
+    enemy = MagicMock()
+    enemy.type_id = UnitTypeId.ZEALOT
+    enemy.is_flying = False
+    ctx.bot.mediator = SimpleNamespace(get_cached_enemy_army=[enemy] * count)
+
+
+def test_reserve_upgrade_bank_returns_none_before_lair_commanded() -> None:
+    """Protects Lair's own gas bank - `_SEQUENCE` owns the morph itself."""
+    ctx = _army_ready_ctx()
+    ctx.bot.structures = MagicMock(return_value=MagicMock(amount=0, ready=MagicMock(amount=0)))
+    ctx.bot.structure_pending = MagicMock(return_value=0)
+    ctx.bot.townhalls = []
+    assert mz._reserve_upgrade_bank(ctx) is None
+
+
+def test_reserve_upgrade_bank_holds_when_not_behind() -> None:
+    """Regression test for "upgrades should keep rolling": `UpgradeSlots`
+    must hold the bank (`prioritize=True`) once Lair is commanded and we're
+    not behind on army supply - see `_reserve_upgrade_bank`'s own docstring
+    for the live-confirmed bug this fixes (Glial Reconstitution stuck in
+    "shortage" for 100+ seconds because `_split_production_after_opening`'s
+    own Roach spend kept winning the frame before this reservation, sitting
+    lower in the old `macro_steps`, ever got a look)."""
+    ctx = _army_ready_ctx()  # default mediator: no visible enemy army
+    upgrades = mz._reserve_upgrade_bank(ctx)
+    assert isinstance(upgrades, UpgradeSlots)
+    assert upgrades.prioritize is True
+
+
+def test_reserve_upgrade_bank_does_not_hold_when_behind() -> None:
+    """While actually behind on army supply, this must not block army
+    spend below it - a deliberate call to favor defense over teching. It
+    still returns an `UpgradeSlots` (an already-affordable upgrade should
+    still start outright - `UpgradeController` checks affordability before
+    `prioritize`), just without the hold."""
+    ctx = _army_ready_ctx(supply_army=2)
+    _with_enemy_army(ctx)
+    upgrades = mz._reserve_upgrade_bank(ctx)
+    assert isinstance(upgrades, UpgradeSlots)
+    assert upgrades.prioritize is False
+
+
+def test_spawn_macro_army_returns_a_spawn_controller() -> None:
+    ctx = _army_ready_ctx()
+    army = mz._spawn_macro_army(ctx)
+    assert army.__class__.__name__ == "SpawnController"
 
 
 def test_overseers_step_fixed_count() -> None:
