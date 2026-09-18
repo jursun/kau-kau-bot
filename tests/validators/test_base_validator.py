@@ -11,6 +11,8 @@ needing a Stage 3/4/5 key (Tech Structures/Upgrades/Attack Waves) use
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from sc2.data import Race
 from sc2.game_data import Cost
 from sc2.ids.unit_typeid import UnitTypeId
@@ -601,6 +603,59 @@ def test_wave_records_our_supply_against_enemy_army_supply() -> None:
         r for r in result["Stage 5: Attack Waves"] if r.name == "Wave 1"
     )
     assert "supply us=10 vs enemy=8" in wave1_result.detail
+
+
+# ── Stage 6: Combat QA / Influence Parking opt-out ───────────────────────────
+
+
+def _unsafe_ground_mediator() -> SimpleNamespace:
+    """Flags every position as unsafe, regardless of `grid`/`position`."""
+    return SimpleNamespace(
+        get_ground_grid=object(),
+        is_position_safe=lambda **kwargs: False,
+        get_cached_enemy_army=[],
+    )
+
+
+def test_influence_parking_counts_frames_by_default() -> None:
+    ai = FakeAI(upgrades=())
+    ai.mediator = _unsafe_ground_mediator()
+    ai.ctx.attacking = [_FakeUnit(1)]
+    validator = MacroZergValidator(ai)
+    for frame in range(100):
+        ai.time = 60.0 + frame * 0.1
+        validator.on_step(0)
+
+    assert validator._influence_parking_frames == 100
+    result = validator.validate()
+    influence = next(
+        r for r in result["Stage 6: Combat QA"] if r.name == "Influence Parking"
+    )
+    assert influence.passed is False
+
+
+def test_ignore_influence_parking_flag_skips_tracking_and_reports_na() -> None:
+    """Macro Zerg's own combat routines deliberately stand units on bad
+    ground (`never_retreat`/`kite_types` - see `Combat.ignore_influence_
+    parking`'s own docstring), so this flag must both stop the frame
+    counter from ever incrementing and report the stage as passing rather
+    than just suppressing the FAIL after the fact."""
+    ai = FakeAI(upgrades=())
+    ai.mediator = _unsafe_ground_mediator()
+    ai.ctx.attacking = [_FakeUnit(1)]
+    ai.ctx.build.combat.ignore_influence_parking = True
+    validator = MacroZergValidator(ai)
+    for frame in range(100):
+        ai.time = 60.0 + frame * 0.1
+        validator.on_step(0)
+
+    assert validator._influence_parking_frames == 0
+    result = validator.validate()
+    influence = next(
+        r for r in result["Stage 6: Combat QA"] if r.name == "Influence Parking"
+    )
+    assert influence.passed is True
+    assert "n/a" in influence.detail
 
 
 def test_no_wave_ever_released_fails_stage_4() -> None:

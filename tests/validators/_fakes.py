@@ -112,6 +112,7 @@ class _FakeCtx:
                 wave1_min=wave1_min,
                 wave_growth=wave_growth,
                 wave_stage_label=wave_stage_label,
+                ignore_influence_parking=False,
             ),
             pool_deadline=pool_deadline,
             crew=crew,

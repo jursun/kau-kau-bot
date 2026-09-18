@@ -1032,6 +1032,10 @@ BUILD = BuildDefinition(
         wave1_min=1,
         wave_growth=1.15,
         wave_stage_label="Roach Pushes",
+        # Roach/Zergling stand and fight on bad ground on purpose (never_
+        # retreat/kite_types above) - see Combat.ignore_influence_parking's
+        # own docstring for the confirmed live false-positive this avoids.
+        ignore_influence_parking=True,
     ),
     on_step=_macro_zerg_on_step,
     on_unit_created=_macro_zerg_on_unit_created,

@@ -123,6 +123,19 @@ class Combat:
     sets this to "All-In Attack") without touching any other build's
     report. Defaults to the original, generic title every build had before
     that override existed."""
+    ignore_influence_parking: bool = False
+    """Skip the validator's "Influence Parking" Stage 6 check for this
+    build. That check's own premise is army parking on bad ground influence
+    *after retreat* - a real bug for a build whose combat routines flee
+    influence (`KeepGroupSafe`/`KeepUnitSafe`, the default `attack_squads()`
+    path), since a unit stuck there anyway means the retreat itself failed.
+    It doesn't apply to a build whose combat routines pass `attack_squads(
+    never_retreat=True)`/`kite_types=...` deliberately (Macro Zerg's Roach/
+    Zergling - see that call site's own comment): those units are *supposed*
+    to stand on bad ground and keep fighting rather than flee it, so every
+    frame of a real, sustained engagement reads as a "parking" violation -
+    confirmed live, a single Roach/Zergling engagement racked up hundreds of
+    flagged frames purely from units doing exactly what they were told to."""
 
 
 @dataclass(frozen=True)

@@ -654,13 +654,19 @@ class BaseValidator:
         the ground grid — the predicate KeepUnitSafe consults.
 
         Zerg hatcheries are usually `is_idle` while larva trains, so idle
-        townhall tracking is Terran/Protoss only (race-gated).
+        townhall tracking is Terran/Protoss only (race-gated). Influence
+        parking is skipped entirely for a build that sets `Combat.ignore_
+        influence_parking` - see that field's own docstring for why (in
+        short: it assumes the army retreats from bad ground, which isn't
+        true for every build's combat routines).
         """
         if self.time < self.SUPPLY_BLOCK_GRACE_PERIOD:
             return
         if self.ctx.build.race != Race.Zerg and intel_qa.idle_ready_townhalls(self.ai):
             self._idle_townhall_frames += 1
-        if intel_qa.units_parked_in_influence(self.ai):
+        if not self.ctx.build.combat.ignore_influence_parking and intel_qa.units_parked_in_influence(
+            self.ai
+        ):
             self._influence_parking_frames += 1
 
     def _validate_combat_qa(self) -> List[StepResult]:
@@ -681,14 +687,19 @@ class BaseValidator:
                 self._idle_townhall_frames < 50,
                 f"idle-townhall frames: {self._idle_townhall_frames}",
             )
-        return [
-            idle,
-            StepResult(
+        if self.ctx.build.combat.ignore_influence_parking:
+            influence = StepResult(
+                "Influence Parking",
+                True,
+                "n/a for this build (never_retreat/kite_types combat)",
+            )
+        else:
+            influence = StepResult(
                 "Influence Parking",
                 self._influence_parking_frames < 50,
                 f"influence-parking frames: {self._influence_parking_frames}",
-            ),
-        ]
+            )
+        return [idle, influence]
 
 
     def validate(self) -> Dict[str, List[StepResult]]:
