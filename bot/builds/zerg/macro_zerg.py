@@ -92,8 +92,9 @@ The "additional timings" the build order lists alongside the main sequence
 (gas worker counts, Queen inject/tumor, Zergling defend-base) aren't new
 mechanisms - they're the expected, already-verified behavior of existing
 machinery once this scripted pacing drives the game: `c.gas_workers`'s
-`Economy(workers_per_gas=3)` + `vespene_at_least(400)` pull-off (leaves 1
-per geyser so late-game never fully idles gas), `InjectLarva`,
+`Economy(workers_per_gas=3)` plus a one-shot early `vespene≥100` pull-off
+that ends the moment Metabolic Boost is commanded (opening Speed bank
+only — never a late-game throttle), `InjectLarva`,
 `_claim_natural_queen_tumor` below, and `combat.defend_with_zerglings` /
 `core.roles.SUPPORT_ROLES` respectively. Live-verify against them rather
 than re-implementing anything for them.
@@ -1164,13 +1165,19 @@ BUILD = BuildDefinition(
     on_unit_created=_macro_zerg_on_unit_created,
     always=(
         c.mining(),
-        # Throttle gas once we have a real buffer, but never empty every
-        # geyser: pull-off at 100 with when_pulled=0 confirmed live as a
-        # late-game stall (8 extractors done ~7:00, bank floated ≥100 while
-        # spend slowed → 35k minerals / 3.6k gas by leave, zero drones on
-        # gas). 400 still banks for the next upgrade/Hive; leave 1/geyser
-        # so income never fully stops.
-        c.gas_workers(pull_off=gates.vespene_at_least(400), when_pulled=1),
+        # Opening-only gas pull-off: empty the geyser while banking ~100 for
+        # Metabolic Boost, then resume 3/geyser for the rest of the game the
+        # moment Speed is commanded. A continuous `vespene≥100` pull-off
+        # confirmed live as a late-game stall (8 extractors, bank floated
+        # ≥100 → zero drones on gas).
+        c.gas_workers(
+            pull_off=gates.all_of(
+                gates.vespene_at_least(100),
+                gates.negate(
+                    gates.upgrade_started(UpgradeId.ZERGLINGMOVEMENTSPEED)
+                ),
+            ),
+        ),
         z.inject_larva(),
     ),
     macro_steps=(
