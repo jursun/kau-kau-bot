@@ -1323,10 +1323,15 @@ _ROACH_REGEN_UNBURROW_AT: float = 1.0
 def regen_burrow_roaches() -> CombatRoutine:
     """Burrow hurt Roaches to regenerate; unburrow at full health.
 
-    Requires Burrow researched. Surface Roaches under 25% HP burrow in place;
+    Requires Burrow researched. Surface Roaches under 25% HP burrow;
     `ROACHBURROWED` stay down until health is 100%, then unburrow to rejoin
-    combat. Registered after `attack_squads`/`defend_*` so the burrow/unburrow
-    command wins the frame over AMove/kite. Burrowed Roaches are
+    combat. With Tunneling Claws, burrowed Roaches also peel toward home on
+    the influence grid (`KeepUnitSafe` + `MoveToSafeTarget`) so they heal
+    at a safe distance instead of regenerating under the fight. Without
+    Claws they stay put (cannot move while burrowed).
+
+    Registered after `attack_squads`/`defend_*` so burrow/unburrow/retreat
+    wins the frame over AMove/kite. Burrowed Roaches are
     `UnitTypeId.ROACHBURROWED`, so they fall out of `army.types` squads
     automatically until they surface again.
     """
@@ -1342,10 +1347,23 @@ def regen_burrow_roaches() -> CombatRoutine:
                 UseAbility(AbilityId.BURROWDOWN_ROACH, roach)
             )
 
+        claws = UpgradeId.TUNNELINGCLAWS in ctx.bot.state.upgrades
+        grid = ctx.mediator.get_ground_grid if claws else None
+        home = ctx.production_location if claws else None
+
         for roach in ctx.bot.units(UnitTypeId.ROACHBURROWED):
-            if roach.health_percentage < _ROACH_REGEN_UNBURROW_AT:
+            if roach.health_percentage >= _ROACH_REGEN_UNBURROW_AT:
+                ctx.bot.register_behavior(
+                    UseAbility(AbilityId.BURROWUP_ROACH, roach)
+                )
                 continue
-            ctx.bot.register_behavior(UseAbility(AbilityId.BURROWUP_ROACH, roach))
+            if not claws:
+                continue
+            # Heal while relocating off the front — Claws allow burrowed move.
+            maneuver = CombatManeuver()
+            maneuver.add(KeepUnitSafe(unit=roach, grid=grid))
+            maneuver.add(MoveToSafeTarget(unit=roach, grid=grid, target=home))
+            ctx.bot.register_behavior(maneuver)
 
     return routine
 

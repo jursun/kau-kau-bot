@@ -139,7 +139,9 @@ enter that pipeline at all — see `combat.dig_in_swarm_hosts`/
 `combat.escort_corruptors` and `core.roles.SUPPORT_ROLES`. Home Zerglings
 stay on `ZERGLING_DEFENDER_ROLE` (`combat.defend_with_zerglings`); extras
 join the attack wave. Once Burrow is done, hurt Roaches (<25% HP) dig in
-via `combat.regen_burrow_roaches` until fully healed, then unburrow.
+via `combat.regen_burrow_roaches` until fully healed, then unburrow. With
+Tunneling Claws they also retreat toward home on the influence grid while
+burrowed so they heal at a safe distance.
 
 The starting Overlord is sent scouting from `bot.main.on_start` rather than
 through `core.roles.assign_on_created` — it exists before the game-start
@@ -1136,8 +1138,8 @@ BUILD = BuildDefinition(
                 kite_types=frozenset({UnitTypeId.ROACH}),
                 min_engage_range=_ROACH_MIN_ENGAGE_RANGE,
             ),
-            # After attack/defend so burrow/unburrow wins the frame; needs
-            # Burrow researched (Tunneling Claws is optional for regen).
+            # After attack/defend so burrow/unburrow/retreat wins the frame.
+            # Tunneling Claws: burrowed Roaches peel home while healing.
             combat.regen_burrow_roaches(),
             combat.dig_in_swarm_hosts(),
             combat.escort_corruptors(),

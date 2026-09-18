@@ -17,6 +17,7 @@ from __future__ import annotations
 import sys
 from unittest.mock import MagicMock, patch
 
+from ares.behaviors.combat import CombatManeuver
 from ares.behaviors.combat.group import AMoveGroup, KeepGroupSafe, StutterGroupForward
 from ares.behaviors.combat.individual import (
     AMove,
@@ -1292,6 +1293,52 @@ def test_regen_burrow_roaches_unburrows_at_full_health() -> None:
     assert isinstance(registered[0], UseAbility)
     assert registered[0].ability == AbilityId.BURROWUP_ROACH
     assert registered[0].unit is full
+
+
+def test_regen_burrow_roaches_retreats_while_healing_with_claws() -> None:
+    ctx = _ctx()
+    ctx.bot.state.upgrades = {UpgradeId.BURROW, UpgradeId.TUNNELINGCLAWS}
+    ctx.bot.start_location = Point2((10.0, 10.0))
+    healing = _unit(1, Point2((50.0, 50.0)))
+    healing.health_percentage = 0.5
+
+    def _units(unit_type):
+        if unit_type == UnitTypeId.ROACH:
+            return []
+        if unit_type == UnitTypeId.ROACHBURROWED:
+            return [healing]
+        return []
+
+    ctx.bot.units = MagicMock(side_effect=_units)
+
+    combat.regen_burrow_roaches()(ctx)
+
+    registered = ctx.bot.register_behavior.call_args.args[0]
+    assert isinstance(registered, CombatManeuver)
+    kinds = [type(b) for b in registered.micros]
+    assert KeepUnitSafe in kinds
+    assert MoveToSafeTarget in kinds
+    assert UseAbility not in kinds
+
+
+def test_regen_burrow_roaches_stays_put_without_claws_while_healing() -> None:
+    ctx = _ctx()
+    ctx.bot.state.upgrades = {UpgradeId.BURROW}
+    healing = _unit(1)
+    healing.health_percentage = 0.5
+
+    def _units(unit_type):
+        if unit_type == UnitTypeId.ROACH:
+            return []
+        if unit_type == UnitTypeId.ROACHBURROWED:
+            return [healing]
+        return []
+
+    ctx.bot.units = MagicMock(side_effect=_units)
+
+    combat.regen_burrow_roaches()(ctx)
+
+    ctx.bot.register_behavior.assert_not_called()
 
 
 def test_regen_burrow_roaches_noop_without_burrow_upgrade() -> None:
