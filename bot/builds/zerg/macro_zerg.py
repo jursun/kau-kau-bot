@@ -92,7 +92,8 @@ The "additional timings" the build order lists alongside the main sequence
 (gas worker counts, Queen inject/tumor, Zergling defend-base) aren't new
 mechanisms - they're the expected, already-verified behavior of existing
 machinery once this scripted pacing drives the game: `c.gas_workers`'s
-`Economy(workers_per_gas=3)` + `vespene_at_least(100)` pull-off, `InjectLarva`,
+`Economy(workers_per_gas=3)` + `vespene_at_least(400)` pull-off (leaves 1
+per geyser so late-game never fully idles gas), `InjectLarva`,
 `_claim_natural_queen_tumor` below, and `combat.defend_with_zerglings` /
 `core.roles.SUPPORT_ROLES` respectively. Live-verify against them rather
 than re-implementing anything for them.
@@ -1163,12 +1164,13 @@ BUILD = BuildDefinition(
     on_unit_created=_macro_zerg_on_unit_created,
     always=(
         c.mining(),
-        # Don't over-mine gas once there's a buffer to spend from: pulls off
-        # at 100 banked, and un-latches (resumes mining) once that's spent
-        # back down - a continuous throttle, not a one-time bank-and-forget
-        # (unlike a single all-in upgrade purchase, this build always has
-        # something gas-hungry queued: Roach, Swarm Host, Corruptor, upgrades).
-        c.gas_workers(pull_off=gates.vespene_at_least(100)),
+        # Throttle gas once we have a real buffer, but never empty every
+        # geyser: pull-off at 100 with when_pulled=0 confirmed live as a
+        # late-game stall (8 extractors done ~7:00, bank floated ≥100 while
+        # spend slowed → 35k minerals / 3.6k gas by leave, zero drones on
+        # gas). 400 still banks for the next upgrade/Hive; leave 1/geyser
+        # so income never fully stops.
+        c.gas_workers(pull_off=gates.vespene_at_least(400), when_pulled=1),
         z.inject_larva(),
     ),
     macro_steps=(
