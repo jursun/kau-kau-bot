@@ -155,6 +155,10 @@ class RunState:
     mustering_tags: set[int] = field(default_factory=set)
     """Attacking units still forming up at the rally point (see
     `bot.routines.combat.attack_squads`)."""
+    kite_peeling_tags: set[int] = field(default_factory=set)
+    """Unit tags currently backing off under `_kite_maneuver` hysteresis
+    (enter peel below `min_engage_range`, stay peeled until past
+    `resume_range`) - stops oscillate at the engage boundary."""
     defender_hold: dict[int, Point2] = field(default_factory=dict)
     """DEFENDING unit tag → sticky hold Point2 (matched to live holds by
     nearest, not list index — townhall iteration order is unstable)."""

@@ -1067,7 +1067,9 @@ def _macro_zerg_on_step(ctx) -> None:
 # but deliberately passed via `attack_squads`' `kite_types` (no influence
 # grid) rather than its `min_engage_range` alone - see that parameter's own
 # comment for why handing Roach the grid here would reintroduce the exact
-# "never engaged" bug `never_retreat` was added to fix.
+# "never engaged" bug `never_retreat` was added to fix. Peel hysteresis in
+# `_kite_maneuver` (resume at 4) stops the one-squad Move↔Shoot thrash at
+# the 3-range boundary.
 _ROACH_MIN_ENGAGE_RANGE: float = 3.0
 
 

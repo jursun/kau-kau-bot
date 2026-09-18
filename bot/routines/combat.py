@@ -434,6 +434,8 @@ def _kite_maneuver(
     min_engage_range: float,
     target,
     grid=None,
+    resume_range: float | None = None,
+    peeling: set[int] | None = None,
 ) -> CombatManeuver:
     """One unit's turn at `min_engage_range` kiting - see `attack_squads`.
 
@@ -441,26 +443,56 @@ def _kite_maneuver(
     Backs straight away from the nearest enemy(s) closer than
     `min_engage_range`; otherwise shoots the lowest-health enemy already in
     weapon range (`ShootTargetInRange`); otherwise advances on `target`.
+
+    When `peeling` is provided, enter peel below `min_engage_range` and stay
+    peeled until every in-range enemy is at least `resume_range` away
+    (defaults to `min_engage_range + 1`). Without that hysteresis a unit at
+    the engage boundary oscillates Move↔Shoot every frame - live as one
+    Roach squad thrashing while the rest of the army looked fine
+    (`kite_types` only drives Roaches). Retreat target is past the unit
+    (not pinned to exactly `min_engage_range`) so a mid-peel frame does not
+    walk *toward* the enemy.
     """
     maneuver = CombatManeuver()
     if grid is not None:
         maneuver.add(KeepUnitSafe(unit=unit, grid=grid))
     in_range = cy_in_attack_range(unit, enemies)
+    resume = (
+        resume_range if resume_range is not None else min_engage_range + 1.0
+    )
     crowding = [
         e
         for e in in_range
         if cy_distance_to(unit.position, e.position) < min_engage_range
     ]
-    if crowding:
+    is_peeling = peeling is not None and unit.tag in peeling
+    still_close = [
+        e
+        for e in in_range
+        if cy_distance_to(unit.position, e.position) < resume
+    ]
+    should_peel = bool(crowding) or (is_peeling and bool(still_close))
+    if should_peel:
+        if peeling is not None:
+            peeling.add(unit.tag)
+        focus = crowding or still_close
         retreat_from = (
-            Point2(cy_center(crowding)) if len(crowding) > 1 else crowding[0].position
+            Point2(cy_center(focus)) if len(focus) > 1 else focus[0].position
         )
-        retreat_to = Point2(cy_towards(retreat_from, unit.position, min_engage_range))
+        if peeling is not None:
+            current = cy_distance_to(unit.position, retreat_from)
+            desired = max(min_engage_range, resume, current + 1.5)
+        else:
+            desired = min_engage_range
+        retreat_to = Point2(cy_towards(retreat_from, unit.position, desired))
         maneuver.add(_Move(unit=unit, target=retreat_to))
-    elif in_range:
-        maneuver.add(ShootTargetInRange(unit=unit, targets=in_range))
     else:
-        maneuver.add(AMove(unit=unit, target=target))
+        if peeling is not None:
+            peeling.discard(unit.tag)
+        if in_range:
+            maneuver.add(ShootTargetInRange(unit=unit, targets=in_range))
+        else:
+            maneuver.add(AMove(unit=unit, target=target))
     return maneuver
 
 
@@ -691,6 +723,12 @@ def attack_squads(
       Builds that leave `min_engage_range` unset keep group stutter after
       influence retreat rather than per-unit kite.
 
+    Both kite paths pass `RunState.kite_peeling_tags` so `_kite_maneuver`
+    can hysteresis the peel (enter under `min_engage_range`, stay until
+    past `min_engage_range + 1`) instead of oscillating Move↔Shoot on the
+    engage boundary - the live "one squad thrashing" pattern when only
+    `kite_types` (Roaches) were under per-unit micro.
+
     `kite_types` omits the influence grid on purpose: `KeepUnitSafe` backs
     a unit off any ground `mediator.is_position_safe` calls unsafe the
     moment its weapon is on cooldown, regardless of `min_engage_range` -
@@ -712,6 +750,8 @@ def attack_squads(
     def routine(ctx: "BotContext") -> None:
         alive_attackers = {u.tag for u in ctx.units_in_role(UnitRole.ATTACKING)}
         ctx.state.mustering_tags &= alive_attackers
+        ctx.state.kite_peeling_tags &= alive_attackers
+        peeling = ctx.state.kite_peeling_tags
 
         squads = ctx.mediator.get_squads(
             role=UnitRole.ATTACKING, squad_radius=squad_radius
@@ -758,7 +798,13 @@ def attack_squads(
                 if kiters:
                     for unit in kiters:
                         ctx.bot.register_behavior(
-                            _kite_maneuver(unit, close_enemy, min_engage_range, target)
+                            _kite_maneuver(
+                                unit,
+                                close_enemy,
+                                min_engage_range,
+                                target,
+                                peeling=peeling,
+                            )
                         )
                     group_units = [u for u in group_units if u.type_id not in kite_types]
                     group_tags = {u.tag for u in group_units}
@@ -774,7 +820,12 @@ def attack_squads(
                 for unit in group_units:
                     ctx.bot.register_behavior(
                         _kite_maneuver(
-                            unit, close_army, min_engage_range, target, grid=grid
+                            unit,
+                            close_army,
+                            min_engage_range,
+                            target,
+                            grid=grid,
+                            peeling=peeling,
                         )
                     )
                 continue
@@ -1318,6 +1369,10 @@ _ROACH_REGEN_BURROW_BELOW: float = 0.25
 """Burrow to regenerate once health drops strictly below this fraction."""
 _ROACH_REGEN_UNBURROW_AT: float = 1.0
 """Unburrow only once health is fully restored."""
+_ROACH_REGEN_SAFE_ENEMY_RANGE: float = 12.0
+"""With Claws, keep peeling home while any enemy is inside this radius;
+once clear (and the tile is safe) sit still so MoveToSafeTarget does not
+repath every frame."""
 
 
 def regen_burrow_roaches() -> CombatRoutine:
@@ -1325,10 +1380,10 @@ def regen_burrow_roaches() -> CombatRoutine:
 
     Requires Burrow researched. Surface Roaches under 25% HP burrow;
     `ROACHBURROWED` stay down until health is 100%, then unburrow to rejoin
-    combat. With Tunneling Claws, burrowed Roaches also peel toward home on
-    the influence grid (`KeepUnitSafe` + `MoveToSafeTarget`) so they heal
-    at a safe distance instead of regenerating under the fight. Without
-    Claws they stay put (cannot move while burrowed).
+    combat. With Tunneling Claws, burrowed Roaches peel toward home on the
+    influence grid (`KeepUnitSafe` + `MoveToSafeTarget`) while enemies are
+    close or the tile is unsafe; once clear they sit and heal (no order
+    spam). Without Claws they stay put (cannot move while burrowed).
 
     Registered after `attack_squads`/`defend_*` so burrow/unburrow/retreat
     wins the frame over AMove/kite. Burrowed Roaches are
@@ -1358,6 +1413,14 @@ def regen_burrow_roaches() -> CombatRoutine:
                 )
                 continue
             if not claws:
+                continue
+            enemies_close = _enemies_near(
+                ctx, roach.position, _ROACH_REGEN_SAFE_ENEMY_RANGE
+            )
+            unsafe = not ctx.mediator.is_position_safe(
+                grid=grid, position=roach.position
+            )
+            if not enemies_close and not unsafe:
                 continue
             # Heal while relocating off the front — Claws allow burrowed move.
             maneuver = CombatManeuver()

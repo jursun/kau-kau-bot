@@ -312,6 +312,53 @@ def test_kite_maneuver_retreats_from_an_enemy_inside_min_engage_range() -> None:
     assert round(cy_distance_to(moves[0].target, close_enemy.position), 3) == 3.0
 
 
+def test_kite_maneuver_hysteresis_keeps_peeling_between_engage_and_resume() -> None:
+    """Once peeling, stay peeled until enemies clear resume_range - stops
+    Move↔Shoot thrash at the min_engage boundary."""
+    marine = _unit(1, Point2((100.0, 100.0)))
+    # 3.5 tiles: outside min_engage (3) but inside default resume (4).
+    mid_enemy = _unit(90, Point2((103.5, 100.0)))
+    peeling = {1}
+    original = _patch_in_range({1: [mid_enemy]})
+    try:
+        maneuver = combat._kite_maneuver(
+            marine,
+            [mid_enemy],
+            3.0,
+            Point2((999.0, 999.0)),
+            peeling=peeling,
+        )
+    finally:
+        _restore_in_range(original)
+
+    moves = [m for m in maneuver.micros if isinstance(m, combat._Move)]
+    assert len(moves) == 1, "still peeling: must keep backing off"
+    assert 1 in peeling
+    # Past the unit, not pinned at min_engage (which would walk forward).
+    assert cy_distance_to(moves[0].target, mid_enemy.position) > 3.5
+
+
+def test_kite_maneuver_hysteresis_stops_peeling_past_resume_range() -> None:
+    marine = _unit(1, Point2((100.0, 100.0)))
+    far_enemy = _unit(90, Point2((104.5, 100.0)))  # past default resume 4.0
+    peeling = {1}
+    original = _patch_in_range({1: [far_enemy]})
+    try:
+        maneuver = combat._kite_maneuver(
+            marine,
+            [far_enemy],
+            3.0,
+            Point2((999.0, 999.0)),
+            peeling=peeling,
+        )
+    finally:
+        _restore_in_range(original)
+
+    shoots = [m for m in maneuver.micros if isinstance(m, ShootTargetInRange)]
+    assert len(shoots) == 1
+    assert 1 not in peeling
+
+
 def test_kite_maneuver_shoots_when_in_range_but_not_crowding() -> None:
     marine = _unit(1, Point2((100.0, 100.0)))
     far_enemy = _unit(90, Point2((104.0, 100.0)))  # in range, outside min_engage_range
@@ -1299,8 +1346,11 @@ def test_regen_burrow_roaches_retreats_while_healing_with_claws() -> None:
     ctx = _ctx()
     ctx.bot.state.upgrades = {UpgradeId.BURROW, UpgradeId.TUNNELINGCLAWS}
     ctx.bot.start_location = Point2((10.0, 10.0))
+    ctx.mediator.is_position_safe.return_value = True
     healing = _unit(1, Point2((50.0, 50.0)))
     healing.health_percentage = 0.5
+    enemy = _unit(90, Point2((52.0, 50.0)))
+    ctx.mediator.get_units_in_range.return_value = [[enemy]]
 
     def _units(unit_type):
         if unit_type == UnitTypeId.ROACH:
@@ -1319,6 +1369,30 @@ def test_regen_burrow_roaches_retreats_while_healing_with_claws() -> None:
     assert KeepUnitSafe in kinds
     assert MoveToSafeTarget in kinds
     assert UseAbility not in kinds
+
+
+def test_regen_burrow_roaches_sits_when_safe_and_clear_with_claws() -> None:
+    """Once off the fight, do not repath home every frame."""
+    ctx = _ctx()
+    ctx.bot.state.upgrades = {UpgradeId.BURROW, UpgradeId.TUNNELINGCLAWS}
+    ctx.bot.start_location = Point2((10.0, 10.0))
+    ctx.mediator.is_position_safe.return_value = True
+    ctx.mediator.get_units_in_range.return_value = [[]]
+    healing = _unit(1, Point2((50.0, 50.0)))
+    healing.health_percentage = 0.5
+
+    def _units(unit_type):
+        if unit_type == UnitTypeId.ROACH:
+            return []
+        if unit_type == UnitTypeId.ROACHBURROWED:
+            return [healing]
+        return []
+
+    ctx.bot.units = MagicMock(side_effect=_units)
+
+    combat.regen_burrow_roaches()(ctx)
+
+    ctx.bot.register_behavior.assert_not_called()
 
 
 def test_regen_burrow_roaches_stays_put_without_claws_while_healing() -> None:
