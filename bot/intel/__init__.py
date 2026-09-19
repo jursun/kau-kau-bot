@@ -1,6 +1,6 @@
 """Thin intel package: army feed, OpponentId notes, seen-tech, QA helpers.
 
-Scouting routines stay in `bot.routines.scouting` — this package is the
+Scouting routines stay in ot.routines.scouting - this package is the
 read/state layer combat and QA consume.
 """
 
@@ -12,6 +12,8 @@ from bot.intel.army import (
     enemy_army_type_ids,
     enemy_has_air_units,
     filter_non_workers,
+    leave_enemy_army_supply,
+    observe_leave_intel,
 )
 from bot.intel.notes import OpponentNotes, get_opponent_id
 from bot.intel.qa import (
@@ -36,6 +38,8 @@ __all__ = [
     "idle_ready_townhalls",
     "influence_parking_tags",
     "is_supply_blocked",
+    "leave_enemy_army_supply",
+    "observe_leave_intel",
     "observe_seen_tech",
     "units_parked_in_influence",
 ]

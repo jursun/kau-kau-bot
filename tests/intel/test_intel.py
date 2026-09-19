@@ -19,6 +19,8 @@ from bot.intel import (
     army_behind_on_supply,
     enemy_army,
     enemy_army_supply,
+    leave_enemy_army_supply,
+    observe_leave_intel,
     enemy_army_tags,
     enemy_army_type_ids,
     filter_non_workers,
@@ -152,6 +154,32 @@ def test_seen_tech_from_army_feed() -> None:
     assert seen.seen(UnitTypeId.STALKER)
     assert not seen.seen(UnitTypeId.PROBE)
     assert not seen.seen(UnitTypeId.COLOSSUS)
+
+
+
+def test_leave_enemy_army_supply_peaks_through_fog() -> None:
+    ctx = _ctx([_unit(1, UnitTypeId.ZEALOT), _unit(2, UnitTypeId.ZEALOT)])
+    ctx.bot.calculate_supply_cost.return_value = 2.0
+    assert observe_leave_intel(ctx) == 4.0
+    assert ctx.state.peak_enemy_army_supply == 4.0
+    # Fog: no army this frame - peak and leave floor stay.
+    ctx.bot.mediator.get_cached_enemy_army = []
+    assert enemy_army_supply(ctx) == 0.0
+    assert leave_enemy_army_supply(ctx) == 4.0
+    assert observe_leave_intel(ctx) == 4.0
+
+
+def test_leave_enemy_army_supply_raises_when_seen_larger() -> None:
+    ctx = _ctx([_unit(1, UnitTypeId.ZEALOT)])
+    ctx.bot.calculate_supply_cost.return_value = 2.0
+    observe_leave_intel(ctx)
+    ctx.bot.mediator.get_cached_enemy_army = [
+        _unit(1, UnitTypeId.ZEALOT),
+        _unit(2, UnitTypeId.ZEALOT),
+        _unit(3, UnitTypeId.ZEALOT),
+    ]
+    assert observe_leave_intel(ctx) == 6.0
+    assert leave_enemy_army_supply(ctx) == 6.0
 
 
 def main() -> int:

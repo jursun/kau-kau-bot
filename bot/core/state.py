@@ -121,7 +121,10 @@ class RunState:
     wave_number: int = 0
     next_wave_size: int = 0
     scout_tags: set[int] = field(default_factory=set)
-    """Air vision scout tags (e.g. Zerg Overlord) — not the worker harasser."""
+    """Air vision scout tags (e.g. Zerg Overlord) - not the worker harasser."""
+    peak_enemy_army_supply: float = 0.0
+    """Best-known enemy combat supply for leave sizing. Raised only by
+    real `enemy_army_supply` observations - fog does not invent or clear it."""
     worker_harass_tags: set[int] = field(default_factory=set)
     """One-shot opening worker harass scout."""
     worker_harass_done: bool = False
