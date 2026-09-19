@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from ares.behaviors.combat import CombatManeuver
 from ares.behaviors.combat.group import AMoveGroup, KeepGroupSafe, StutterGroupForward
@@ -428,6 +428,102 @@ def _squad_maneuver_commit(
     return maneuver
 
 
+
+# Macro Zerg focus-fire bands (lower score sorts first). Pure helpers so
+# attack/kite can share one priority table without on_step if-trees.
+ZERGLING_FOCUS_TYPES: frozenset[UnitTypeId] = frozenset(
+    {
+        UnitTypeId.IMMORTAL,
+        UnitTypeId.SIEGETANK,
+        UnitTypeId.SIEGETANKSIEGED,
+        UnitTypeId.MARAUDER,
+    }
+)
+"""Zerglings should primary these — units Roaches struggle into."""
+
+ZERGLING_AVOID_TYPES: frozenset[UnitTypeId] = frozenset(
+    {
+        UnitTypeId.HELLION,
+        UnitTypeId.HELLIONTANK,
+        UnitTypeId.WIDOWMINE,
+        UnitTypeId.WIDOWMINEBURROWED,
+        UnitTypeId.COLOSSUS,
+        UnitTypeId.HIGHTEMPLAR,
+        UnitTypeId.LURKERMP,
+        UnitTypeId.LURKERMPBURROWED,
+    }
+)
+"""High splash / bad ling trades — only shoot these when nothing else is in range."""
+
+ROACH_POOR_TYPES: frozenset[UnitTypeId] = ZERGLING_FOCUS_TYPES
+"""Roaches leave Immortal / Tank / Marauder to Zerglings when lings are present."""
+
+
+def zergling_target_score(*, type_id: UnitTypeId, vital: float) -> tuple[int, float]:
+    """Pure priority key for Zergling focus (lower sorts first).
+
+    Prefer Immortal/Tank/Marauder → normal army → splash threats last.
+    """
+    if type_id in ZERGLING_FOCUS_TYPES:
+        band = 0
+    elif type_id in ZERGLING_AVOID_TYPES:
+        band = 2
+    else:
+        band = 1
+    return (band, vital)
+
+
+def roach_target_score(
+    *,
+    type_id: UnitTypeId,
+    vital: float,
+    lings_present: bool,
+) -> tuple[int, float]:
+    """Pure priority key for Roach kite shots (lower sorts first).
+
+    When Zerglings are in the same fight, Immortal/Tank/Marauder sort last
+    so Roaches shoot something else (or keep kiting) instead of primarying
+    bad matchups. Without lings those targets are fair game again.
+    """
+    if lings_present and type_id in ROACH_POOR_TYPES:
+        band = 2
+    elif type_id in ROACH_POOR_TYPES:
+        band = 1
+    else:
+        band = 0
+    return (band, vital)
+
+
+def pick_zergling_focus_target(unit: Unit, enemies) -> Unit | None:
+    """Best in-weapon-range target for a Zergling under Macro Zerg focus."""
+    in_range = list(cy_in_attack_range(unit, enemies))
+    if not in_range:
+        return None
+    return min(
+        in_range,
+        key=lambda e: zergling_target_score(
+            type_id=e.type_id, vital=e.health + e.shield
+        ),
+    )
+
+
+def pick_roach_kite_target(
+    unit: Unit, enemies, *, lings_present: bool
+) -> Unit | None:
+    """Best in-weapon-range target for a kiting Roach."""
+    in_range = list(cy_in_attack_range(unit, enemies))
+    if not in_range:
+        return None
+    return min(
+        in_range,
+        key=lambda e: roach_target_score(
+            type_id=e.type_id,
+            vital=e.health + e.shield,
+            lings_present=lings_present,
+        ),
+    )
+
+
 def _kite_maneuver(
     unit: Unit,
     enemies: Units | list[Unit],
@@ -436,13 +532,14 @@ def _kite_maneuver(
     grid=None,
     resume_range: float | None = None,
     peeling: set[int] | None = None,
+    pick_target: Callable[[Unit, Units | list[Unit]], Unit | None] | None = None,
 ) -> CombatManeuver:
     """One unit's turn at `min_engage_range` kiting - see `attack_squads`.
 
     Influence retreat (`KeepUnitSafe`) runs first when `grid` is provided.
     Backs straight away from the nearest enemy(s) closer than
     `min_engage_range`; otherwise shoots the lowest-health enemy already in
-    weapon range (`ShootTargetInRange`); otherwise advances on `target`.
+    weapon range (`pick_target` or `ShootTargetInRange`); otherwise advances on `target`.
 
     When `peeling` is provided, enter peel below `min_engage_range` and stay
     peeled until every in-range enemy is at least `resume_range` away
@@ -490,7 +587,12 @@ def _kite_maneuver(
         if peeling is not None:
             peeling.discard(unit.tag)
         if in_range:
-            maneuver.add(ShootTargetInRange(unit=unit, targets=in_range))
+            chosen = pick_target(unit, enemies) if pick_target is not None else None
+            if chosen is not None:
+                if not _already_attacking(unit, chosen):
+                    maneuver.add(AttackTarget(unit=unit, target=chosen))
+            else:
+                maneuver.add(ShootTargetInRange(unit=unit, targets=in_range))
         else:
             maneuver.add(AMove(unit=unit, target=target))
     return maneuver
@@ -743,8 +845,10 @@ def attack_squads(
     do it safely.
 
     ATTACKING Zerglings that are already inside an enemy base peel off to
-    prioritize workers (Macro Zerg breach micro) regardless of any of the
-    above.
+    prioritize workers (Macro Zerg breach micro); otherwise they
+    individually focus Immortal/Tank/Marauder and deprioritize splash
+    threats. Kiting Roaches use the same table so they leave those poor
+    matchups to Zerglings when lings are in the squad.
     """
 
     def routine(ctx: "BotContext") -> None:
@@ -769,7 +873,17 @@ def attack_squads(
                 ctx.state.mustering_tags -= mustering
                 mustering = set()
 
-            # Zerglings breaching an enemy base prioritize workers.
+            close_army = _intel_army_near(ctx, position, SQUAD_ENGAGE_RANGE)
+            close_enemy = close_army or _enemies_near(
+                ctx, position, SQUAD_ENGAGE_RANGE
+            )
+            lings_present = any(
+                u.type_id == UnitTypeId.ZERGLING for u in squad.squad_units
+            )
+
+            # Zerglings: breach workers first, else focus Immortal/Tank/
+            # Marauder (splash last) via AttackTarget so they are not lost
+            # in never_retreat AMoveGroup.
             group_units = []
             group_tags = set()
             for unit in squad.squad_units:
@@ -781,15 +895,17 @@ def attack_squads(
                             maneuver.add(AttackTarget(unit=unit, target=worker))
                             ctx.bot.register_behavior(maneuver)
                         continue
+                    focus = pick_zergling_focus_target(unit, close_enemy)
+                    if focus is not None:
+                        if not _already_attacking(unit, focus):
+                            maneuver = CombatManeuver()
+                            maneuver.add(AttackTarget(unit=unit, target=focus))
+                            ctx.bot.register_behavior(maneuver)
+                        continue
                 group_units.append(unit)
                 group_tags.add(unit.tag)
             if not group_units:
                 continue
-
-            close_army = _intel_army_near(ctx, position, SQUAD_ENGAGE_RANGE)
-            close_enemy = close_army or _enemies_near(
-                ctx, position, SQUAD_ENGAGE_RANGE
-            )
 
             target = rally if mustering else targeting.squad_destination(ctx, position)
 
@@ -813,6 +929,11 @@ def attack_squads(
                     and not _roach_wants_regen_burrow(ctx, u)
                 ]
                 if kiters:
+                    def _roach_pick(u, enemies, _lings=lings_present):
+                        return pick_roach_kite_target(
+                            u, enemies, lings_present=_lings
+                        )
+
                     for unit in kiters:
                         ctx.bot.register_behavior(
                             _kite_maneuver(
@@ -821,6 +942,7 @@ def attack_squads(
                                 min_engage_range,
                                 target,
                                 peeling=peeling,
+                                pick_target=_roach_pick,
                             )
                         )
                     # Drop kiters + any Roach that is digging in this frame

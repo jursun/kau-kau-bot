@@ -1240,6 +1240,82 @@ def test_stalker_pick_target_uses_priority_order_end_to_end() -> None:
     assert picked is medivac, "Medivac must outrank a low-HP Marine"
 
 
+
+def test_zergling_target_score_prefers_immortal_over_marine() -> None:
+    immortal = combat.zergling_target_score(
+        type_id=UnitTypeId.IMMORTAL, vital=200.0
+    )
+    marine = combat.zergling_target_score(
+        type_id=UnitTypeId.MARINE, vital=10.0
+    )
+    assert immortal < marine
+
+
+def test_zergling_target_score_avoids_colossus_when_alternatives_exist() -> None:
+    colossus = combat.zergling_target_score(
+        type_id=UnitTypeId.COLOSSUS, vital=10.0
+    )
+    stalker = combat.zergling_target_score(
+        type_id=UnitTypeId.STALKER, vital=200.0
+    )
+    assert stalker < colossus
+
+
+def test_roach_target_score_deprioritizes_tank_when_lings_present() -> None:
+    tank_with_lings = combat.roach_target_score(
+        type_id=UnitTypeId.SIEGETANKSIEGED, vital=10.0, lings_present=True
+    )
+    marine_with_lings = combat.roach_target_score(
+        type_id=UnitTypeId.MARINE, vital=200.0, lings_present=True
+    )
+    assert marine_with_lings < tank_with_lings
+    tank_alone = combat.roach_target_score(
+        type_id=UnitTypeId.SIEGETANKSIEGED, vital=10.0, lings_present=False
+    )
+    assert tank_alone < tank_with_lings
+
+
+def test_pick_zergling_focus_target_picks_marauder_over_hellion() -> None:
+    ling = _unit(1, Point2((10.0, 10.0)))
+    ling.type_id = UnitTypeId.ZERGLING
+    marauder = _unit(90, Point2((11.0, 10.0)))
+    marauder.type_id = UnitTypeId.MARAUDER
+    marauder.health = 100.0
+    marauder.shield = 0.0
+    hellion = _unit(91, Point2((10.5, 10.0)))
+    hellion.type_id = UnitTypeId.HELLION
+    hellion.health = 10.0
+    hellion.shield = 0.0
+    original = _patch_in_range({1: [marauder, hellion]})
+    try:
+        picked = combat.pick_zergling_focus_target(ling, [marauder, hellion])
+        assert picked is marauder
+    finally:
+        _restore_in_range(original)
+
+
+def test_pick_roach_kite_target_skips_immortal_when_lings_present() -> None:
+    roach = _unit(1, Point2((10.0, 10.0)))
+    roach.type_id = UnitTypeId.ROACH
+    immortal = _unit(90, Point2((12.0, 10.0)))
+    immortal.type_id = UnitTypeId.IMMORTAL
+    immortal.health = 10.0
+    immortal.shield = 0.0
+    stalker = _unit(91, Point2((13.0, 10.0)))
+    stalker.type_id = UnitTypeId.STALKER
+    stalker.health = 200.0
+    stalker.shield = 0.0
+    original = _patch_in_range({1: [immortal, stalker]})
+    try:
+        picked = combat.pick_roach_kite_target(
+            roach, [immortal, stalker], lings_present=True
+        )
+        assert picked is stalker
+    finally:
+        _restore_in_range(original)
+
+
+
 def test_stalker_retreat_point_backs_away_from_single_crowder() -> None:
     stalker = _unit(1, Point2((100.0, 100.0)))
     crowder = _unit(90, Point2((101.0, 100.0)))  # 1 unit away - melee range
