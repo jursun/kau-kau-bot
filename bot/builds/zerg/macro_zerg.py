@@ -121,7 +121,7 @@ Infestation Pit (Swarm Host — cheap, passive map-control damage from
 Locusts, meant to be dug in at each base rather than committed to a
 fight). Spire (Corruptor escort) still waits until the enemy has shown
 air. Once Lair is commanded, `_reserve_upgrade_bank` always gets first
-look at the frame's spend, ahead of both `SpawnController`s below it,
+look at the frame's spend, ahead of `_post_opening_production` below it,
 so the next upgrade's bank actually accumulates instead of leaking to
 army production a few gas at a time - see its own docstring for the
 live-confirmed bug this replaces. Concurrent-upgrade slot count and
@@ -582,18 +582,18 @@ def _reserve_upgrade_bank(ctx):
     upgrade going rather than leaving it to however much gas happens to be
     left over once everything else has taken its cut.
 
-    Must sit *above* `_spawn_macro_army`/`_split_production_after_opening`
-    in `macro_steps` - both include their own `SpawnController`, which has
-    no idea an upgrade wants the gas. Below them (the original placement,
-    pre-5:00 only), the reservation was routinely bypassed the moment
-    `_split_production_after_opening` claimed the frame first: confirmed
-    live via a temporary diagnostic that vespene sawtoothed 19 -> 81 -> 8 ->
-    100 -> 37 for 100+ seconds post-5:00, climbing while this check held
-    but getting drained back down every time `_split_production_after_
-    opening`'s own Roach spend won the frame instead - Glial Reconstitution
-    itself sat in "shortage" that whole stretch. Moving the check up here
-    (ahead of everything that spends army-comp gas) means nothing below it
-    can touch the bank until this has had first look, every frame.
+    Must sit *above* `_post_opening_production` in `macro_steps` ? that
+    plan's army side is a `SpawnController` with no idea an upgrade wants
+    the gas. Below it (the original placement, pre-5:00 only), the
+    reservation was routinely bypassed the moment a competing army
+    SpawnController claimed the frame first: confirmed live via a
+    temporary diagnostic that vespene sawtoothed 19 -> 81 -> 8 -> 100 -> 37
+    for 100+ seconds post-5:00, climbing while this check held but getting
+    drained back down every time army Roach spend won the frame instead -
+    Glial Reconstitution itself sat in "shortage" that whole stretch.
+    Moving the check up here (ahead of everything that spends army-comp
+    gas) means nothing below it can touch the bank until this has had
+    first look, every frame.
 
     `prioritize` (see `UpgradeSlots`'s own docstring) is `not behind`: while
     genuinely behind on army supply, this still starts an upgrade that's
@@ -613,42 +613,42 @@ def _reserve_upgrade_bank(ctx):
     )
 
 
-def _spawn_macro_army(ctx):
-    """Actual Roach/Swarm Host production, whole game. Sits below
-    `_reserve_upgrade_bank` (that reservation always gets first look) and
-    below `_split_production_after_opening` (economy still gets its own
-    priority there) - this is what fires whenever neither of those had
-    anything to spend on this frame.
-    """
-    return z.spawn_macro_army(
-        gate=gates.structure_started(UnitTypeId.ROACHWARREN)
-    )(ctx)
+def _post_opening_production(ctx):
+    """One post-opening worker/army plan ? single army SpawnController.
 
+    Replaces the old pair `_split_production_after_opening` +
+    `_spawn_macro_army`. Those could both claim a frame: split nested a
+    static `SpawnController(ctx.build.army.comp)` while spawn_macro_army
+    used the phase-aware Roach?Host (+ Corruptor / ling-heavy) selector,
+    which live-confirmed as wrong ratios and gas sawtooth against
+    `_reserve_upgrade_bank`.
 
-def _split_production_after_opening(ctx):
-    """`c.split_production`'s own `gate` only reorders `BuildWorkers`
-    against `SpawnController` priority - it does NOT stop either from
-    running before `gate` passes (see its own docstring: "Before `gate`
-    passes, economy keeps its usual priority... as if this were still
-    separate `build_workers()` then `spawn_army()` calls" - and its own
-    tests, `test_split_production_favors_economy_before_gate`/`test_split_
-    production_never_drops_either_side`, both assert a plan is *always*
-    returned regardless of `gate`). Called as `c.split_production(gate=
-    gates.after_wave(1))` directly, that meant `BuildWorkers(ctx.
-    worker_target)` was competing with `_SEQUENCE`'s own worker/overlord/
-    zergling entries for the same minerals from frame 0 - confirmed live:
-    a 14th Drone got trained (target ctx.worker_target=22 at 1 base, well
-    past `_SEQUENCE`'s own 13-drone target) before the scripted Overlord
-    ever got a chance, delaying it from its 12s deadline to a consistent
-    ~14.8s across every opponent/seed tested. Wrapping it so it doesn't run
-    at all until the scripted opening is fully spent closes that race the
-    same way `_expansions_after_scripted_third` / `c.upgrades` are re-gated
-    above - `after_wave(1)` still governs its own economy/army
-    re-prioritization once that's true, unchanged.
+    Economy/army priority still mirrors `c.split_production`: workers
+    first until `ctx.worker_target`, then after wave 1 army first ? but
+    the army side is always `z.spawn_macro_army` (Roach Warren gated).
+    Does not run until the scripted opening is spent (same race fix as
+    the old split wrapper).
     """
     if ctx.state.opening_step_index < len(_SEQUENCE):
         return None
-    return c.split_production(gate=gates.after_wave(1))(ctx)
+
+    workers = BuildWorkers(to_count=ctx.worker_target)
+    army = z.spawn_macro_army(
+        gate=gates.structure_started(UnitTypeId.ROACHWARREN)
+    )(ctx)
+
+    economy_at_target = ctx.bot.supply_workers >= ctx.worker_target
+    army_first = gates.after_wave(1)(ctx) and economy_at_target and army is not None
+
+    plan = MacroPlan()
+    if army_first:
+        plan.add(army)
+        plan.add(workers)
+    else:
+        plan.add(workers)
+        if army is not None:
+            plan.add(army)
+    return plan
 
 
 def _expansions_after_scripted_third(ctx):
@@ -1245,13 +1245,11 @@ BUILD = BuildDefinition(
         _scripted_gas_scaling,
         # Whole game once Lair is commanded (Glial/Burrow/Claws, then the
         # rest of `Army.upgrades`) - see its own docstring for why this
-        # must outrank both of the SpawnControllers below.
+        # must outrank `_post_opening_production` below.
         _reserve_upgrade_bank,
-        # Not `c.split_production(gate=gates.after_wave(1))` directly - see
-        # `_split_production_after_opening`'s own comment for why that
-        # doesn't actually gate anything.
-        _split_production_after_opening,
-        _spawn_macro_army,
+        # One post-opening worker/army plan (dynamic spawn_macro_army comp
+        # only ? no competing static-comp SpawnController).
+        _post_opening_production,
         # After Tunneling Claws has started (implies Glial/Ground Carapace
         # 1/Burrow already pending) — was above upgrades and ate the Glial
         # 100/100 bank.
