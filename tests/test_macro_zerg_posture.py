@@ -287,6 +287,89 @@ def test_army_supply_gate() -> None:
     assert gates.army_supply_at_least(40)(ctx)
 
 
+def test_intel_scaled_leave_sooner_when_unseen() -> None:
+    """Fog / no combat scouted → leave at UNSEEN (32), not the old fixed 40."""
+    from bot.routines import gates
+
+    ctx = _ctx(supply_army=31)
+    ctx.bot.mediator = SimpleNamespace(get_cached_enemy_army=[])
+    assert gates.leave_army_supply_needed(ctx) == gates.LEAVE_ARMY_SUPPLY_UNSEEN
+    assert not gates.intel_scaled_army_leave()(ctx)
+    ctx.bot.supply_army = 32
+    assert gates.intel_scaled_army_leave()(ctx)
+
+
+def test_intel_scaled_leave_holds_vs_real_army() -> None:
+    """Visible enemy army raises the leave floor (margin + clamp)."""
+    from bot.routines import gates
+
+    zealots = []
+    for i in range(10):
+        u = MagicMock()
+        u.tag = i
+        u.type_id = UnitTypeId.ZEALOT
+        zealots.append(u)
+    ctx = _ctx(supply_army=40)
+    ctx.bot.mediator = SimpleNamespace(get_cached_enemy_army=zealots)
+    # 10 zealots * 2 supply = 20 enemy → need 20+12=32, still leave at 40
+    ctx.bot.calculate_supply_cost = MagicMock(return_value=2.0)
+    need = gates.leave_army_supply_needed(ctx)
+    assert need == 32.0
+    assert gates.intel_scaled_army_leave()(ctx)
+
+    # Heavier army: 20 stalkers * 2 = 40 → need 52
+    stalkers = []
+    for i in range(20):
+        u = MagicMock()
+        u.tag = 100 + i
+        u.type_id = UnitTypeId.STALKER
+        stalkers.append(u)
+    ctx.bot.mediator = SimpleNamespace(get_cached_enemy_army=stalkers)
+    ctx.bot.supply_army = 50
+    assert gates.leave_army_supply_needed(ctx) == 52.0
+    assert not gates.intel_scaled_army_leave()(ctx)
+    ctx.bot.supply_army = 52
+    assert gates.intel_scaled_army_leave()(ctx)
+
+
+def test_intel_scaled_leave_threat_bump_and_cap() -> None:
+    from bot.routines import gates
+
+    colossus = MagicMock()
+    colossus.tag = 1
+    colossus.type_id = UnitTypeId.COLOSSUS
+    ctx = _ctx(supply_army=30)
+    ctx.bot.mediator = SimpleNamespace(get_cached_enemy_army=[colossus])
+    ctx.bot.calculate_supply_cost = MagicMock(return_value=6.0)
+    # enemy 6 + margin 12 + colossus bump 8 = 26 → clamp min 24 → 26
+    assert gates.leave_army_supply_needed(ctx) == 26.0
+
+    # Huge army clamps at MAX
+    army = []
+    for i in range(40):
+        u = MagicMock()
+        u.tag = i
+        u.type_id = UnitTypeId.STALKER
+        army.append(u)
+    ctx.bot.mediator = SimpleNamespace(get_cached_enemy_army=army)
+    ctx.bot.calculate_supply_cost = MagicMock(return_value=2.0)
+    assert gates.leave_army_supply_needed(ctx) == gates.LEAVE_ARMY_SUPPLY_MAX
+
+
+def test_macro_zerg_uses_intel_scaled_leave_gate() -> None:
+    from bot.routines import gates
+
+    assert mz.BUILD.combat.wave_gate.__name__ == gates.intel_scaled_army_leave().__name__ or (
+        mz.BUILD.combat.wave_gate.__code__.co_filename.endswith("gates.py")
+    )
+    # Same factory identity: call both on an unseen ctx.
+    ctx = _ctx(supply_army=32)
+    ctx.bot.mediator = SimpleNamespace(get_cached_enemy_army=[])
+    assert mz.BUILD.combat.wave_gate(ctx) is True
+    ctx.bot.supply_army = 31
+    assert mz.BUILD.combat.wave_gate(ctx) is False
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failures = 0
