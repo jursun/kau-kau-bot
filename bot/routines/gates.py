@@ -12,6 +12,7 @@ from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 
 from bot.core.types import Gate
+from bot.intel.army import enemy_army_supply, enemy_army_type_ids
 
 if TYPE_CHECKING:
     from bot.core.context import BotContext
@@ -162,6 +163,63 @@ def army_supply_at_least(supply: float) -> Gate:
         return float(ctx.bot.supply_army) >= supply
 
     return gate
+
+
+# Macro Zerg leave: scale our army-supply floor off scouted enemy combat
+# supply (Kuuro `enemy_army_supply`) — leave sooner vs greedy / fog, hold
+# longer vs a real army. Clamped so we never leave naked or turtle forever.
+LEAVE_ARMY_SUPPLY_MIN: float = 24.0
+LEAVE_ARMY_SUPPLY_MAX: float = 56.0
+LEAVE_ARMY_SUPPLY_UNSEEN: float = 32.0
+"""When no enemy combat is visible, leave a bit sooner than the old fixed 40."""
+LEAVE_ARMY_SUPPLY_MARGIN: float = 12.0
+"""Beat visible enemy army supply by this much before leaving."""
+
+# Single biggest threat bump (not stacked) when these types are visible.
+_LEAVE_THREAT_BUMP: dict[UnitTypeId, float] = {
+    UnitTypeId.SIEGETANK: 6.0,
+    UnitTypeId.SIEGETANKSIEGED: 6.0,
+    UnitTypeId.LIBERATOR: 6.0,
+    UnitTypeId.LIBERATORAG: 6.0,
+    UnitTypeId.COLOSSUS: 8.0,
+    UnitTypeId.DISRUPTOR: 6.0,
+    UnitTypeId.HIGHTEMPLAR: 6.0,
+    UnitTypeId.ARCHON: 4.0,
+    UnitTypeId.BROODLORD: 8.0,
+    UnitTypeId.LURKERMP: 6.0,
+    UnitTypeId.LURKERMPBURROWED: 6.0,
+}
+
+
+def leave_army_supply_needed(ctx: "BotContext") -> float:
+    """Army supply we want before the first Macro Zerg leave.
+
+    Uses Kuuro's WORKER-filtered `enemy_army_supply` (+ a small bump for
+    visible high-impact tech). Empty/unseen enemy → `LEAVE_ARMY_SUPPLY_UNSEEN`
+    so fog does not force the old fixed-40 wait.
+    """
+    enemy = float(enemy_army_supply(ctx))
+    bump = 0.0
+    for type_id in enemy_army_type_ids(ctx):
+        bump = max(bump, _LEAVE_THREAT_BUMP.get(type_id, 0.0))
+    if enemy <= 0.0:
+        need = LEAVE_ARMY_SUPPLY_UNSEEN + bump
+    else:
+        need = enemy + LEAVE_ARMY_SUPPLY_MARGIN + bump
+    return max(LEAVE_ARMY_SUPPLY_MIN, min(LEAVE_ARMY_SUPPLY_MAX, need))
+
+
+def intel_scaled_army_leave() -> Gate:
+    """True once our army supply meets `leave_army_supply_needed`.
+
+    Drop-in replacement for a fixed `army_supply_at_least(40)` leave gate.
+    """
+
+    def gate(ctx: "BotContext") -> bool:
+        return float(ctx.bot.supply_army) >= leave_army_supply_needed(ctx)
+
+    return gate
+
 
 
 def training_started(unit_type: UnitTypeId) -> Gate:

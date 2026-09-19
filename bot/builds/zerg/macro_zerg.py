@@ -134,8 +134,10 @@ production in the Roach-only window. Counter comps from scouting are a
 placeholder; baseline is Roach + Swarm Host (+ Corruptor on air).
 
 This is a continuous macro identity, not a scripted all-in leave time:
-once army supply hits 40, `combat.release_first_wave_then_stream` puts
-every DEFENDING army unit on ATTACKING and streams new ones forever after.
+`gates.intel_scaled_army_leave` (Kuuro `enemy_army_supply`) opens
+`combat.release_first_wave_then_stream` once our army supply beats the
+scouted enemy by a margin — leave sooner vs greedy/fog, hold longer vs a
+real army — then streams new units into ATTACKING forever after.
 `combat.defend_home()` holds before that, and Swarm Host/Corruptor never
 enter that pipeline at all — see `combat.siege_with_swarm_hosts`/
 `combat.escort_corruptors` and `core.roles.SUPPORT_ROLES`. Home Zerglings
@@ -1120,8 +1122,8 @@ BUILD = BuildDefinition(
     pool_deadline=110.0,
     combat=Combat(
         routines=(
-            # Once army supply hits 40, promote everyone on DEFENDING and
-            # stream every new army unit into ATTACKING from then on.
+            # Intel-scaled leave (see wave_gate), then stream every new
+            # army unit into ATTACKING from then on.
             combat.release_first_wave_then_stream(muster=True),
             combat.defend_home(),
             combat.defend_with_zerglings(),
@@ -1153,9 +1155,9 @@ BUILD = BuildDefinition(
             creep.spread_tumors(),
             scouting.air_scout(UnitTypeId.OVERLORD),
         ),
-        # Leave the moment army supply hits 40 — wave1_min=1 so we do not
-        # also wait on a unit-count floor after that.
-        wave_gate=gates.army_supply_at_least(40),
+        # Leave when our army supply meets the intel-scaled floor (Kuuro
+        # enemy_army_supply ± threat bump). wave1_min=1: no unit-count floor.
+        wave_gate=gates.intel_scaled_army_leave(),
         wave1_min=1,
         wave_growth=1.15,
         wave_stage_label="Roach Pushes",
