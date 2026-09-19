@@ -1125,6 +1125,10 @@ BUILD = BuildDefinition(
             combat.release_first_wave_then_stream(muster=True),
             combat.defend_home(),
             combat.defend_with_zerglings(),
+            # Dig-in before attack_squads so hurt Roaches burrow instead of
+            # kiting into the fight; attack_squads also skips those tags.
+            # Tunneling Claws: burrowed Roaches peel home while healing.
+            combat.regen_burrow_roaches(),
             # never_retreat=True: Zergling (melee, still in this squad for
             # the breach-worker micro above) gains nothing from kiting off
             # a weapon cooldown - see `_squad_maneuver_commit`'s own
@@ -1142,9 +1146,6 @@ BUILD = BuildDefinition(
                 kite_types=frozenset({UnitTypeId.ROACH}),
                 min_engage_range=_ROACH_MIN_ENGAGE_RANGE,
             ),
-            # After attack/defend so burrow/unburrow/retreat wins the frame.
-            # Tunneling Claws: burrowed Roaches peel home while healing.
-            combat.regen_burrow_roaches(),
             combat.dig_in_swarm_hosts(),
             combat.escort_corruptors(),
             overseer_routines.manage_overseers(),
