@@ -1491,5 +1491,146 @@ def test_regen_burrow_roaches_noop_without_burrow_upgrade() -> None:
     ctx.bot.register_behavior.assert_not_called()
 
 
+
+def test_siege_with_swarm_hosts_groups_behind_attack_ball() -> None:
+    """Hosts share one anchor just behind the ATTACKING ball (toward home)."""
+    from cython_extensions import cy_towards
+
+    ctx = _ctx()
+    ctx.bot.state.upgrades = set()
+    home = Point2((10.0, 10.0))
+    ctx.bot.start_location = home
+    hosts = [
+        _unit(1, Point2((20.0, 20.0))),
+        _unit(2, Point2((25.0, 18.0))),
+    ]
+    for h in hosts:
+        h.type_id = UnitTypeId.SWARMHOSTMP
+        h.orders = []
+        h.order_target = None
+    ctx.mediator.get_units_from_role.return_value = hosts
+    squad = _squad([_unit(50, Point2((100.0, 100.0)))])
+    ctx.mediator.get_squads.return_value = [squad]
+    ctx.bot.enemy_structures = []
+    expected = Point2(
+        cy_towards(squad.squad_position, home, combat.SWARM_HOST_BEHIND_OFFSET)
+    )
+
+    from bot.core import context as context_mod
+
+    original = context_mod.BotContext.production_location
+    context_mod.BotContext.production_location = property(lambda self: home)
+    try:
+        combat.siege_with_swarm_hosts()(ctx)
+    finally:
+        context_mod.BotContext.production_location = original
+
+    assert ctx.state.swarm_host_hold == {}
+    assert ctx.bot.register_behavior.call_count == 2
+    for call in ctx.bot.register_behavior.call_args_list:
+        maneuver = call.args[0]
+        assert isinstance(maneuver, CombatManeuver)
+        moves = [b for b in maneuver.micros if isinstance(b, MoveToSafeTarget)]
+        assert len(moves) == 1
+        assert cy_distance_to(moves[0].target, expected) < 0.01
+
+
+def test_siege_with_swarm_hosts_locusts_fortified_statics() -> None:
+    """Spawn Locusts onto PF / Photon Cannon / Shield Battery in cast range."""
+    ctx = _ctx()
+    ctx.bot.state.upgrades = {UpgradeId.BURROW}
+    home = Point2((10.0, 10.0))
+    host = _unit(1, Point2((90.0, 90.0)))
+    host.type_id = UnitTypeId.SWARMHOSTMP
+    host.orders = []
+    host.order_target = None
+    pf = _unit(200, Point2((95.0, 95.0)))
+    pf.type_id = UnitTypeId.PLANETARYFORTRESS
+    pf.is_structure = True
+    cannon = _unit(201, Point2((97.0, 90.0)))
+    cannon.type_id = UnitTypeId.PHOTONCANNON
+    cannon.is_structure = True
+    battery = _unit(202, Point2((92.0, 97.0)))
+    battery.type_id = UnitTypeId.SHIELDBATTERY
+    battery.is_structure = True
+    ctx.mediator.get_units_from_role.return_value = [host]
+    ctx.mediator.get_squads.return_value = [
+        _squad([_unit(50, Point2((100.0, 100.0)))])
+    ]
+    ctx.bot.enemy_structures = [pf, cannon, battery]
+
+    from bot.core import context as context_mod
+
+    original = context_mod.BotContext.production_location
+    context_mod.BotContext.production_location = property(lambda self: home)
+    try:
+        combat.siege_with_swarm_hosts()(ctx)
+    finally:
+        context_mod.BotContext.production_location = original
+
+    maneuver = ctx.bot.register_behavior.call_args.args[0]
+    assert isinstance(maneuver, CombatManeuver)
+    abilities = [b for b in maneuver.micros if isinstance(b, UseAbility)]
+    assert any(b.ability == AbilityId.BURROWDOWN_SWARMHOST for b in abilities)
+    locusts = [
+        b
+        for b in abilities
+        if b.ability
+        in (
+            AbilityId.EFFECT_SPAWNLOCUSTS,
+            AbilityId.SWARMHOSTSPAWNLOCUSTS_LOCUSTMP,
+        )
+    ]
+    assert locusts, "expected Spawn Locusts on a fortified static"
+    # Closest fortified to Host (90,90): Photon Cannon at (97,90) dist 7.
+    assert all(b.target == cannon.position for b in locusts)
+
+
+def test_siege_with_swarm_hosts_stages_home_without_attack_ball() -> None:
+    """No ATTACKING squad → stage at production_location, not per-base dig-in."""
+    ctx = _ctx()
+    ctx.bot.state.upgrades = set()
+    home = Point2((10.0, 10.0))
+    host = _unit(1, Point2((40.0, 40.0)))
+    host.type_id = UnitTypeId.SWARMHOSTMP
+    host.orders = []
+    host.order_target = None
+    ctx.mediator.get_units_from_role.return_value = [host]
+    ctx.mediator.get_squads.return_value = []
+    ctx.bot.enemy_structures = []
+    # Pre-seed legacy dig-in holds — routine must clear them.
+    ctx.state.swarm_host_hold = {1: Point2((30.0, 30.0)), 99: Point2((1.0, 1.0))}
+
+    from bot.core import context as context_mod
+
+    original = context_mod.BotContext.production_location
+    context_mod.BotContext.production_location = property(lambda self: home)
+    try:
+        combat.siege_with_swarm_hosts()(ctx)
+    finally:
+        context_mod.BotContext.production_location = original
+
+    assert ctx.state.swarm_host_hold == {}
+    maneuver = ctx.bot.register_behavior.call_args.args[0]
+    moves = [b for b in maneuver.micros if isinstance(b, MoveToSafeTarget)]
+    assert len(moves) == 1
+    assert moves[0].target == home
+
+
+def test_macro_zerg_wires_siege_not_dig_in() -> None:
+    """Macro Zerg combat list uses siege_with_swarm_hosts, not dig-in."""
+    import inspect
+
+    from bot.builds.zerg import macro_zerg as mz
+
+    src = inspect.getsource(mz)
+    assert "siege_with_swarm_hosts()" in src
+    assert "dig_in_swarm_hosts" not in src
+    assert any(
+        getattr(r, "__name__", "") == "routine"
+        for r in mz.BUILD.combat.routines
+    )
+
+
 if __name__ == "__main__":
     sys.exit(main())
