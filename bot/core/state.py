@@ -333,6 +333,12 @@ class RunState:
     reassigned if that base is no longer an opponent target) so
     `routines.overseers._spread_changelings` does not thrash every frame
     when unit-list order shuffles."""
+    overlord_park_targets: dict[int, Point2] = field(default_factory=dict)
+    """Non-SCOUTING Overlord tag -> sticky park Point2 (HG vision early,
+    Spore cover mid-late). See `routines.overlords.manage_overlord_positions`."""
+    overlord_park_phase: str | None = None
+    """`vision` or `spore` - sticky map cleared on phase change so Overlords
+    reassign instead of clinging to stale HG spots after Spores finish."""
     opening_step_index: int = 0
     """Position in `builds.zerg.macro_zerg._SEQUENCE` - a persisted,
     monotonically-increasing index (never re-derived from scratch, never
