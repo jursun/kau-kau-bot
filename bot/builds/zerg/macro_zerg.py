@@ -1158,9 +1158,9 @@ BUILD = BuildDefinition(
             overlord_routines.manage_overlord_positions(),
         ),
         # Leave when our army supply meets the intel-scaled floor (Kuuro
-        # enemy_army_supply ± threat bump). wave1_min=1: no unit-count floor.
+        # enemy_army_supply ± threat bump). wave1_min=8: do not trickle a tiny Wave 1 once the gate opens.
         wave_gate=gates.intel_scaled_army_leave(),
-        wave1_min=1,
+        wave1_min=8,
         wave_growth=1.15,
         wave_stage_label="Roach Pushes",
         # Roach/Zergling stand and fight on bad ground on purpose (never_
