@@ -1719,23 +1719,33 @@ def test_siege_with_swarm_hosts_locusts_fortified_statics() -> None:
 
 
 
-def test_swarm_host_siege_target_score_prefers_pf_over_autoturret() -> None:
+def test_swarm_host_siege_target_score_prefers_pf_over_closer_bunker() -> None:
     pf = combat.swarm_host_siege_target_score(
         type_id=UnitTypeId.PLANETARYFORTRESS, distance=14.0
     )
-    auto = combat.swarm_host_siege_target_score(
-        type_id=UnitTypeId.AUTOTURRET, distance=1.0
+    bunker = combat.swarm_host_siege_target_score(
+        type_id=UnitTypeId.BUNKER, distance=1.0
     )
-    assert pf < auto
+    assert pf < bunker
 
 
-def test_pick_swarm_host_siege_target_skips_closer_autoturret() -> None:
+def test_pick_swarm_host_siege_target_prefers_pf_over_closer_bunker() -> None:
     host = _unit(1, Point2((90.0, 90.0)))
-    auto = _unit(200, Point2((91.0, 90.0)))
-    auto.type_id = UnitTypeId.AUTOTURRET
+    bunker = _unit(200, Point2((91.0, 90.0)))
+    bunker.type_id = UnitTypeId.BUNKER
+    pf = _unit(201, Point2((97.0, 90.0)))
+    pf.type_id = UnitTypeId.PLANETARYFORTRESS
+    picked = combat.pick_swarm_host_siege_target(host, [bunker, pf])
+    assert picked is pf
+
+
+def test_pick_swarm_host_siege_target_prefers_cannon_over_closer_missile_turret() -> None:
+    host = _unit(1, Point2((90.0, 90.0)))
+    turret = _unit(200, Point2((91.0, 90.0)))
+    turret.type_id = UnitTypeId.MISSILETURRET
     cannon = _unit(201, Point2((97.0, 90.0)))
     cannon.type_id = UnitTypeId.PHOTONCANNON
-    picked = combat.pick_swarm_host_siege_target(host, [auto, cannon])
+    picked = combat.pick_swarm_host_siege_target(host, [turret, cannon])
     assert picked is cannon
 
 def test_siege_with_swarm_hosts_stages_home_without_attack_ball() -> None:
