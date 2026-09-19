@@ -42,10 +42,11 @@ plus 1 spare for creep spread, for the whole game, not just the opening's
 first few bases (see its own comment in `macro_steps`).
 `z.spore_crawlers` is the same shape (1 per owned base in the mineral
 line), opening at 4:30 with a 15s missing-base recheck.
-`z.tech_up(INFESTATIONPIT)` waits until Tunneling Claws has started
-(Glial/Burrow sit ahead of Claws on the upgrade list, so that also
-keeps Pit from sniping the Glial gas bank) and sits below the upgrade
-steps in `macro_steps`. `z.tech_up(SPIRE)` stays Lair-gated + air-scout
+`z.tech_up(INFESTATIONPIT)` opens once Tunneling Claws has started
+*or* Glial is done (Claws still preferred; Glial-done is the escape so
+Pit/Hive/Hosts are not hard-blocked when Claws never starts). Glial's
+gas bank stays safe either way, and the step still sits below upgrades
+in `macro_steps`. `z.tech_up(SPIRE)` stays Lair-gated + air-scout
 only; both Pit and Spire place via `BuildZergStructure` (not ares
 `BuildStructure`/`request_zerg_placement`, which stuck a Spire Drone in
 main while Voidrays were on the map). Lair itself stays `_SEQUENCE`-
@@ -1253,14 +1254,19 @@ BUILD = BuildDefinition(
         # One post-opening worker/army plan (dynamic spawn_macro_army comp
         # only ? no competing static-comp SpawnController).
         _post_opening_production,
-        # After Tunneling Claws has started (implies Glial/Ground Carapace
-        # 1/Burrow already pending) — was above upgrades and ate the Glial
-        # 100/100 bank.
+        # Soft lock: Claws started (happy path; implies Glial/Burrow already
+        # pending) OR Glial done (escape so Pit/Hive/Hosts are not blocked
+        # forever when Claws never starts). Was a hard Claws-only gate after
+        # Pit above upgrades ate the Glial 100/100 bank; step still sits
+        # below `_reserve_upgrade_bank`.
         z.tech_up(
             UnitTypeId.INFESTATIONPIT,
             gate=gates.all_of(
                 gates.structure_started(UnitTypeId.LAIR),
-                gates.upgrade_started(UpgradeId.TUNNELINGCLAWS),
+                gates.any_of(
+                    gates.upgrade_started(UpgradeId.TUNNELINGCLAWS),
+                    gates.upgrade_done(UpgradeId.GLIALRECONSTITUTION),
+                ),
             ),
         ),
         z.tech_up(
