@@ -1404,6 +1404,89 @@ def test_nudge_idle_army_skips_mustering_and_drop_load() -> None:
     mustering.attack.assert_not_called()
 
 
+
+
+def test_defend_home_skips_roach_about_to_regen_burrow() -> None:
+    """Hurt DEFENDING Roaches dig via regen - defend must not Move them."""
+    ctx = _ctx()
+    hold = Point2((40.0, 40.0))
+    roach = _unit(7, Point2((10.0, 10.0)))
+    roach.type_id = UnitTypeId.ROACH
+    roach.health_percentage = 0.2
+    roach.orders = []
+    roach.order_target = None
+    ctx.bot.state.upgrades = {UpgradeId.BURROW}
+    ctx.mediator.get_units_from_role.return_value = [roach]
+    ctx.mediator.get_main_ground_threats_near_townhall = []
+    ctx.mediator.get_units_in_range.return_value = [[]]
+    ctx.bot.units = MagicMock(return_value=[])
+    original = targeting.hold_positions
+    targeting.hold_positions = lambda _ctx: [hold]
+    try:
+        combat.defend_home()(ctx)
+    finally:
+        targeting.hold_positions = original
+    ctx.bot.register_behavior.assert_not_called()
+    assert 7 not in ctx.state.defender_hold
+
+
+def test_regen_burrow_roaches_skips_burrow_when_already_ordered() -> None:
+    ctx = _ctx()
+    ctx.bot.state.upgrades = {UpgradeId.BURROW}
+    hurt = _unit(1)
+    hurt.type_id = UnitTypeId.ROACH
+    hurt.health_percentage = 0.2
+    order = MagicMock()
+    order.ability = MagicMock()
+    order.ability.id = AbilityId.BURROWDOWN_ROACH
+    hurt.orders = [order]
+
+    def _units(unit_type):
+        if unit_type == UnitTypeId.ROACH:
+            return [hurt]
+        if unit_type == UnitTypeId.ROACHBURROWED:
+            return []
+        return []
+
+    ctx.bot.units = MagicMock(side_effect=_units)
+    combat.regen_burrow_roaches()(ctx)
+    ctx.bot.register_behavior.assert_not_called()
+
+
+def test_regen_burrow_roaches_skips_claws_move_when_already_moving() -> None:
+    from bot.core import context as context_mod
+
+    ctx = _ctx()
+    ctx.bot.state.upgrades = {UpgradeId.BURROW, UpgradeId.TUNNELINGCLAWS}
+    home = Point2((5.0, 5.0))
+    ctx.mediator.get_units_in_range.return_value = [[_unit(90, Point2((52.0, 50.0)))]]
+    ctx.mediator.is_position_safe.return_value = False
+    burrowed = _unit(1, Point2((50.0, 50.0)))
+    burrowed.health_percentage = 0.5
+    burrowed.is_moving = True
+    order = MagicMock()
+    order.ability = MagicMock()
+    order.ability.id = AbilityId.MOVE
+    burrowed.orders = [order]
+    burrowed.order_target = Point2((6.0, 6.0))
+
+    def _units(unit_type):
+        if unit_type == UnitTypeId.ROACH:
+            return []
+        if unit_type == UnitTypeId.ROACHBURROWED:
+            return [burrowed]
+        return []
+
+    ctx.bot.units = MagicMock(side_effect=_units)
+    original = context_mod.BotContext.production_location
+    context_mod.BotContext.production_location = property(lambda self: home)
+    try:
+        combat.regen_burrow_roaches()(ctx)
+    finally:
+        context_mod.BotContext.production_location = original
+    ctx.bot.register_behavior.assert_not_called()
+
+
 def test_regen_burrow_roaches_burrows_below_25_percent() -> None:
     ctx = _ctx()
     ctx.bot.state.upgrades = {UpgradeId.BURROW}

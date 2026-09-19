@@ -310,6 +310,16 @@ def _already_attacking(unit: Unit, target: Unit) -> bool:
     return bool(unit.orders) and unit.order_target == target.tag
 
 
+def _already_ordered_ability(unit: Unit, ability: AbilityId) -> bool:
+    """True when the unit's current order is already `ability` (skip re-issue)."""
+    if not unit.orders:
+        return False
+    ability_id = getattr(getattr(unit.orders[0], "ability", None), "id", None)
+    return ability_id == ability
+
+
+
+
 
 
 def _combat_force_supply(ctx: "BotContext", units) -> float:
@@ -681,6 +691,10 @@ def defend_home() -> CombatRoutine:
     def routine(ctx: "BotContext") -> None:
         defenders = ctx.units_in_role(UnitRole.DEFENDING)
         alive = {u.tag for u in defenders}
+        # Burrow morph drops ROACHBURROWED out of army.types / DEFENDING;
+        # keep their sticky hold so surfacing does not re-assign + re-log.
+        for burrowed in ctx.bot.units(UnitTypeId.ROACHBURROWED):
+            alive.add(burrowed.tag)
         ctx.state.defender_hold = {
             tag: pt
             for tag, pt in ctx.state.defender_hold.items()
@@ -692,7 +706,13 @@ def defend_home() -> CombatRoutine:
         holds = targeting.hold_positions(ctx)
         if not holds:
             return
+        # Hurt Roaches dig via regen_burrow - do not Move/Attack them here
+        # or we cancel Burrow every frame (DEFEND hold log spam / thrash).
         for unit in defenders:
+            if _roach_wants_regen_burrow(ctx, unit):
+                continue
+            if _already_ordered_ability(unit, AbilityId.BURROWDOWN_ROACH):
+                continue
             hold = _sticky_hold_point(ctx, unit, holds, ctx.state.defender_hold)
             maneuver = _defender_maneuver(ctx, unit, home_threats, hold)
             if maneuver is not None:
@@ -1631,6 +1651,8 @@ def regen_burrow_roaches() -> CombatRoutine:
         for roach in ctx.bot.units(UnitTypeId.ROACH):
             if not _roach_wants_regen_burrow(ctx, roach):
                 continue
+            if _already_ordered_ability(roach, AbilityId.BURROWDOWN_ROACH):
+                continue
             ctx.bot.register_behavior(
                 UseAbility(AbilityId.BURROWDOWN_ROACH, roach)
             )
@@ -1651,15 +1673,19 @@ def regen_burrow_roaches() -> CombatRoutine:
             )
             full = roach.health_percentage >= _ROACH_REGEN_UNBURROW_AT
             if full and not enemies_close and not unsafe:
-                ctx.bot.register_behavior(
-                    UseAbility(AbilityId.BURROWUP_ROACH, roach)
-                )
+                if not _already_ordered_ability(roach, AbilityId.BURROWUP_ROACH):
+                    ctx.bot.register_behavior(
+                        UseAbility(AbilityId.BURROWUP_ROACH, roach)
+                    )
                 continue
             if not claws:
                 continue
             if not enemies_close and not unsafe:
                 continue
-            # Heal while relocating off the front — Claws allow burrowed move.
+            # Heal while relocating off the front - Claws allow burrowed move.
+            # Skip re-issue when already pathing home.
+            if home is not None and _already_ordered_to_point(roach, home):
+                continue
             maneuver = CombatManeuver()
             maneuver.add(KeepUnitSafe(unit=roach, grid=grid))
             maneuver.add(MoveToSafeTarget(unit=roach, grid=grid, target=home))
