@@ -1516,8 +1516,52 @@ FORTIFIED_STATIC_TYPES: frozenset[UnitTypeId] = frozenset(
         UnitTypeId.AUTOTURRET,
     }
 )
-"""Static defense Locusts are meant to wither — PF / cannons / batteries
-and the usual bunker / turret / spine / spore / auto-turret set."""
+"""Static defense Locusts may cast on — preferred subset below."""
+
+SWARM_HOST_SIEGE_FOCUS_TYPES: frozenset[UnitTypeId] = frozenset(
+    {
+        UnitTypeId.PLANETARYFORTRESS,
+        UnitTypeId.PHOTONCANNON,
+        UnitTypeId.SHIELDBATTERY,
+        UnitTypeId.BUNKER,
+    }
+)
+"""True fortified statics Hosts should primary (Jason / CheatInsane Torches)."""
+
+SWARM_HOST_SIEGE_WEAK_TYPES: frozenset[UnitTypeId] = frozenset(
+    {
+        UnitTypeId.AUTOTURRET,
+    }
+)
+"""Temporary / weak AA — only Locust these when nothing better is in range."""
+
+
+def swarm_host_siege_target_score(
+    *, type_id: UnitTypeId, distance: float
+) -> tuple[int, float]:
+    """Pure priority for Swarm Host Locust focus (lower sorts first).
+
+    Prefer PF / Photon Cannon / Shield Battery / Bunker → other statics →
+    Autoturret last.
+    """
+    if type_id in SWARM_HOST_SIEGE_FOCUS_TYPES:
+        band = 0
+    elif type_id in SWARM_HOST_SIEGE_WEAK_TYPES:
+        band = 2
+    else:
+        band = 1
+    return (band, distance)
+
+
+def pick_swarm_host_siege_target(host: Unit, cast_targets: list[Unit]) -> Unit:
+    """Best fortified static in cast range for this Host."""
+    return min(
+        cast_targets,
+        key=lambda s: swarm_host_siege_target_score(
+            type_id=s.type_id,
+            distance=cy_distance_to(host.position, s.position),
+        ),
+    )
 
 
 def _swarm_host_siege_anchor(ctx: "BotContext") -> Point2 | None:
@@ -1663,7 +1707,8 @@ def siege_with_swarm_hosts() -> CombatRoutine:
     `release_waves` never sweeps them into muster padding; they still
     contribute by advancing with / just behind the ATTACKING ball and
     casting Spawn Locusts onto Planetary Fortress, Photon Cannons, Shield
-    Batteries, and similar static defense. No per-base dig-in /
+    Batteries (preferred), and similar static defense — Autoturret only
+    when nothing better is in range. No per-base dig-in /
     `_swarm_host_points` parking.
 
     Locust cast must win the `CombatManeuver` before `KeepUnitSafe`: near
@@ -1709,7 +1754,7 @@ def siege_with_swarm_hosts() -> CombatRoutine:
                 )
 
             if cast_targets:
-                focus = cy_closest_to(position=host.position, units=cast_targets)
+                focus = pick_swarm_host_siege_target(host, cast_targets)
                 locust_target = focus.position
                 ctx.log_once(
                     f"swarm_host_siege_{host.tag}",
