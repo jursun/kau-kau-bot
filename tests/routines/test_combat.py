@@ -607,6 +607,44 @@ def test_kite_types_applies_even_when_our_force_is_larger() -> None:
         _restore_in_range(original_in_range)
 
 
+def test_kite_types_skips_roach_about_to_regen_burrow() -> None:
+    """Hurt Roaches dig in via regen_burrow — do not kite/AMove them first."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original_targeting = _patch_targeting(rally, attack)
+    original_in_range = _patch_in_range({})
+    try:
+        ctx = _ctx()
+        ctx.bot.state.upgrades = {UpgradeId.BURROW}
+        hurt = _unit(1, Point2((10.0, 10.0)))
+        hurt.type_id = UnitTypeId.ROACH
+        hurt.health_percentage = 0.2
+        healthy = _unit(2, Point2((11.0, 10.0)))
+        healthy.type_id = UnitTypeId.ROACH
+        healthy.health_percentage = 1.0
+        enemy = _unit(90, Point2((12.0, 10.0)))
+        ctx.mediator.get_cached_enemy_army = [enemy]
+        ctx.mediator.get_units_in_range.return_value = [[enemy]]
+        ctx.mediator.get_squads.return_value = [_squad([hurt, healthy])]
+
+        combat.attack_squads(
+            never_retreat=True,
+            kite_types=frozenset({UnitTypeId.ROACH}),
+            min_engage_range=3.0,
+        )(ctx)
+
+        units_ordered = [
+            getattr(m, "unit", None)
+            for c in ctx.bot.register_behavior.call_args_list
+            for m in c.args[0].micros
+        ]
+        assert hurt not in units_ordered
+        assert healthy in units_ordered
+    finally:
+        _restore_targeting(original_targeting)
+        _restore_in_range(original_in_range)
+
+
 def test_kite_types_skipped_while_still_mustering() -> None:
     """A squad still forming up should move as one group toward the rally
     point, not start micro-managing individual kite distance."""
@@ -1294,8 +1332,10 @@ def test_regen_burrow_roaches_burrows_below_25_percent() -> None:
     ctx = _ctx()
     ctx.bot.state.upgrades = {UpgradeId.BURROW}
     hurt = _unit(1)
+    hurt.type_id = UnitTypeId.ROACH
     hurt.health_percentage = 0.24
     healthy = _unit(2)
+    healthy.type_id = UnitTypeId.ROACH
     healthy.health_percentage = 0.25
 
     def _units(unit_type):
@@ -1319,6 +1359,7 @@ def test_regen_burrow_roaches_burrows_below_25_percent() -> None:
 def test_regen_burrow_roaches_unburrows_at_full_health() -> None:
     ctx = _ctx()
     ctx.bot.state.upgrades = {UpgradeId.BURROW}
+    ctx.mediator.get_units_in_range.return_value = [[]]  # clear of enemies
     full = _unit(1)
     full.health_percentage = 1.0
     healing = _unit(2)
@@ -1340,6 +1381,29 @@ def test_regen_burrow_roaches_unburrows_at_full_health() -> None:
     assert isinstance(registered[0], UseAbility)
     assert registered[0].ability == AbilityId.BURROWUP_ROACH
     assert registered[0].unit is full
+
+
+def test_regen_burrow_roaches_stays_burrowed_when_surrounded_at_full_hp() -> None:
+    """Full HP is not enough — do not surface into the same fight."""
+    ctx = _ctx()
+    ctx.bot.state.upgrades = {UpgradeId.BURROW}
+    full = _unit(1, Point2((50.0, 50.0)))
+    full.health_percentage = 1.0
+    enemy = _unit(90, Point2((52.0, 50.0)))
+    ctx.mediator.get_units_in_range.return_value = [[enemy]]
+
+    def _units(unit_type):
+        if unit_type == UnitTypeId.ROACH:
+            return []
+        if unit_type == UnitTypeId.ROACHBURROWED:
+            return [full]
+        return []
+
+    ctx.bot.units = MagicMock(side_effect=_units)
+
+    combat.regen_burrow_roaches()(ctx)
+
+    ctx.bot.register_behavior.assert_not_called()
 
 
 def test_regen_burrow_roaches_retreats_while_healing_with_claws() -> None:

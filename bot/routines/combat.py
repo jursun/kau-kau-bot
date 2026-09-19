@@ -793,8 +793,25 @@ def attack_squads(
 
             target = rally if mustering else targeting.squad_destination(ctx, position)
 
+            # Roaches about to burrow for regen: leave them for
+            # `regen_burrow_roaches` (no kite/commit AMove this frame).
+            if not mustering:
+                group_units = [
+                    u
+                    for u in group_units
+                    if not _roach_wants_regen_burrow(ctx, u)
+                ]
+                group_tags = {u.tag for u in group_units}
+                if not group_units:
+                    continue
+
             if kite_types and not mustering:
-                kiters = [u for u in group_units if u.type_id in kite_types]
+                kiters = [
+                    u
+                    for u in group_units
+                    if u.type_id in kite_types
+                    and not _roach_wants_regen_burrow(ctx, u)
+                ]
                 if kiters:
                     for unit in kiters:
                         ctx.bot.register_behavior(
@@ -806,7 +823,14 @@ def attack_squads(
                                 peeling=peeling,
                             )
                         )
-                    group_units = [u for u in group_units if u.type_id not in kite_types]
+                    # Drop kiters + any Roach that is digging in this frame
+                    # so never_retreat/commit paths do not AMove them either.
+                    group_units = [
+                        u
+                        for u in group_units
+                        if u.type_id not in kite_types
+                        and not _roach_wants_regen_burrow(ctx, u)
+                    ]
                     group_tags = {u.tag for u in group_units}
                     if not group_units:
                         continue
@@ -1368,27 +1392,39 @@ def _swarm_host_points(ctx: "BotContext") -> list[Point2]:
 _ROACH_REGEN_BURROW_BELOW: float = 0.25
 """Burrow to regenerate once health drops strictly below this fraction."""
 _ROACH_REGEN_UNBURROW_AT: float = 1.0
-"""Unburrow only once health is fully restored."""
+"""Unburrow only once health is fully restored *and* the area is clear."""
 _ROACH_REGEN_SAFE_ENEMY_RANGE: float = 12.0
 """With Claws, keep peeling home while any enemy is inside this radius;
 once clear (and the tile is safe) sit still so MoveToSafeTarget does not
-repath every frame."""
+repath every frame. Also the surround check before unburrow."""
+
+
+def _roach_wants_regen_burrow(ctx: "BotContext", unit: Unit) -> bool:
+    """True when this surface Roach should dig in this frame (skip kite/commit)."""
+    if unit.type_id != UnitTypeId.ROACH:
+        return False
+    if UpgradeId.BURROW not in ctx.bot.state.upgrades:
+        return False
+    return unit.health_percentage < _ROACH_REGEN_BURROW_BELOW
 
 
 def regen_burrow_roaches() -> CombatRoutine:
-    """Burrow hurt Roaches to regenerate; unburrow at full health.
+    """Burrow hurt Roaches to regenerate; unburrow only when clear.
 
     Requires Burrow researched. Surface Roaches under 25% HP burrow;
-    `ROACHBURROWED` stay down until health is 100%, then unburrow to rejoin
-    combat. With Tunneling Claws, burrowed Roaches peel toward home on the
-    influence grid (`KeepUnitSafe` + `MoveToSafeTarget`) while enemies are
-    close or the tile is unsafe; once clear they sit and heal (no order
-    spam). Without Claws they stay put (cannot move while burrowed).
+    `ROACHBURROWED` stay down until health is 100% *and* no enemy is inside
+    `_ROACH_REGEN_SAFE_ENEMY_RANGE` (and the tile is safe when Claws gives
+    us a grid) — otherwise keep healing underground instead of surfacing
+    into the same fight. With Tunneling Claws, burrowed Roaches peel toward
+    home on the influence grid while enemies are close or the tile is
+    unsafe; once clear they sit and heal (no order spam). Without Claws
+    they stay put (cannot move while burrowed).
 
-    Registered after `attack_squads`/`defend_*` so burrow/unburrow/retreat
-    wins the frame over AMove/kite. Burrowed Roaches are
+    Prefer registering this *before* `attack_squads` so dig-in wins the
+    frame; `attack_squads` also skips kiters that `_roach_wants_regen_burrow`
+    so we never AMove into the fight then dig. Burrowed Roaches are
     `UnitTypeId.ROACHBURROWED`, so they fall out of `army.types` squads
-    automatically until they surface again.
+    until they surface again.
     """
 
     def routine(ctx: "BotContext") -> None:
@@ -1396,7 +1432,7 @@ def regen_burrow_roaches() -> CombatRoutine:
             return
 
         for roach in ctx.bot.units(UnitTypeId.ROACH):
-            if roach.health_percentage >= _ROACH_REGEN_BURROW_BELOW:
+            if not _roach_wants_regen_burrow(ctx, roach):
                 continue
             ctx.bot.register_behavior(
                 UseAbility(AbilityId.BURROWDOWN_ROACH, roach)
@@ -1407,19 +1443,23 @@ def regen_burrow_roaches() -> CombatRoutine:
         home = ctx.production_location if claws else None
 
         for roach in ctx.bot.units(UnitTypeId.ROACHBURROWED):
-            if roach.health_percentage >= _ROACH_REGEN_UNBURROW_AT:
+            enemies_close = _enemies_near(
+                ctx, roach.position, _ROACH_REGEN_SAFE_ENEMY_RANGE
+            )
+            unsafe = bool(
+                claws
+                and not ctx.mediator.is_position_safe(
+                    grid=grid, position=roach.position
+                )
+            )
+            full = roach.health_percentage >= _ROACH_REGEN_UNBURROW_AT
+            if full and not enemies_close and not unsafe:
                 ctx.bot.register_behavior(
                     UseAbility(AbilityId.BURROWUP_ROACH, roach)
                 )
                 continue
             if not claws:
                 continue
-            enemies_close = _enemies_near(
-                ctx, roach.position, _ROACH_REGEN_SAFE_ENEMY_RANGE
-            )
-            unsafe = not ctx.mediator.is_position_safe(
-                grid=grid, position=roach.position
-            )
             if not enemies_close and not unsafe:
                 continue
             # Heal while relocating off the front — Claws allow burrowed move.
