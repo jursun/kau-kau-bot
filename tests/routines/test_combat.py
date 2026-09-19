@@ -1509,6 +1509,9 @@ def test_siege_with_swarm_hosts_groups_behind_attack_ball() -> None:
         h.orders = []
         h.order_target = None
     ctx.mediator.get_units_from_role.return_value = hosts
+    ctx.bot.units = MagicMock(
+        side_effect=lambda typ: hosts if typ == UnitTypeId.SWARMHOSTMP else []
+    )
     squad = _squad([_unit(50, Point2((100.0, 100.0)))])
     ctx.mediator.get_squads.return_value = [squad]
     ctx.bot.enemy_structures = []
@@ -1535,13 +1538,56 @@ def test_siege_with_swarm_hosts_groups_behind_attack_ball() -> None:
         assert cy_distance_to(moves[0].target, expected) < 0.01
 
 
-def test_siege_with_swarm_hosts_locusts_fortified_statics() -> None:
-    """Spawn Locusts onto PF / Photon Cannon / Shield Battery in cast range."""
+def test_siege_with_swarm_hosts_surface_burrows_before_locust() -> None:
+    """Surface Hosts dig first — Locusts fire on later frames while burrowed."""
     ctx = _ctx()
     ctx.bot.state.upgrades = {UpgradeId.BURROW}
     home = Point2((10.0, 10.0))
     host = _unit(1, Point2((90.0, 90.0)))
     host.type_id = UnitTypeId.SWARMHOSTMP
+    host.orders = []
+    host.order_target = None
+    cannon = _unit(201, Point2((97.0, 90.0)))
+    cannon.type_id = UnitTypeId.PHOTONCANNON
+    cannon.is_structure = True
+    ctx.mediator.get_units_from_role.return_value = [host]
+    ctx.bot.units = MagicMock(
+        side_effect=lambda t: [host] if t == UnitTypeId.SWARMHOSTMP else []
+    )
+    ctx.mediator.get_squads.return_value = [
+        _squad([_unit(50, Point2((100.0, 100.0)))])
+    ]
+    ctx.bot.enemy_structures = [cannon]
+
+    from bot.core import context as context_mod
+
+    original = context_mod.BotContext.production_location
+    context_mod.BotContext.production_location = property(lambda self: home)
+    try:
+        combat.siege_with_swarm_hosts()(ctx)
+    finally:
+        context_mod.BotContext.production_location = original
+
+    maneuver = ctx.bot.register_behavior.call_args.args[0]
+    abilities = [b for b in maneuver.micros if isinstance(b, UseAbility)]
+    assert abilities and abilities[0].ability == AbilityId.BURROWDOWN_SWARMHOST
+    assert not any(
+        b.ability
+        in (
+            AbilityId.EFFECT_SPAWNLOCUSTS,
+            AbilityId.SWARMHOSTSPAWNLOCUSTS_LOCUSTMP,
+        )
+        for b in abilities
+    ), "surface Host must dig before Locusts so KeepUnitSafe cannot win"
+
+
+def test_siege_with_swarm_hosts_locusts_fortified_statics() -> None:
+    """Burrowed Hosts Spawn Locusts onto fortified statics (before peel)."""
+    ctx = _ctx()
+    ctx.bot.state.upgrades = {UpgradeId.BURROW}
+    home = Point2((10.0, 10.0))
+    host = _unit(1, Point2((90.0, 90.0)))
+    host.type_id = UnitTypeId.SWARMHOSTBURROWEDMP
     host.orders = []
     host.order_target = None
     pf = _unit(200, Point2((95.0, 95.0)))
@@ -1554,10 +1600,17 @@ def test_siege_with_swarm_hosts_locusts_fortified_statics() -> None:
     battery.type_id = UnitTypeId.SHIELDBATTERY
     battery.is_structure = True
     ctx.mediator.get_units_from_role.return_value = [host]
+    ctx.bot.units = MagicMock(
+        side_effect=lambda t: (
+            [host] if t == UnitTypeId.SWARMHOSTBURROWEDMP else []
+        )
+    )
     ctx.mediator.get_squads.return_value = [
         _squad([_unit(50, Point2((100.0, 100.0)))])
     ]
     ctx.bot.enemy_structures = [pf, cannon, battery]
+    # Influence near statics is unsafe — Locusts must still lead.
+    ctx.mediator.is_position_safe.return_value = False
 
     from bot.core import context as context_mod
 
@@ -1570,8 +1623,10 @@ def test_siege_with_swarm_hosts_locusts_fortified_statics() -> None:
 
     maneuver = ctx.bot.register_behavior.call_args.args[0]
     assert isinstance(maneuver, CombatManeuver)
+    assert not any(isinstance(b, KeepUnitSafe) for b in maneuver.micros), (
+        "KeepUnitSafe must not lead when Locusts should fire"
+    )
     abilities = [b for b in maneuver.micros if isinstance(b, UseAbility)]
-    assert any(b.ability == AbilityId.BURROWDOWN_SWARMHOST for b in abilities)
     locusts = [
         b
         for b in abilities
@@ -1596,6 +1651,9 @@ def test_siege_with_swarm_hosts_stages_home_without_attack_ball() -> None:
     host.orders = []
     host.order_target = None
     ctx.mediator.get_units_from_role.return_value = [host]
+    ctx.bot.units = MagicMock(
+        side_effect=lambda typ: [host] if typ == UnitTypeId.SWARMHOSTMP else []
+    )
     ctx.mediator.get_squads.return_value = []
     ctx.bot.enemy_structures = []
     # Pre-seed legacy dig-in holds — routine must clear them.

@@ -1513,6 +1513,26 @@ def regen_burrow_roaches() -> CombatRoutine:
     return routine
 
 
+
+def _siege_swarm_hosts(ctx: "BotContext") -> list[Unit]:
+    """Surface + burrowed Hosts on `SWARM_HOST_ROLE` (re-claim strays).
+
+    Burrow morph keeps the unit tag, but a Host that digs before role
+    assignment — or whose type flips without a role refresh — can drop out
+    of `get_units_from_role`. Re-assign and return fresh Unit objects so
+    Locust casts still reach burrowed Hosts.
+    """
+    by_tag: dict[int, Unit] = {
+        u.tag: u for u in ctx.mediator.get_units_from_role(role=SWARM_HOST_ROLE)
+    }
+    for unit_type in (UnitTypeId.SWARMHOSTMP, UnitTypeId.SWARMHOSTBURROWEDMP):
+        for host in ctx.bot.units(unit_type):
+            if host.tag not in by_tag:
+                ctx.mediator.assign_role(tag=host.tag, role=SWARM_HOST_ROLE)
+            by_tag[host.tag] = host
+    return list(by_tag.values())
+
+
 def siege_with_swarm_hosts() -> CombatRoutine:
     """Offensive Swarm Host siege squad — group behind the attack ball and
     wither fortified statics with Locusts.
@@ -1524,16 +1544,16 @@ def siege_with_swarm_hosts() -> CombatRoutine:
     Batteries, and similar static defense. No per-base dig-in /
     `_swarm_host_points` parking.
 
-    Reads the role via `ctx.mediator.get_units_from_role` rather than
-    `ctx.units_in_role`, which filters by `army.types` and would always
-    return nothing here. Burrows once settled when Burrow is researched
-    (survivability); Locust abilities are tried every frame and
-    `UseAbility.execute` no-ops when the ability is unavailable —
-    `CombatManeuver.execute` stops at the first that fires.
+    Locust cast must win the `CombatManeuver` before `KeepUnitSafe`: near
+    fortified statics the influence grid is almost always unsafe, so a
+    leading KeepUnitSafe peels the Host every frame and Spawn Locusts never
+    fires. Swarm Hosts also need to be burrowed to cast — dig first when
+    surface, then Locust on subsequent frames while burrowed. Burrowed
+    Hosts are re-claimed via `_siege_swarm_hosts`.
     """
 
     def routine(ctx: "BotContext") -> None:
-        hosts = list(ctx.mediator.get_units_from_role(role=SWARM_HOST_ROLE))
+        hosts = _siege_swarm_hosts(ctx)
         # Clear legacy per-base hold map so stale dig-in assignments die.
         ctx.state.swarm_host_hold = {}
         if not hosts:
@@ -1553,7 +1573,7 @@ def siege_with_swarm_hosts() -> CombatRoutine:
 
         for host in hosts:
             maneuver = CombatManeuver()
-            maneuver.add(KeepUnitSafe(unit=host, grid=grid))
+            burrowed = host.type_id == UnitTypeId.SWARMHOSTBURROWEDMP
 
             cast_targets = [
                 s
@@ -1574,21 +1594,47 @@ def siege_with_swarm_hosts() -> CombatRoutine:
                     f"SWARM_HOST sieging {focus.type_id.name} at "
                     f"{locust_target} (anchor {anchor})",
                 )
-                if burrow_done:
-                    maneuver.add(UseAbility(AbilityId.BURROWDOWN_SWARMHOST, host))
-                maneuver.add(
-                    UseAbility(
-                        AbilityId.EFFECT_SPAWNLOCUSTS, host, target=locust_target
+                # Locusts first while burrowed — KeepUnitSafe must NOT lead
+                # or influence near statics blocks the cast forever.
+                if burrowed:
+                    maneuver.add(
+                        UseAbility(
+                            AbilityId.EFFECT_SPAWNLOCUSTS,
+                            host,
+                            target=locust_target,
+                        )
                     )
-                )
-                maneuver.add(
-                    UseAbility(
-                        AbilityId.SWARMHOSTSPAWNLOCUSTS_LOCUSTMP,
-                        host,
-                        target=locust_target,
+                    maneuver.add(
+                        UseAbility(
+                            AbilityId.SWARMHOSTSPAWNLOCUSTS_LOCUSTMP,
+                            host,
+                            target=locust_target,
+                        )
                     )
-                )
+                elif burrow_done:
+                    # Surface Hosts dig so the next frames can Locust.
+                    maneuver.add(
+                        UseAbility(AbilityId.BURROWDOWN_SWARMHOST, host)
+                    )
+                else:
+                    # No Burrow yet — still try Locust abilities in case the
+                    # API exposes them while surface.
+                    maneuver.add(
+                        UseAbility(
+                            AbilityId.EFFECT_SPAWNLOCUSTS,
+                            host,
+                            target=locust_target,
+                        )
+                    )
+                    maneuver.add(
+                        UseAbility(
+                            AbilityId.SWARMHOSTSPAWNLOCUSTS_LOCUSTMP,
+                            host,
+                            target=locust_target,
+                        )
+                    )
             elif cy_distance_to(host.position, anchor) > SWARM_HOST_SIEGE_ARRIVE:
+                maneuver.add(KeepUnitSafe(unit=host, grid=grid))
                 if not _already_ordered_to_point(host, anchor):
                     maneuver.add(
                         MoveToSafeTarget(unit=host, grid=grid, target=anchor)
@@ -1596,12 +1642,18 @@ def siege_with_swarm_hosts() -> CombatRoutine:
             else:
                 # Grouped behind the ball, no static in range yet — dig in
                 # for survivability and wait for the frontline to open one.
-                if burrow_done:
-                    maneuver.add(UseAbility(AbilityId.BURROWDOWN_SWARMHOST, host))
+                if burrow_done and not burrowed:
+                    maneuver.add(
+                        UseAbility(AbilityId.BURROWDOWN_SWARMHOST, host)
+                    )
+                else:
+                    maneuver.add(KeepUnitSafe(unit=host, grid=grid))
 
-            ctx.bot.register_behavior(maneuver)
+            if maneuver.micros:
+                ctx.bot.register_behavior(maneuver)
 
     return routine
+
 
 
 def escort_corruptors() -> CombatRoutine:

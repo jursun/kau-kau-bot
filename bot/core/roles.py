@@ -28,6 +28,9 @@ SUPPORT_ROLES: dict[Race, dict[UnitTypeId, UnitRole]] = {
         # and a Zergling into an offensive wave it's meant to stay out of
         # (see `consts.ZERGLING_DEFENDER_ROLE`).
         UnitTypeId.SWARMHOSTMP: SWARM_HOST_ROLE,
+        # Burrow morph keeps the tag; map the burrowed type too so a
+        # Host that digs before role bookkeeping never falls into army.
+        UnitTypeId.SWARMHOSTBURROWEDMP: SWARM_HOST_ROLE,
         UnitTypeId.CORRUPTOR: CORRUPTOR_ROLE,
         UnitTypeId.ZERGLING: ZERGLING_DEFENDER_ROLE,
     },
