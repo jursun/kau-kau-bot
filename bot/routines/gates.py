@@ -12,7 +12,10 @@ from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 
 from bot.core.types import Gate
-from bot.intel.army import enemy_army_supply, enemy_army_type_ids
+from bot.intel.army import (
+    enemy_army_type_ids,
+    leave_enemy_army_supply,
+)
 
 if TYPE_CHECKING:
     from bot.core.context import BotContext
@@ -198,7 +201,7 @@ def leave_army_supply_needed(ctx: "BotContext") -> float:
     visible high-impact tech). Empty/unseen enemy → `LEAVE_ARMY_SUPPLY_UNSEEN`
     so fog does not force the old fixed-40 wait.
     """
-    enemy = float(enemy_army_supply(ctx))
+    enemy = float(leave_enemy_army_supply(ctx))
     bump = 0.0
     for type_id in enemy_army_type_ids(ctx):
         bump = max(bump, _LEAVE_THREAT_BUMP.get(type_id, 0.0))

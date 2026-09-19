@@ -73,3 +73,29 @@ def army_behind_on_supply(ctx: BotContext) -> bool:
     if enemy <= 0:
         return False
     return enemy > float(ctx.bot.supply_army)
+
+
+def leave_enemy_army_supply(ctx: BotContext) -> float:
+    """Best-known enemy combat supply for leave decisions.
+
+    Returns ``max(peak_enemy_army_supply, enemy_army_supply(ctx))``. Peak only
+    rises via ``observe_leave_intel`` — fog alone never invents supply.
+    """
+    current = enemy_army_supply(ctx)
+    peak = float(getattr(ctx.state, "peak_enemy_army_supply", 0.0) or 0.0)
+    return max(peak, current)
+
+
+def observe_leave_intel(ctx: BotContext) -> float:
+    """Latch peak from this frame's scouted combat supply; return leave supply.
+
+    Call once per frame from ``main.on_step`` so leave gates keep a
+    fog-stable floor. Does not invent units — empty vision leaves peak as-is.
+    """
+    current = enemy_army_supply(ctx)
+    peak = float(getattr(ctx.state, "peak_enemy_army_supply", 0.0) or 0.0)
+    if current > peak:
+        ctx.state.peak_enemy_army_supply = current
+        peak = current
+    return max(peak, current)
+
