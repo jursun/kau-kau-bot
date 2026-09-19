@@ -41,6 +41,8 @@ def _ctx(townhall_count: int = 3) -> BotContext:
     bot.config = {}
     build = MagicMock()
     ctx = BotContext(bot=bot, build=build, state=RunState())
+    # Opening claim fields default False/None on RunState; tests that
+    # set main_queen_tag also leave natural unset (idle skip).
     ctx.mediator.get_own_nat = Point2((50.0, 20.0))
     ctx.mediator.get_creep_grid = object()
     ctx.mediator.get_ground_grid = object()
@@ -132,6 +134,25 @@ def test_spread_creep_idle_when_only_main_claim_queen() -> None:
 
     ctx.mediator.get_next_tumor_on_path.assert_not_called()
     main_claim.assert_not_called()
+
+
+def test_spread_creep_skips_natural_opening_claim_queen() -> None:
+    import bot.routines.creep as creep_mod
+
+    ctx = _ctx()
+    natural_claim = _queen(5)
+    other = _queen(9, Point2((20.0, 20.0)))
+    ctx.state.natural_queen_tag = 5
+    ctx.state.natural_queen_tumor_done = False
+    ctx.mediator.get_units_from_role.side_effect = _role_lookup(
+        creep_queens=[natural_claim, other]
+    )
+    creep_mod.cy_has_creep = lambda grid, pos: False  # type: ignore[attr-defined]
+
+    creep.spread_creep()(ctx)
+
+    assert other.called or ctx.mediator.get_next_tumor_on_path.called
+    natural_claim.assert_not_called()
 
 
 def _tumor(tag: int, position: Point2 | None = None) -> MagicMock:

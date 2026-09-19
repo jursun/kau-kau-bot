@@ -791,15 +791,11 @@ def _claim_natural_queen_tumor(ctx) -> None:
     Tumor instead of its first inject, then hand it back to normal inject
     duty.
 
-    Reassigns the claimed Queen to `UnitRole.QUEEN_CREEP` rather than
-    casting the tumor ability directly - that's the same role/pool
-    `routines.creep.spread_creep` drives with ares' own `QueenSpreadCreep`
-    (walk-to-a-valid-edge, then cast), and it's also what keeps
-    `InjectLarva` (scoped to `UnitRole.QUEEN_INJECT`) from sweeping this
-    Queen into an inject mid-walk - exactly the reason that routine gives
-    for using a separate role in the first place. `spread_creep` itself
-    only ever promotes a *new* creep queen when its pool is empty, so once
-    this claims one, the two routines hand off cleanly with no double-claim.
+    Reassigns the claimed Queen to `UnitRole.QUEEN_CREEP` (keeps
+    `InjectLarva` from sweeping her mid-walk) and drives the plant itself
+    with a sticky single-command path. `spread_creep` skips this tag while
+    the claim is active — sharing the Queen with highway creep was the
+    hatch ↔ tumor thrash (two routines re-issuing move every frame).
 
     Detects "done" by diffing `_creep_tumor_tags` against the baseline
     snapshotted at claim time (see that function's own comment for why a
@@ -832,6 +828,7 @@ def _claim_natural_queen_tumor(ctx) -> None:
         queen = candidates.closest_to(natural)
         ctx.state.natural_queen_tag = queen.tag
         ctx.state.natural_queen_tumor_baseline = _creep_tumor_tags(ctx)
+        ctx.state.natural_queen_tumor_spot = None
         ctx.mediator.assign_role(tag=queen.tag, role=UnitRole.QUEEN_CREEP)
         ctx.log(f"MACRO_ZERG natural Queen {queen.tag} pulled for opening creep tumor")
         return
@@ -844,12 +841,38 @@ def _claim_natural_queen_tumor(ctx) -> None:
         # Died before ever placing the tumor - let a fresh candidate claim
         # the slot instead of leaving this latched forever.
         ctx.state.natural_queen_tag = None
+        ctx.state.natural_queen_tumor_spot = None
+        return
+
+    # Exclusive until done: keep role on QUEEN_CREEP every frame so inject
+    # cannot reclaim mid-walk.
+    ctx.mediator.assign_role(tag=tag, role=UnitRole.QUEEN_CREEP)
+    queen = next((q for q in still_claimed if q.tag == tag), None)
+    if queen is None:
+        ctx.state.natural_queen_tag = None
+        ctx.state.natural_queen_tumor_spot = None
         return
 
     if _creep_tumor_tags(ctx) <= ctx.state.natural_queen_tumor_baseline:
-        return  # still walking to a placement spot - no new tumor yet
+        # Drive ourselves with a sticky spot — do not share command path with
+        # highway `spread_creep` (that re-picks edges every frame → thrash).
+        sticky = ctx.state.natural_queen_tumor_spot
+        if sticky is None or not cy_has_creep(ctx.mediator.get_creep_grid, sticky):
+            edge = ctx.mediator.find_nearby_creep_edge_position(
+                position=queen.position,
+                search_radius=18.0,
+                unit_tag=tag,
+                cache_result=False,
+            )
+            if edge is not None:
+                sticky = Point2(edge)
+                ctx.state.natural_queen_tumor_spot = sticky
+        if sticky is not None:
+            _drive_queen_to_tumor_spot(ctx, queen, sticky)
+        return
 
     ctx.state.natural_queen_tumor_done = True
+    ctx.state.natural_queen_tumor_spot = None
     ctx.mediator.assign_role(tag=tag, role=UnitRole.QUEEN_INJECT)
     ctx.log(f"MACRO_ZERG natural Queen {tag} back on inject duty")
 
@@ -951,21 +974,69 @@ def _pick_main_tumor_spot(ctx, queen) -> Point2 | None:
     return None
 
 
-def _drive_main_queen_tumor(ctx, queen) -> None:
-    """Move/cast a main-claim Queen onto a main-plateau tumor spot."""
+def _queen_already_ordered_to(queen, spot: Point2) -> bool:
+    """True if the Queen already has a move/cast order near `spot`.
+
+    Stops every-frame `queen.move(spot)` / re-cast spam that looks like
+    hatch ↔ tumor thrash even when the sticky tile itself is stable.
+    """
+    target = queen.order_target
+    if target is None:
+        return False
+    if isinstance(target, Point2):
+        return cy_distance_to_squared(target, spot) < 4.0
+    pos = getattr(target, "position", None)
+    if pos is not None:
+        return cy_distance_to_squared(pos, spot) < 4.0
+    return False
+
+
+def _drive_queen_to_tumor_spot(ctx, queen, spot: Point2) -> None:
+    """Single command path: walk once, then cast once — no re-pull spam."""
     if queen.is_using_ability(AbilityId.BUILD_CREEPTUMOR):
         return
-    spot = _pick_main_tumor_spot(ctx, queen)
-    if spot is None:
-        # Stay on the plateau while energy recharges / creep fills.
-        if cy_distance_to_squared(queen.position, ctx.production_location) > 36.0:
-            queen.move(ctx.production_location)
-        return
     if cy_distance_to_squared(queen.position, spot) > 25.0:
-        queen.move(spot)
+        if not _queen_already_ordered_to(queen, spot):
+            queen.move(spot)
         return
-    if AbilityId.BUILD_CREEPTUMOR_QUEEN in queen.abilities:
-        queen(AbilityId.BUILD_CREEPTUMOR_QUEEN, spot)
+    if AbilityId.BUILD_CREEPTUMOR_QUEEN not in queen.abilities:
+        return
+    if _queen_already_ordered_to(queen, spot):
+        return
+    queen(AbilityId.BUILD_CREEPTUMOR_QUEEN, spot)
+
+
+def _drive_main_queen_tumor(ctx, queen) -> None:
+    """Move/cast a main-claim Queen onto a sticky main-plateau tumor spot."""
+    if queen.is_using_ability(AbilityId.BUILD_CREEPTUMOR):
+        return
+
+    sticky = ctx.state.main_queen_tumor_spot
+    if sticky is not None:
+        # Drop sticky only when it is no longer a usable main-plateau plant.
+        main = ctx.production_location
+        area_sq = _MAIN_TUMOR_AREA_RADIUS**2
+        if (
+            cy_distance_to_squared(sticky, main) > area_sq
+            or ctx.bot.get_terrain_height(sticky)
+            != ctx.bot.get_terrain_height(main)
+            or not cy_has_creep(ctx.mediator.get_creep_grid, sticky)
+        ):
+            sticky = None
+            ctx.state.main_queen_tumor_spot = None
+
+    if sticky is None:
+        sticky = _pick_main_tumor_spot(ctx, queen)
+        if sticky is None:
+            # Stay on the plateau while energy recharges / creep fills.
+            home = ctx.production_location
+            if cy_distance_to_squared(queen.position, home) > 36.0:
+                if not _queen_already_ordered_to(queen, home):
+                    queen.move(home)
+            return
+        ctx.state.main_queen_tumor_spot = sticky
+
+    _drive_queen_to_tumor_spot(ctx, queen, sticky)
 
 
 def _claim_main_queen_tumor(ctx) -> None:
@@ -999,6 +1070,7 @@ def _claim_main_queen_tumor(ctx) -> None:
         queen = candidates.closest_to(main)
         ctx.state.main_queen_tag = queen.tag
         ctx.state.main_queen_tumor_baseline = _main_area_tumor_tags(ctx)
+        ctx.state.main_queen_tumor_spot = None
         ctx.mediator.assign_role(tag=queen.tag, role=UnitRole.QUEEN_CREEP)
         ctx.log(
             f"MACRO_ZERG main Queen {queen.tag} pulled for "
@@ -1013,14 +1085,30 @@ def _claim_main_queen_tumor(ctx) -> None:
     queen = next((q for q in still_claimed if q.tag == tag), None)
     if queen is None:
         ctx.state.main_queen_tag = None
+        ctx.state.main_queen_tumor_spot = None
         return
+
+    # Exclusive until done — reaffirm creep role every frame.
+    ctx.mediator.assign_role(tag=tag, role=UnitRole.QUEEN_CREEP)
 
     placed = _main_area_tumor_tags(ctx) - ctx.state.main_queen_tumor_baseline
     if len(placed) < _MAIN_OPENING_TUMORS:
+        # After each successful plant, drop sticky so the next tumor covers
+        # a different rim arc (clearance check in `_pick_main_tumor_spot`).
+        if ctx.state.main_queen_tumor_spot is not None and any(
+            cy_distance_to_squared(ctx.state.main_queen_tumor_spot, t.position) < _MAIN_TUMOR_CLEARANCE**2
+            for t in (
+                ctx.bot.structures(UnitTypeId.CREEPTUMORQUEEN)
+                | ctx.bot.structures(UnitTypeId.CREEPTUMORBURROWED)
+            )
+            if t.tag in placed
+        ):
+            ctx.state.main_queen_tumor_spot = None
         _drive_main_queen_tumor(ctx, queen)
         return
 
     ctx.state.main_queen_tumor_done = True
+    ctx.state.main_queen_tumor_spot = None
     ctx.mediator.assign_role(tag=tag, role=UnitRole.QUEEN_INJECT)
     ctx.log(
         f"MACRO_ZERG main Queen {tag} back on inject duty "
