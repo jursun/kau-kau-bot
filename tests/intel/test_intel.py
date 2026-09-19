@@ -9,6 +9,7 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from ares.consts import UnitRole
 from sc2.ids.unit_typeid import UnitTypeId
 
 from bot.core.context import BotContext
@@ -19,6 +20,7 @@ from bot.intel import (
     army_behind_on_supply,
     enemy_army,
     enemy_army_supply,
+    leave_army_supply,
     leave_enemy_army_supply,
     observe_leave_intel,
     enemy_army_tags,
@@ -180,6 +182,32 @@ def test_leave_enemy_army_supply_raises_when_seen_larger() -> None:
     ]
     assert observe_leave_intel(ctx) == 6.0
     assert leave_enemy_army_supply(ctx) == 6.0
+
+
+
+def test_leave_army_supply_sums_defending_only() -> None:
+    ctx = _ctx([])
+    ling = _unit(1, UnitTypeId.ZERGLING)
+    roach = _unit(2, UnitTypeId.ROACH)
+
+    def units_in_role(role):
+        if role == UnitRole.DEFENDING:
+            return [ling, roach]
+        return []
+
+    ctx.units_in_role = units_in_role  # type: ignore[method-assign]
+    ctx.bot.calculate_supply_cost.side_effect = lambda t: {
+        UnitTypeId.ZERGLING: 0.5,
+        UnitTypeId.ROACH: 2.0,
+    }[t]
+    assert leave_army_supply(ctx) == 2.5
+
+
+def test_leave_army_supply_zero_when_no_defenders() -> None:
+    ctx = _ctx([])
+    ctx.units_in_role = lambda role: []  # type: ignore[method-assign]
+    assert leave_army_supply(ctx) == 0.0
+
 
 
 def main() -> int:

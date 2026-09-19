@@ -10,6 +10,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from typing import Any
 
+from ares.consts import UnitRole
+
 from bot.consts import WORKER_TYPES
 from bot.core.context import BotContext
 
@@ -98,4 +100,24 @@ def observe_leave_intel(ctx: BotContext) -> float:
         ctx.state.peak_enemy_army_supply = current
         peak = current
     return max(peak, current)
+
+
+def leave_army_supply(ctx: BotContext) -> float:
+    """Commit-able our combat supply for leave gates — not raw `supply_army`.
+
+    Sums `calculate_supply_cost` over `ctx.units_in_role(DEFENDING)`, which
+    is already filtered to `build.army.types`. Queens never appear there;
+    home Zerglings on `ZERGLING_DEFENDER_ROLE` stay off DEFENDING, so they
+    cannot inflate the leave bar.
+
+    Combat / gates should compare this to `leave_enemy_army_supply` (peak
+    floor), never `ctx.bot.supply_army`. Same metric Soujirou shipped as
+    `committed_leave_army_supply` — this is the intel home for it.
+    """
+    defenders = ctx.units_in_role(UnitRole.DEFENDING)
+    if not defenders:
+        return 0.0
+    return float(
+        sum(ctx.bot.calculate_supply_cost(unit.type_id) for unit in defenders)
+    )
 

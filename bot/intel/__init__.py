@@ -12,6 +12,7 @@ from bot.intel.army import (
     enemy_army_type_ids,
     enemy_has_air_units,
     filter_non_workers,
+    leave_army_supply,
     leave_enemy_army_supply,
     observe_leave_intel,
 )
