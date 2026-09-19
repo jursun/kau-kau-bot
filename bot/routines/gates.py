@@ -15,6 +15,7 @@ from sc2.ids.upgrade_id import UpgradeId
 from bot.core.types import Gate
 from bot.intel.army import (
     enemy_army_type_ids,
+    leave_army_supply,
     leave_enemy_army_supply,
 )
 
@@ -196,20 +197,12 @@ _LEAVE_THREAT_BUMP: dict[UnitTypeId, float] = {
 
 
 def committed_leave_army_supply(ctx: "BotContext") -> float:
-    """Supply the first leave will actually promote — not raw `supply_army`.
+    """Alias of intel leave_army_supply — commit-able DEFENDING supply.
 
-    Sums `calculate_supply_cost` over `ctx.units_in_role(DEFENDING)`, which
-    is already filtered to `build.army.types`. Queens never appear there;
-    home Zerglings on `ZERGLING_DEFENDER_ROLE` stay off DEFENDING, so they
-    cannot inflate the leave bar. Live CheatInsane: gate thought us=8-12
-    ready vs enemy 20-26 while Wave 1 only promoted 6-8 DEFENDING Roaches.
+    Kept under this name so existing gate call sites stay stable. Prefer
+    importing leave_army_supply from bot.intel for new code.
     """
-    defenders = ctx.units_in_role(UnitRole.DEFENDING)
-    if not defenders:
-        return 0.0
-    return float(
-        sum(ctx.bot.calculate_supply_cost(unit.type_id) for unit in defenders)
-    )
+    return leave_army_supply(ctx)
 
 
 def leave_army_supply_needed(ctx: "BotContext") -> float:
