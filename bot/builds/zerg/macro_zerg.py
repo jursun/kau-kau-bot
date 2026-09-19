@@ -197,7 +197,7 @@ from bot.behaviors.zerg import (
 from bot.builds.definition import Army, BuildDefinition, Combat, Economy
 from bot.consts import HOME_ZERGLING_CAP, ROACH_SWARM_HOST_COMP, ZERGLING_DEFENDER_ROLE
 from bot.intel import army as intel_army
-from bot.routines import combat, creep, gates, overseers as overseer_routines, scouting
+from bot.routines import combat, creep, gates, overlords as overlord_routines, overseers as overseer_routines, scouting
 from bot.steps import common as c
 from bot.steps import zerg as z
 
@@ -1154,6 +1154,7 @@ BUILD = BuildDefinition(
             creep.spread_creep(),
             creep.spread_tumors(),
             scouting.air_scout(UnitTypeId.OVERLORD),
+            overlord_routines.manage_overlord_positions(),
         ),
         # Leave when our army supply meets the intel-scaled floor (Kuuro
         # enemy_army_supply ± threat bump). wave1_min=1: no unit-count floor.
