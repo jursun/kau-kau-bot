@@ -146,6 +146,10 @@ CORRUPTOR_ROLE: UnitRole = UnitRole.CONTROL_GROUP_THREE
 # extras join the army wave (`army.types` includes Zergling).
 HOME_ZERGLING_CAP: int = 6
 
+# Macro Zerg: hard cap on the Swarm Host siege squad — Locusts chip
+# fortified statics; more than this steals larva from the Roach ball.
+SWARM_HOST_SIEGE_CAP: int = 5
+
 # Permanent home-defender role for that home cap — see
 # `builds.zerg.macro_zerg._macro_zerg_on_unit_created`. Safe to key this off
 # unit type alone (rather than per-build) only because Macro Zerg is

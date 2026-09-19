@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from ares.behaviors.macro import ExpansionController, MacroPlan, SpawnController, TechUp
 from ares.consts import ID, TARGET
+from sc2.ids.ability_id import AbilityId
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 from sc2.position import Point2
@@ -30,6 +31,7 @@ from bot.consts import (
     LING_HEAVY_ROACH_COMP,
     LING_HEAVY_SWARM_COMP,
     ROACH_SWARM_HOST_COMP,
+    SWARM_HOST_SIEGE_CAP,
     ROACH_SWARM_HOST_CORRUPTOR_COMP,
 )
 from bot.core.types import Gate, MacroStep
@@ -435,6 +437,62 @@ def tech_up(desired_tech: UnitTypeId, gate: Gate = _always) -> MacroStep:
     return step
 
 
+
+def _unit_amount(group) -> int:
+    """Own-unit count that tolerates test MagicMocks without `.amount`."""
+    amount = getattr(group, "amount", None)
+    if isinstance(amount, int):
+        return amount
+    try:
+        return len(list(group))
+    except TypeError:
+        return 0
+
+
+def _swarm_host_owned_count(ctx: "BotContext") -> int:
+    """Living + burrowed + larva eggs morphing into Swarm Hosts."""
+    bot = ctx.bot
+    n = _unit_amount(bot.units(UnitTypeId.SWARMHOSTMP))
+    n += _unit_amount(bot.units(UnitTypeId.SWARMHOSTBURROWEDMP))
+    eggs = bot.units(UnitTypeId.EGG)
+    try:
+        egg_iter = list(eggs)
+    except TypeError:
+        egg_iter = []
+    for egg in egg_iter:
+        orders = getattr(egg, "orders", ()) or ()
+        if any(
+            getattr(getattr(o, "ability", None), "id", None)
+            == AbilityId.TRAIN_SWARMHOST
+            for o in orders
+        ):
+            n += 1
+    return n
+
+
+def _comp_without_swarm_hosts(
+    comp: dict[UnitTypeId, dict[str, float | int]],
+) -> dict[UnitTypeId, dict[str, float | int]]:
+    """Drop Swarm Host from a SpawnController comp and renormalize."""
+    trimmed = {
+        unit: dict(info)
+        for unit, info in comp.items()
+        if unit != UnitTypeId.SWARMHOSTMP
+    }
+    total = sum(float(info["proportion"]) for info in trimmed.values())
+    if total <= 0:
+        return {
+            UnitTypeId.ROACH: {"proportion": 1.0, "priority": 0},
+        }
+    return {
+        unit: {
+            "proportion": float(info["proportion"]) / total,
+            "priority": info["priority"],
+        }
+        for unit, info in trimmed.items()
+    }
+
+
 def spawn_macro_army(gate: Gate = _always) -> MacroStep:
     """Roach/Swarm Host by default (see `bot.consts.ROACH_SWARM_HOST_COMP`).
 
@@ -486,6 +544,8 @@ def spawn_macro_army(gate: Gate = _always) -> MacroStep:
             comp = ROACH_SWARM_HOST_CORRUPTOR_COMP
         else:
             comp = ROACH_SWARM_HOST_COMP
+        if _swarm_host_owned_count(ctx) >= SWARM_HOST_SIEGE_CAP:
+            comp = _comp_without_swarm_hosts(comp)
         return SpawnController(dict(comp), spawn_target=None)
 
     return step

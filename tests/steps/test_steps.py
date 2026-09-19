@@ -471,6 +471,44 @@ def test_spawn_macro_army_prefers_lings_when_gas_starved() -> None:
     assert comp[UnitTypeId.ZERGLING]["proportion"] > comp[UnitTypeId.ROACH]["proportion"]
 
 
+
+
+def test_spawn_macro_army_strips_hosts_at_siege_cap() -> None:
+    """At SWARM_HOST_SIEGE_CAP, stop training Hosts — Roach/ling only."""
+    from bot.consts import SWARM_HOST_SIEGE_CAP
+
+    ctx = _ctx()
+    ctx.bot.minerals = 400
+    ctx.bot.vespene = 400
+    ctx.bot.tech_requirement_progress = MagicMock(return_value=1.0)
+    ready = MagicMock()
+    ready.__bool__ = lambda self: False
+    ctx.bot.structures = MagicMock(
+        return_value=MagicMock(ready=ready, amount=0)
+    )
+    hosts = [MagicMock() for _ in range(SWARM_HOST_SIEGE_CAP)]
+
+    def _units(unit_type):
+        if unit_type == UnitTypeId.SWARMHOSTMP:
+            out = MagicMock()
+            out.amount = len(hosts)
+            out.__iter__ = lambda self: iter(hosts)
+            return out
+        out = MagicMock()
+        out.amount = 0
+        out.__iter__ = lambda self: iter([])
+        return out
+
+    ctx.bot.units = MagicMock(side_effect=_units)
+    behavior = z.spawn_macro_army(gate=lambda _c: True)(ctx)
+    assert isinstance(behavior, SpawnController)
+    assert UnitTypeId.SWARMHOSTMP not in behavior.army_composition_dict
+    total = sum(
+        float(v["proportion"]) for v in behavior.army_composition_dict.values()
+    )
+    assert abs(total - 1.0) < 1e-6
+
+
 def test_forward_crawler_wave_waits_on_minerals_and_interval() -> None:
     from bot.behaviors.zerg import ForwardCrawlerWave
 
