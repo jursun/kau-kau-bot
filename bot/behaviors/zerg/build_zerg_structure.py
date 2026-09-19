@@ -14,15 +14,19 @@ is `any(...)`, so returning False while a Drone is on-route (or while we
 cannot yet afford 200/200) let `_reserve_upgrade_bank` / army spend the
 bank before the build started. `prioritize=True` holds the plan like
 `UpgradeController.prioritize` until the structure is pending or alive.
-Sticky multi-base placement cuts re-pick thrash when BuildingManager
-drops a Zerg worker after a transient `can_place_structure` miss.
+
+Sticky reuse alone was not enough: CheatInsane G2 Persephone TvZ thrashed
+`Building INFESTATIONPIT at (44.5, 39.5)` for ~90s — `can_place_structure`
+kept blessing the same tile, BuildingManager dropped the Drone on arrival,
+and sticky never rotated. Track consecutive sticky dispatches without
+progress, blacklist the tile after a few fails, and rotate townhalls.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from math import cos, floor, pi, sin
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING
 
 from cython_extensions import cy_distance_to_squared, cy_towards
 from loguru import logger
@@ -40,11 +44,45 @@ if TYPE_CHECKING:
 # not thrash a new ring-search every time BuildingManager clears a Zerg
 # worker after a one-frame placement miss.
 _STICKY_PLACEMENT: dict[UnitTypeId, Point2] = {}
+# Consecutive empty-tracker returns while sticky is set (dispatch died).
+_STICKY_FAILS: dict[UnitTypeId, int] = {}
+# Tiles that never started a build — skipped until the structure exists.
+_BLACKLIST: dict[UnitTypeId, set[Point2]] = {}
+# Round-robin townhall offset after abandoning a sticky tile.
+_BASE_ROTATION: dict[UnitTypeId, int] = {}
+
+_MAX_STICKY_FAILS = 3
 
 
 def _snap(x: float, y: float) -> Point2:
     """2x2 / 3x3 centres land on `.5` coordinates."""
     return Point2((floor(x) + 0.5, floor(y) + 0.5))
+
+
+def _blacklist_for(structure_id: UnitTypeId) -> set[Point2]:
+    return _BLACKLIST.setdefault(structure_id, set())
+
+
+def _clear_sticky(structure_id: UnitTypeId) -> None:
+    _STICKY_PLACEMENT.pop(structure_id, None)
+    _STICKY_FAILS.pop(structure_id, None)
+
+
+def _clear_all_placement_state(structure_id: UnitTypeId) -> None:
+    _clear_sticky(structure_id)
+    _BLACKLIST.pop(structure_id, None)
+    _BASE_ROTATION.pop(structure_id, None)
+
+
+def _abandon_sticky(structure_id: UnitTypeId, tile: Point2) -> None:
+    """Blacklist a sticky tile that never produced a build; rotate bases."""
+    _blacklist_for(structure_id).add(tile)
+    _clear_sticky(structure_id)
+    _BASE_ROTATION[structure_id] = _BASE_ROTATION.get(structure_id, 0) + 1
+    logger.info(
+        f"Abandoning sticky {structure_id.name} at {tile} "
+        f"(blacklist={len(_blacklist_for(structure_id))})"
+    )
 
 
 def _find_near_base(
@@ -56,6 +94,7 @@ def _find_near_base(
     min_radius: float,
     max_radius: float,
     resource_clearance: float,
+    banned: set[Point2],
 ) -> Point2 | None:
     """Ring-search a reachable, buildable spot near `base` (on creep)."""
     anchor = Point2(cy_towards(base, ai.game_info.map_center, 8.0))
@@ -80,7 +119,7 @@ def _find_near_base(
     candidates.sort(key=lambda p: cy_distance_to_squared(p, anchor))
     seen: set[Point2] = set()
     for point in candidates:
-        if point in seen:
+        if point in seen or point in banned:
             continue
         seen.add(point)
         if cy_distance_to_squared(point, base) < min_radius**2:
@@ -96,10 +135,6 @@ def _find_near_base(
         if mediator.can_place_structure(position=point, structure_type=structure_type):
             return point
     return None
-
-
-def _clear_sticky(structure_id: UnitTypeId) -> None:
-    _STICKY_PLACEMENT.pop(structure_id, None)
 
 
 @dataclass
@@ -119,6 +154,8 @@ class BuildZergStructure(MacroBehavior):
             empty the bank before the structure starts (Spire 200/200).
         try_all_bases: Also search other ready townhalls when the primary
             base has no legal tile.
+        max_sticky_fails: Dispatches to the same sticky without pending
+            before that tile is blacklisted and bases rotate.
     """
 
     base_location: Point2
@@ -130,18 +167,18 @@ class BuildZergStructure(MacroBehavior):
     resource_clearance: float = 5.0
     prioritize: bool = True
     try_all_bases: bool = True
+    max_sticky_fails: int = _MAX_STICKY_FAILS
 
     def execute(self, ai: "AresBot", config: dict, mediator: ManagerMediator) -> bool:
         existing = len(mediator.get_own_structures_dict[self.structure_id])
         pending = ai.structure_pending(self.structure_id)
         if existing + pending >= self.to_count:
-            _clear_sticky(self.structure_id)
+            _clear_all_placement_state(self.structure_id)
             return False
 
         on_route = ai.not_started_but_in_building_tracker(self.structure_id)
         # Drone already walking: hold MacroPlan so nothing below spends the
-        # 200/200 before BUILD starts. Was `return False` — that is what let
-        # Glial/army drain the bank mid-walk (CheatInsane Spire thrash).
+        # bank before BUILD starts.
         if on_route >= self.max_on_route:
             return bool(self.prioritize)
 
@@ -149,10 +186,16 @@ class BuildZergStructure(MacroBehavior):
             return False
 
         if not ai.can_afford(self.structure_id):
-            # Same UpgradeController.prioritize pattern: gated + not yet
-            # affordable must still block later spenders, or Spire never
-            # accumulates 200/200 under an active upgrade bank.
             return bool(self.prioritize)
+
+        # If the current sticky already burned its fail budget, drop it
+        # before resolving so we pick a new tile / rotated base this frame.
+        sticky = _STICKY_PLACEMENT.get(self.structure_id)
+        if (
+            sticky is not None
+            and _STICKY_FAILS.get(self.structure_id, 0) >= self.max_sticky_fails
+        ):
+            _abandon_sticky(self.structure_id, sticky)
 
         position = self._resolve_position(ai, mediator)
         if position is None:
@@ -160,14 +203,21 @@ class BuildZergStructure(MacroBehavior):
 
         worker = mediator.select_worker(target_position=position, force_close=True)
         if worker is None:
-            # Hold bank while we wait for a free Drone rather than letting
-            # army/upgrades spend and restart the starve loop.
             return bool(self.prioritize)
 
         mediator.build_with_specific_worker(
             worker=worker, structure_type=self.structure_id, pos=position
         )
+        prev = _STICKY_PLACEMENT.get(self.structure_id)
         _STICKY_PLACEMENT[self.structure_id] = position
+        if prev is not None and prev == position:
+            # Re-dispatch to the same sticky — prior attempt died without
+            # pending. Count toward blacklist (not every idle frame).
+            _STICKY_FAILS[self.structure_id] = (
+                _STICKY_FAILS.get(self.structure_id, 0) + 1
+            )
+        else:
+            _STICKY_FAILS[self.structure_id] = 0
         logger.info(
             f"{ai.time_formatted} Building {self.structure_id.name} at {position}"
         )
@@ -176,22 +226,19 @@ class BuildZergStructure(MacroBehavior):
     def _resolve_position(
         self, ai: "AresBot", mediator: ManagerMediator
     ) -> Point2 | None:
+        banned = _blacklist_for(self.structure_id)
         sticky = _STICKY_PLACEMENT.get(self.structure_id)
-        if sticky is not None and mediator.can_place_structure(
-            position=sticky, structure_type=self.structure_id
-        ):
-            return sticky
         if sticky is not None:
-            _clear_sticky(self.structure_id)
+            if sticky in banned:
+                _clear_sticky(self.structure_id)
+            elif mediator.can_place_structure(
+                position=sticky, structure_type=self.structure_id
+            ):
+                return sticky
+            else:
+                _abandon_sticky(self.structure_id, sticky)
 
-        bases: list[Point2] = [self.base_location]
-        if self.try_all_bases:
-            for th in ai.townhalls.ready:
-                pos = th.position
-                if all(cy_distance_to_squared(pos, b) > 1.0 for b in bases):
-                    bases.append(pos)
-
-        for base in bases:
+        for base in self._ordered_bases(ai):
             found = _find_near_base(
                 ai,
                 mediator,
@@ -200,7 +247,20 @@ class BuildZergStructure(MacroBehavior):
                 min_radius=self.min_radius,
                 max_radius=self.max_radius,
                 resource_clearance=self.resource_clearance,
+                banned=banned,
             )
             if found is not None:
                 return found
         return None
+
+    def _ordered_bases(self, ai: "AresBot") -> list[Point2]:
+        bases: list[Point2] = [self.base_location]
+        if self.try_all_bases:
+            for th in ai.townhalls.ready:
+                pos = th.position
+                if all(cy_distance_to_squared(pos, b) > 1.0 for b in bases):
+                    bases.append(pos)
+        if len(bases) <= 1:
+            return bases
+        offset = _BASE_ROTATION.get(self.structure_id, 0) % len(bases)
+        return bases[offset:] + bases[:offset]
