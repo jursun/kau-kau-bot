@@ -328,6 +328,9 @@ class RunState:
     """Overseer escorting the main ATTACKING squad."""
     overseer_scout_tag: int | None = None
     """Overseer skirting enemy bases for intel."""
+    overseer_destinations: dict[int, Point2] = field(default_factory=dict)
+    """Overseer tag -> sticky park/scout Point2. Stops home/army/scout
+    re-path thrash when the desired point only drifts a little."""
     changeling_destinations: dict[int, Point2] = field(default_factory=dict)
     """Changeling tag → sticky opponent-base Point2. Assigned once (and only
     reassigned if that base is no longer an opponent target) so

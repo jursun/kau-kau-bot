@@ -6,6 +6,12 @@ and only reassigned when a tagged Overseer dies.
 
 Changelings get a sticky opponent-base destination (also in `RunState`) so
 frame-to-frame unit-list reshuffles cannot bounce them between targets.
+
+Movement thrash harden (CheatInsane):
+- Scout Overseer is watch-first: `PathUnitToTarget` only — no `KeepUnitSafe`
+  peel that undoes vision (same intent as opening Overlord `air_scout`).
+- Home / army / scout destinations are sticky per tag; we skip re-issuing
+  moves when already on the dest tile or already ordered toward it.
 """
 
 from __future__ import annotations
@@ -13,7 +19,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ares.behaviors.combat import CombatManeuver
-from ares.behaviors.combat.individual import AMove, KeepUnitSafe, MoveToSafeTarget, UseAbility
+from ares.behaviors.combat.individual import (
+    AMove,
+    KeepUnitSafe,
+    MoveToSafeTarget,
+    PathUnitToTarget,
+    UseAbility,
+)
 from ares.consts import UnitRole
 from cython_extensions import cy_distance_to_squared, cy_towards
 from sc2.ids.ability_id import AbilityId
@@ -48,6 +60,13 @@ _SPAWN_CHANGELING = AbilityId.SPAWNCHANGELING_SPAWNCHANGELING
 # Sit for vision once this close; re-issuing AMove on top of the tile is
 # what made parked changelings jitter in place.
 _CHANGELING_ARRIVE_SQ: float = 3.0**2
+
+# Sit once this close; re-issuing KeepUnitSafe/MoveToSafeTarget every
+# frame is what made home/army Overseers jitter (CheatInsane thrash).
+_OVERSEER_ARRIVE: float = 2.0
+_OVERSEER_ARRIVE_SQ: float = _OVERSEER_ARRIVE**2
+# Sticky dest snap — army ball drift below this keeps the old point.
+_OVERSEER_DEST_MATCH_SQ: float = 6.0**2
 # Snap visible townhalls / sticky dests onto the same base slot.
 _BASE_MATCH_SQ: float = 10.0**2
 
@@ -80,12 +99,71 @@ def assign_overseer_roles(ctx: "BotContext") -> None:
             setattr(state, attr, free.pop(0).tag)
 
 
+def _already_ordered_to_point(unit: "Unit", target: Point2) -> bool:
+    """True when the unit's current order already aims at `target`'s tile."""
+    if not unit.orders:
+        return False
+    ability_id = getattr(getattr(unit.orders[0], "ability", None), "id", None)
+    # SC2 often reports MOVE order_target as a path waypoint — if already
+    # moving, do not cancel/repath every frame (combat thrash pattern).
+    if ability_id == AbilityId.MOVE and bool(getattr(unit, "is_moving", False)):
+        return True
+    order_target = unit.order_target
+    if isinstance(order_target, Point2):
+        if order_target.rounded == target.rounded:
+            return True
+        if cy_distance_to_squared(order_target, target) <= 1.5**2:
+            return True
+    return False
+
+
+def _sticky_dest(
+    ctx: "BotContext", tag: int, desired: Point2, *, force: bool = False
+) -> Point2:
+    """Latch per-Overseer destination; only retarget when it drifts far."""
+    dests = ctx.state.overseer_destinations
+    current = dests.get(tag)
+    if (
+        not force
+        and current is not None
+        and cy_distance_to_squared(current, desired) <= _OVERSEER_DEST_MATCH_SQ
+    ):
+        return current
+    dests[tag] = Point2(desired)
+    return dests[tag]
+
+
+def _should_skip_move(unit: "Unit", target: Point2) -> bool:
+    if cy_distance_to_squared(unit.position, target) <= _OVERSEER_ARRIVE_SQ:
+        return True
+    return _already_ordered_to_point(unit, target)
+
+
+def _watch_air_move(ctx: "BotContext", unit: "Unit", target: Point2) -> None:
+    """Scout path — vision watch-first, no KeepUnitSafe peel."""
+    if _should_skip_move(unit, target):
+        return
+    grid = ctx.mediator.get_air_grid
+    ctx.bot.register_behavior(
+        PathUnitToTarget(
+            unit=unit,
+            grid=grid,
+            target=target,
+            success_at_distance=_OVERSEER_ARRIVE,
+        )
+    )
+
+
 def _safe_air_move(ctx: "BotContext", unit: "Unit", target: Point2) -> None:
+    """Home / army path — KeepUnitSafe ok, but never re-issue every frame."""
+    if _should_skip_move(unit, target):
+        return
     grid = ctx.mediator.get_air_grid
     maneuver = CombatManeuver()
     maneuver.add(KeepUnitSafe(unit=unit, grid=grid))
     maneuver.add(MoveToSafeTarget(unit=unit, grid=grid, target=target))
     ctx.bot.register_behavior(maneuver)
+
 
 
 def _home_target(ctx: "BotContext") -> Point2:
@@ -108,24 +186,42 @@ def _army_target(ctx: "BotContext") -> Point2 | None:
 
 
 def _scout_target(ctx: "BotContext", scout: "Unit") -> Point2:
-    """Next enemy-side expansion to skirt — prefer ones we aren't already on."""
+    """Enemy-side expansion to skirt — sticky so we do not flip every frame.
+
+    Keeps a latched destination while the scout is still en route / watching.
+    Repicks only when the latch is missing, the scout has arrived, or the
+    point is no longer a valid enemy-side candidate.
+    """
     enemy_start = ctx.bot.enemy_start_locations[0]
     expansions = sorted(
         ctx.bot.expansion_locations_list,
         key=lambda loc: cy_distance_to_squared(loc, enemy_start),
     )
-    # Skip our own bases; walk enemy-side ring.
     owned = set(ctx.bot.owned_expansions.keys())
+    fallback = Point2(cy_towards(enemy_start, ctx.production_location, 25.0))
+
+    def _valid(loc: Point2) -> bool:
+        if any(cy_distance_to_squared(loc, o) <= _BASE_MATCH_SQ for o in owned):
+            return False
+        return True
+
     candidates = [
-        loc
+        Point2(loc)
         for loc in expansions
-        if loc not in owned
-        and cy_distance_to_squared(loc, scout.position) > 25.0
+        if loc not in owned and cy_distance_to_squared(loc, scout.position) > 25.0
     ]
-    if not candidates:
-        # Offset around enemy main so we don't sit on top of AA.
-        return Point2(cy_towards(enemy_start, ctx.production_location, 25.0))
-    return candidates[0]
+
+    latched = ctx.state.overseer_destinations.get(scout.tag)
+    if latched is not None and _valid(latched):
+        # Still traveling or parked on the latch — keep it (no candidate flip).
+        if cy_distance_to_squared(scout.position, latched) > _OVERSEER_ARRIVE_SQ:
+            return latched
+        # Arrived: hold the tile (caller skips re-issue via arrive check).
+        return latched
+
+    pick = candidates[0] if candidates else fallback
+    return _sticky_dest(ctx, scout.tag, pick, force=True)
+
 
 
 def _cast_changelings(ctx: "BotContext") -> None:
@@ -227,19 +323,33 @@ def manage_overseers() -> CombatRoutine:
         state = ctx.state
         alive = _alive_overseers(ctx)
 
+        # Drop sticky dests for dead / unassigned Overseers.
+        live_tags = set(alive)
+        for slot in (
+            state.overseer_home_tag,
+            state.overseer_army_tag,
+            state.overseer_scout_tag,
+        ):
+            if slot is not None:
+                live_tags.add(slot)
+        for tag in list(state.overseer_destinations):
+            if tag not in alive:
+                del state.overseer_destinations[tag]
+
         if (tag := state.overseer_home_tag) is not None and tag in alive:
-            _safe_air_move(ctx, alive[tag], _home_target(ctx))
+            dest = _sticky_dest(ctx, tag, _home_target(ctx))
+            _safe_air_move(ctx, alive[tag], dest)
 
         if (tag := state.overseer_army_tag) is not None and tag in alive:
             army_target = _army_target(ctx)
-            if army_target is not None:
-                _safe_air_move(ctx, alive[tag], army_target)
-            else:
-                _safe_air_move(ctx, alive[tag], _home_target(ctx))
+            desired = army_target if army_target is not None else _home_target(ctx)
+            dest = _sticky_dest(ctx, tag, desired)
+            _safe_air_move(ctx, alive[tag], dest)
 
         if (tag := state.overseer_scout_tag) is not None and tag in alive:
             scout = alive[tag]
-            _safe_air_move(ctx, scout, _scout_target(ctx, scout))
+            # Watch-first: PathUnitToTarget only — KeepUnitSafe peels vision.
+            _watch_air_move(ctx, scout, _scout_target(ctx, scout))
 
         _cast_changelings(ctx)
         _spread_changelings(ctx)
