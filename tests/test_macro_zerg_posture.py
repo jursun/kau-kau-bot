@@ -9,6 +9,7 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from ares.consts import UnitRole
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 from sc2.position import Point2
@@ -287,20 +288,46 @@ def test_army_supply_gate() -> None:
     assert gates.army_supply_at_least(40)(ctx)
 
 
+
+def _set_defenders(ctx, units) -> None:
+    """Leave gate reads committed DEFENDING supply, not raw supply_army."""
+    ctx.units_in_role = lambda role: units if role == UnitRole.DEFENDING else []
+
+
+def _roach(tag: int):
+    u = MagicMock()
+    u.tag = tag
+    u.type_id = UnitTypeId.ROACH
+    return u
+
+
 def test_intel_scaled_leave_sooner_when_unseen() -> None:
-    """Fog / no combat scouted → leave at UNSEEN (32), not the old fixed 40."""
+    """Fog / no combat scouted -> leave at UNSEEN via committed DEFENDING supply."""
     from bot.routines import gates
 
-    ctx = _ctx(supply_army=31)
+    ctx = _ctx(supply_army=100)
     ctx.bot.mediator = SimpleNamespace(get_cached_enemy_army=[])
+    ctx.bot.calculate_supply_cost = MagicMock(return_value=2.0)
     assert gates.leave_army_supply_needed(ctx) == gates.LEAVE_ARMY_SUPPLY_UNSEEN
+    _set_defenders(ctx, [_roach(i) for i in range(17)])
     assert not gates.intel_scaled_army_leave()(ctx)
-    ctx.bot.supply_army = 32
+    _set_defenders(ctx, [_roach(i) for i in range(18)])
     assert gates.intel_scaled_army_leave()(ctx)
 
 
+def test_intel_scaled_leave_ignores_inflated_supply_army() -> None:
+    """Queens / home lings in supply_army must not open the leave gate."""
+    from bot.routines import gates
+
+    ctx = _ctx(supply_army=80)
+    ctx.bot.mediator = SimpleNamespace(get_cached_enemy_army=[])
+    ctx.bot.calculate_supply_cost = MagicMock(return_value=2.0)
+    _set_defenders(ctx, [_roach(i) for i in range(4)])
+    assert not gates.intel_scaled_army_leave()(ctx)
+
+
 def test_intel_scaled_leave_holds_vs_real_army() -> None:
-    """Visible enemy army raises the leave floor (margin + clamp)."""
+    """Peak enemy army raises the leave floor (margin + clamp)."""
     from bot.routines import gates
 
     zealots = []
@@ -309,15 +336,13 @@ def test_intel_scaled_leave_holds_vs_real_army() -> None:
         u.tag = i
         u.type_id = UnitTypeId.ZEALOT
         zealots.append(u)
-    ctx = _ctx(supply_army=40)
+    ctx = _ctx(supply_army=200)
     ctx.bot.mediator = SimpleNamespace(get_cached_enemy_army=zealots)
-    # 10 zealots * 2 supply = 20 enemy → need 20+12=32, still leave at 40
     ctx.bot.calculate_supply_cost = MagicMock(return_value=2.0)
-    need = gates.leave_army_supply_needed(ctx)
-    assert need == 32.0
+    assert gates.leave_army_supply_needed(ctx) == 36.0
+    _set_defenders(ctx, [_roach(i) for i in range(18)])
     assert gates.intel_scaled_army_leave()(ctx)
 
-    # Heavier army: 20 stalkers * 2 = 40 → need 52
     stalkers = []
     for i in range(20):
         u = MagicMock()
@@ -325,10 +350,10 @@ def test_intel_scaled_leave_holds_vs_real_army() -> None:
         u.type_id = UnitTypeId.STALKER
         stalkers.append(u)
     ctx.bot.mediator = SimpleNamespace(get_cached_enemy_army=stalkers)
-    ctx.bot.supply_army = 50
-    assert gates.leave_army_supply_needed(ctx) == 52.0
+    assert gates.leave_army_supply_needed(ctx) == 56.0
+    _set_defenders(ctx, [_roach(i) for i in range(27)])
     assert not gates.intel_scaled_army_leave()(ctx)
-    ctx.bot.supply_army = 52
+    _set_defenders(ctx, [_roach(i) for i in range(28)])
     assert gates.intel_scaled_army_leave()(ctx)
 
 
@@ -341,10 +366,8 @@ def test_intel_scaled_leave_threat_bump_and_cap() -> None:
     ctx = _ctx(supply_army=30)
     ctx.bot.mediator = SimpleNamespace(get_cached_enemy_army=[colossus])
     ctx.bot.calculate_supply_cost = MagicMock(return_value=6.0)
-    # enemy 6 + margin 12 + colossus bump 8 = 26 → clamp min 24 → 26
-    assert gates.leave_army_supply_needed(ctx) == 26.0
+    assert gates.leave_army_supply_needed(ctx) == 30.0
 
-    # Huge army clamps at MAX
     army = []
     for i in range(40):
         u = MagicMock()
@@ -357,17 +380,15 @@ def test_intel_scaled_leave_threat_bump_and_cap() -> None:
 
 
 def test_macro_zerg_uses_intel_scaled_leave_gate() -> None:
-    from bot.routines import gates
-
-    assert mz.BUILD.combat.wave_gate.__name__ == gates.intel_scaled_army_leave().__name__ or (
-        mz.BUILD.combat.wave_gate.__code__.co_filename.endswith("gates.py")
-    )
-    # Same factory identity: call both on an unseen ctx.
-    ctx = _ctx(supply_army=32)
+    ctx = _ctx(supply_army=100)
     ctx.bot.mediator = SimpleNamespace(get_cached_enemy_army=[])
+    ctx.bot.calculate_supply_cost = MagicMock(return_value=2.0)
+    assert mz.BUILD.combat.wave1_min == 8
+    _set_defenders(ctx, [_roach(i) for i in range(18)])
     assert mz.BUILD.combat.wave_gate(ctx) is True
-    ctx.bot.supply_army = 31
+    _set_defenders(ctx, [_roach(i) for i in range(17)])
     assert mz.BUILD.combat.wave_gate(ctx) is False
+
 
 
 def main() -> int:

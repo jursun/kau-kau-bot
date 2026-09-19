@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ares.consts import UnitRole
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 
@@ -171,11 +172,11 @@ def army_supply_at_least(supply: float) -> Gate:
 # Macro Zerg leave: scale our army-supply floor off scouted enemy combat
 # supply (Kuuro `enemy_army_supply`) — leave sooner vs greedy / fog, hold
 # longer vs a real army. Clamped so we never leave naked or turtle forever.
-LEAVE_ARMY_SUPPLY_MIN: float = 24.0
-LEAVE_ARMY_SUPPLY_MAX: float = 56.0
-LEAVE_ARMY_SUPPLY_UNSEEN: float = 32.0
+LEAVE_ARMY_SUPPLY_MIN: float = 28.0
+LEAVE_ARMY_SUPPLY_MAX: float = 64.0
+LEAVE_ARMY_SUPPLY_UNSEEN: float = 36.0
 """When no enemy combat is visible, leave a bit sooner than the old fixed 40."""
-LEAVE_ARMY_SUPPLY_MARGIN: float = 12.0
+LEAVE_ARMY_SUPPLY_MARGIN: float = 16.0
 """Beat visible enemy army supply by this much before leaving."""
 
 # Single biggest threat bump (not stacked) when these types are visible.
@@ -194,12 +195,29 @@ _LEAVE_THREAT_BUMP: dict[UnitTypeId, float] = {
 }
 
 
-def leave_army_supply_needed(ctx: "BotContext") -> float:
-    """Army supply we want before the first Macro Zerg leave.
+def committed_leave_army_supply(ctx: "BotContext") -> float:
+    """Supply the first leave will actually promote — not raw `supply_army`.
 
-    Uses Kuuro's WORKER-filtered `enemy_army_supply` (+ a small bump for
-    visible high-impact tech). Empty/unseen enemy → `LEAVE_ARMY_SUPPLY_UNSEEN`
-    so fog does not force the old fixed-40 wait.
+    Sums `calculate_supply_cost` over `ctx.units_in_role(DEFENDING)`, which
+    is already filtered to `build.army.types`. Queens never appear there;
+    home Zerglings on `ZERGLING_DEFENDER_ROLE` stay off DEFENDING, so they
+    cannot inflate the leave bar. Live CheatInsane: gate thought us=8-12
+    ready vs enemy 20-26 while Wave 1 only promoted 6-8 DEFENDING Roaches.
+    """
+    defenders = ctx.units_in_role(UnitRole.DEFENDING)
+    if not defenders:
+        return 0.0
+    return float(
+        sum(ctx.bot.calculate_supply_cost(unit.type_id) for unit in defenders)
+    )
+
+
+def leave_army_supply_needed(ctx: "BotContext") -> float:
+    """Committed-army supply we want before the first Macro Zerg leave.
+
+    Scales off Kuuro's peak `leave_enemy_army_supply` (+ a small bump for
+    visible high-impact tech). Empty/unseen enemy -> `LEAVE_ARMY_SUPPLY_UNSEEN`.
+    Compared against `committed_leave_army_supply`, never raw `supply_army`.
     """
     enemy = float(leave_enemy_army_supply(ctx))
     bump = 0.0
@@ -213,13 +231,10 @@ def leave_army_supply_needed(ctx: "BotContext") -> float:
 
 
 def intel_scaled_army_leave() -> Gate:
-    """True once our army supply meets `leave_army_supply_needed`.
-
-    Drop-in replacement for a fixed `army_supply_at_least(40)` leave gate.
-    """
+    """True once committed DEFENDING supply meets `leave_army_supply_needed`."""
 
     def gate(ctx: "BotContext") -> bool:
-        return float(ctx.bot.supply_army) >= leave_army_supply_needed(ctx)
+        return committed_leave_army_supply(ctx) >= leave_army_supply_needed(ctx)
 
     return gate
 
