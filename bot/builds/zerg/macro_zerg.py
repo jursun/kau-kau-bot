@@ -137,7 +137,7 @@ This is a continuous macro identity, not a scripted all-in leave time:
 once army supply hits 40, `combat.release_first_wave_then_stream` puts
 every DEFENDING army unit on ATTACKING and streams new ones forever after.
 `combat.defend_home()` holds before that, and Swarm Host/Corruptor never
-enter that pipeline at all — see `combat.dig_in_swarm_hosts`/
+enter that pipeline at all — see `combat.siege_with_swarm_hosts`/
 `combat.escort_corruptors` and `core.roles.SUPPORT_ROLES`. Home Zerglings
 stay on `ZERGLING_DEFENDER_ROLE` (`combat.defend_with_zerglings`); extras
 join the attack wave. Once Burrow is done, hurt Roaches (<25% HP) dig in
@@ -1146,7 +1146,7 @@ BUILD = BuildDefinition(
                 kite_types=frozenset({UnitTypeId.ROACH}),
                 min_engage_range=_ROACH_MIN_ENGAGE_RANGE,
             ),
-            combat.dig_in_swarm_hosts(),
+            combat.siege_with_swarm_hosts(),
             combat.escort_corruptors(),
             overseer_routines.manage_overseers(),
             creep.spread_creep(),

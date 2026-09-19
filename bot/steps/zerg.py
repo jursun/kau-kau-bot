@@ -452,7 +452,7 @@ def spawn_macro_army(gate: Gate = _always) -> MacroStep:
     TODO: scout-based counter composition (see intel.army composition).
     For now: Roach + Swarm Host; Corruptor only if enemy air. Roaches will
     use Burrow + Tunneling Claws to leave the front and heal; Swarm Hosts
-    siege fortified positions (`combat.dig_in_swarm_hosts`).
+    siege fortified positions (`combat.siege_with_swarm_hosts`).
     """
 
     _roach_only_comp: dict[UnitTypeId, dict[str, float | int]] = {

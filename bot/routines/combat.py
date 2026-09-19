@@ -504,10 +504,10 @@ def _sticky_hold_point(
     log_label: str = "DEFEND",
 ) -> Point2:
     """Stable hold per unit — match by Point2, not list index. Shared by
-    `defend_home` (`ctx.state.defender_hold`) and `dig_in_swarm_hosts`
-    (`ctx.state.swarm_host_hold`) — same load-balancing problem either way:
-    match an existing assignment first, else pick whichever point currently
-    has the fewest occupants."""
+    `defend_home` (`ctx.state.defender_hold`) and `defend_with_zerglings`
+    (`ctx.state.zergling_defender_hold`) — same load-balancing problem either
+    way: match an existing assignment first, else pick whichever point
+    currently has the fewest occupants."""
     assigned = hold_map.get(unit.tag)
     if assigned is not None:
         nearest = min(holds, key=lambda h: cy_distance_to_squared(assigned, h))
@@ -1372,20 +1372,62 @@ def escort_overseers() -> CombatRoutine:
     return routine
 
 
-SWARM_HOST_FORWARD_OFFSET: float = 8.0
-"""How far in front of each owned base a Swarm Host's hold point sits -
-close enough to stay defensive, far enough that Locusts reach past the
-mineral line toward the likely approach."""
-SWARM_HOST_LOCUST_RANGE: float = 10.0
-"""How far past the hold point, toward the enemy, Spawn Locusts is cast."""
+SWARM_HOST_BEHIND_OFFSET: float = 6.0
+"""How far behind the ATTACKING ball (toward home) the Swarm Host siege
+squad anchors — close enough for Locusts to reach fortified statics the
+frontline is pressing, far enough that Hosts stay out of the melee."""
+SWARM_HOST_LOCUST_CAST_RANGE: float = 15.0
+"""Max distance from a Host to a fortified static at which we try Spawn
+Locusts (ability range is generous; this keeps casts on the fight)."""
+SWARM_HOST_SIEGE_ARRIVE: float = 3.0
+"""Within this of the shared siege anchor, Hosts stop pathing and cast."""
+
+FORTIFIED_STATIC_TYPES: frozenset[UnitTypeId] = frozenset(
+    {
+        UnitTypeId.PLANETARYFORTRESS,
+        UnitTypeId.PHOTONCANNON,
+        UnitTypeId.SHIELDBATTERY,
+        UnitTypeId.BUNKER,
+        UnitTypeId.MISSILETURRET,
+        UnitTypeId.SPINECRAWLER,
+        UnitTypeId.SPORECRAWLER,
+        UnitTypeId.AUTOTURRET,
+    }
+)
+"""Static defense Locusts are meant to wither — PF / cannons / batteries
+and the usual bunker / turret / spine / spore / auto-turret set."""
 
 
-def _swarm_host_points(ctx: "BotContext") -> list[Point2]:
-    """One forward point per owned base, facing the enemy start."""
-    enemy = ctx.bot.enemy_start_locations[0]
+def _swarm_host_siege_anchor(ctx: "BotContext") -> Point2 | None:
+    """Shared rally just behind the biggest ATTACKING ball, else home.
+
+    Hosts group on one point (no per-base dig-in). When an attack ball
+    exists, sit `SWARM_HOST_BEHIND_OFFSET` toward home from its center so
+    Locusts land on the statics the frontline is hitting. With no ball yet,
+    stage at `production_location` and wait for the push.
+    """
+    home = ctx.production_location
+    squads = ctx.mediator.get_squads(
+        role=UnitRole.ATTACKING, squad_radius=SQUAD_RADIUS
+    )
+    if not squads:
+        return home
+    biggest = max(squads, key=lambda squad: len(squad.squad_units))
+    ball = biggest.squad_position
+    if home is None:
+        return Point2(ball)
+    return Point2(cy_towards(ball, home, SWARM_HOST_BEHIND_OFFSET))
+
+
+def _fortified_statics_near(
+    ctx: "BotContext", position: Point2, radius: float
+) -> list[Unit]:
+    """Enemy fortified statics within `radius` of `position`."""
     return [
-        Point2(cy_towards(base, enemy, SWARM_HOST_FORWARD_OFFSET))
-        for base in ctx.bot.owned_expansions
+        s
+        for s in ctx.bot.enemy_structures
+        if s.type_id in FORTIFIED_STATIC_TYPES
+        and cy_distance_to(position, s.position) <= radius
     ]
 
 
@@ -1471,57 +1513,66 @@ def regen_burrow_roaches() -> CombatRoutine:
     return routine
 
 
-def dig_in_swarm_hosts() -> CombatRoutine:
-    """Park Swarm Hosts at a forward point per owned base and let Spawn
-    Locusts do the work - no squad clustering, no AMove-into-melee, and
-    never promoted out of `SWARM_HOST_ROLE` (see `core.roles.SUPPORT_ROLES`
-    - Swarm Host is deliberately kept out of `army.types` so `release_waves`
-    can never sweep it into a muster). Reads the role directly via
-    `ctx.mediator.get_units_from_role` rather than `ctx.units_in_role`,
-    which filters by `army.types` and would always return nothing here.
+def siege_with_swarm_hosts() -> CombatRoutine:
+    """Offensive Swarm Host siege squad — group behind the attack ball and
+    wither fortified statics with Locusts.
 
-    Burrows once in position, if Burrow is researched - purely for
-    survivability; Spawn Locusts works the same either way. Both abilities
-    are tried unconditionally every frame once settled: `UseAbility.execute`
-    already checks `ability in unit.abilities` and no-ops otherwise, and
-    `CombatManeuver.execute` stops at the first one that actually fires -
-    burrowing and casting can never both go out on the same frame, which is
-    correct (they're mutually exclusive actions in-game too).
+    Hosts stay on `SWARM_HOST_ROLE` (see `core.roles.SUPPORT_ROLES`) so
+    `release_waves` never sweeps them into muster padding; they still
+    contribute by advancing with / just behind the ATTACKING ball and
+    casting Spawn Locusts onto Planetary Fortress, Photon Cannons, Shield
+    Batteries, and similar static defense. No per-base dig-in /
+    `_swarm_host_points` parking.
+
+    Reads the role via `ctx.mediator.get_units_from_role` rather than
+    `ctx.units_in_role`, which filters by `army.types` and would always
+    return nothing here. Burrows once settled when Burrow is researched
+    (survivability); Locust abilities are tried every frame and
+    `UseAbility.execute` no-ops when the ability is unavailable —
+    `CombatManeuver.execute` stops at the first that fires.
     """
 
     def routine(ctx: "BotContext") -> None:
         hosts = list(ctx.mediator.get_units_from_role(role=SWARM_HOST_ROLE))
-        alive = {u.tag for u in hosts}
-        ctx.state.swarm_host_hold = {
-            tag: pt for tag, pt in ctx.state.swarm_host_hold.items() if tag in alive
-        }
+        # Clear legacy per-base hold map so stale dig-in assignments die.
+        ctx.state.swarm_host_hold = {}
         if not hosts:
             return
-        points = _swarm_host_points(ctx)
-        if not points:
+
+        anchor = _swarm_host_siege_anchor(ctx)
+        if anchor is None:
             return
 
         grid = ctx.mediator.get_ground_grid
-        enemy = ctx.bot.enemy_start_locations[0]
         burrow_done = UpgradeId.BURROW in ctx.bot.state.upgrades
+        # Prefer statics near the shared anchor (the fight); fall back to
+        # anything in cast range of a Host so a lone Host still chips.
+        statics = _fortified_statics_near(
+            ctx, anchor, SWARM_HOST_LOCUST_CAST_RANGE + SWARM_HOST_BEHIND_OFFSET
+        )
 
         for host in hosts:
-            hold = _sticky_hold_point(
-                ctx, host, points, ctx.state.swarm_host_hold, log_label="SWARM_HOST"
-            )
             maneuver = CombatManeuver()
             maneuver.add(KeepUnitSafe(unit=host, grid=grid))
 
-            if cy_distance_to(host.position, hold) > DEFENDER_HOLD_ARRIVE:
-                maneuver.add(MoveToSafeTarget(unit=host, grid=grid, target=hold))
-            else:
-                locust_target = Point2(
-                    cy_towards(hold, enemy, SWARM_HOST_LOCUST_RANGE)
+            cast_targets = [
+                s
+                for s in statics
+                if cy_distance_to(host.position, s.position)
+                <= SWARM_HOST_LOCUST_CAST_RANGE
+            ]
+            if not cast_targets:
+                cast_targets = _fortified_statics_near(
+                    ctx, host.position, SWARM_HOST_LOCUST_CAST_RANGE
                 )
+
+            if cast_targets:
+                focus = cy_closest_to(position=host.position, units=cast_targets)
+                locust_target = focus.position
                 ctx.log_once(
-                    f"swarm_host_dug_in_{host.tag}",
-                    f"SWARM_HOST dug in at {hold}, spawning locusts "
-                    f"toward {locust_target}",
+                    f"swarm_host_siege_{host.tag}",
+                    f"SWARM_HOST sieging {focus.type_id.name} at "
+                    f"{locust_target} (anchor {anchor})",
                 )
                 if burrow_done:
                     maneuver.add(UseAbility(AbilityId.BURROWDOWN_SWARMHOST, host))
@@ -1537,6 +1588,17 @@ def dig_in_swarm_hosts() -> CombatRoutine:
                         target=locust_target,
                     )
                 )
+            elif cy_distance_to(host.position, anchor) > SWARM_HOST_SIEGE_ARRIVE:
+                if not _already_ordered_to_point(host, anchor):
+                    maneuver.add(
+                        MoveToSafeTarget(unit=host, grid=grid, target=anchor)
+                    )
+            else:
+                # Grouped behind the ball, no static in range yet — dig in
+                # for survivability and wait for the frontline to open one.
+                if burrow_done:
+                    maneuver.add(UseAbility(AbilityId.BURROWDOWN_SWARMHOST, host))
+
             ctx.bot.register_behavior(maneuver)
 
     return routine
