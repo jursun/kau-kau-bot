@@ -1513,7 +1513,6 @@ FORTIFIED_STATIC_TYPES: frozenset[UnitTypeId] = frozenset(
         UnitTypeId.MISSILETURRET,
         UnitTypeId.SPINECRAWLER,
         UnitTypeId.SPORECRAWLER,
-        UnitTypeId.AUTOTURRET,
     }
 )
 """Static defense Locusts may cast on — preferred subset below."""
@@ -1523,17 +1522,9 @@ SWARM_HOST_SIEGE_FOCUS_TYPES: frozenset[UnitTypeId] = frozenset(
         UnitTypeId.PLANETARYFORTRESS,
         UnitTypeId.PHOTONCANNON,
         UnitTypeId.SHIELDBATTERY,
-        UnitTypeId.BUNKER,
     }
 )
-"""True fortified statics Hosts should primary (Jason / CheatInsane Torches)."""
-
-SWARM_HOST_SIEGE_WEAK_TYPES: frozenset[UnitTypeId] = frozenset(
-    {
-        UnitTypeId.AUTOTURRET,
-    }
-)
-"""Temporary / weak AA — only Locust these when nothing better is in range."""
+"""Top-band fortified statics Hosts should primary over bunker/turret/spine/spore."""
 
 
 def swarm_host_siege_target_score(
@@ -1541,13 +1532,11 @@ def swarm_host_siege_target_score(
 ) -> tuple[int, float]:
     """Pure priority for Swarm Host Locust focus (lower sorts first).
 
-    Prefer PF / Photon Cannon / Shield Battery / Bunker → other statics →
-    Autoturret last.
+    Prefer PF / Photon Cannon / Shield Battery → remaining fortified statics
+    (Bunker / Missile Turret / Spine / Spore). Autoturret is not a cast target.
     """
     if type_id in SWARM_HOST_SIEGE_FOCUS_TYPES:
         band = 0
-    elif type_id in SWARM_HOST_SIEGE_WEAK_TYPES:
-        band = 2
     else:
         band = 1
     return (band, distance)
@@ -1707,8 +1696,7 @@ def siege_with_swarm_hosts() -> CombatRoutine:
     `release_waves` never sweeps them into muster padding; they still
     contribute by advancing with / just behind the ATTACKING ball and
     casting Spawn Locusts onto Planetary Fortress, Photon Cannons, Shield
-    Batteries (preferred), and similar static defense — Autoturret only
-    when nothing better is in range. No per-base dig-in /
+    Batteries (preferred over bunker/turret/spine/spore). No per-base dig-in /
     `_swarm_host_points` parking.
 
     Locust cast must win the `CombatManeuver` before `KeepUnitSafe`: near
