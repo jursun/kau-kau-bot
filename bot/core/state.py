@@ -287,6 +287,14 @@ class RunState:
     the forward chain) would clear the claim without covering the main."""
     main_queen_tumor_done: bool = False
     """Same idea as `natural_queen_tumor_done`, for the main instead."""
+    main_queen_tumor_spot: Point2 | None = None
+    """Sticky main-plateau tumor tile while `main_queen_tag` is claimed.
+    Stops `_drive_main_queen_tumor` from re-picking a new creep edge every
+    frame (visual thrash: Queen oscillating hatch ↔ rim). Cleared when the
+    claim finishes or the Queen dies."""
+    natural_queen_tumor_spot: Point2 | None = None
+    """Sticky tumor tile while `natural_queen_tag` is claimed — same thrash
+    fix as `main_queen_tumor_spot`. Cleared when the claim finishes or dies."""
     queen_home_townhall: dict[int, int] = field(default_factory=dict)
     """Queen tag -> the townhall tag nearest it *at creation*, snapshotted
     once in `builds.zerg.macro_zerg._macro_zerg_on_unit_created` rather
@@ -329,6 +337,9 @@ class RunState:
     overseer_scout_tag: int | None = None
     """Overseer skirting enemy bases for intel."""
     changeling_destinations: dict[int, Point2] = field(default_factory=dict)
+    overseer_destinations: dict[int, Point2] = field(default_factory=dict)
+    """Overseer tag -> sticky park/scout Point2. Stops home/army/scout
+    re-path thrash when the desired point only drifts a little."""
     """Changeling tag → sticky opponent-base Point2. Assigned once (and only
     reassigned if that base is no longer an opponent target) so
     `routines.overseers._spread_changelings` does not thrash every frame

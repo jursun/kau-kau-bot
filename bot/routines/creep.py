@@ -14,6 +14,10 @@ from sc2.position import Point2
 
 from bot.core.types import CombatRoutine
 
+# Sticky next-tumor tile per Queen tag — stops highway spread from
+# re-issuing move/cast to a new edge every frame (visual thrash).
+_QUEEN_TUMOR_STICKY: dict[int, Point2] = {}
+
 if TYPE_CHECKING:
     from bot.core.context import BotContext
 
@@ -107,28 +111,45 @@ def _place_tumor_toward(
             return False
         grid = mediator.get_ground_grid
 
-    spot = mediator.get_next_tumor_on_path(
-        grid=grid,
-        from_pos=unit.position,
-        to_pos=target,
-        find_alternative=True,
-        min_separation=5.0 if queen else 3.0,
-    )
-    if spot is None:
-        spot = mediator.find_nearby_creep_edge_position(
-            position=unit.position,
-            search_radius=12.0 if queen else 10.2,
-            closest_valid=False,
-            spread_dist=3.0 if queen else 1.0,
-            unit_tag=unit.tag if queen else None,
+    sticky = _QUEEN_TUMOR_STICKY.get(unit.tag) if queen else None
+    if sticky is not None and cy_has_creep(mediator.get_creep_grid, sticky):
+        spot = sticky
+    else:
+        if queen:
+            _QUEEN_TUMOR_STICKY.pop(unit.tag, None)
+        spot = mediator.get_next_tumor_on_path(
+            grid=grid,
+            from_pos=unit.position,
+            to_pos=target,
+            find_alternative=True,
+            min_separation=5.0 if queen else 3.0,
         )
-    if spot is None:
-        return False
+        if spot is None:
+            spot = mediator.find_nearby_creep_edge_position(
+                position=unit.position,
+                search_radius=12.0 if queen else 10.2,
+                closest_valid=False,
+                spread_dist=3.0 if queen else 1.0,
+                unit_tag=unit.tag if queen else None,
+            )
+        if spot is None:
+            return False
+        if queen:
+            _QUEEN_TUMOR_STICKY[unit.tag] = spot
 
     if queen and cy_distance_to_squared(unit.position, spot) > 25.0:
-        unit.move(spot)
+        target_order = unit.order_target
+        already = (
+            isinstance(target_order, Point2)
+            and cy_distance_to_squared(target_order, spot) < 4.0
+        )
+        if not already:
+            unit.move(spot)
         return True
     unit(cast_ability, spot)
+    if queen:
+        # Cast issued — drop sticky so the next plant can pick a new tile.
+        _QUEEN_TUMOR_STICKY.pop(unit.tag, None)
     return True
 
 
@@ -140,8 +161,9 @@ def spread_creep() -> CombatRoutine:
     `get_next_tumor_on_path`, instead of ares `QueenSpreadCreep` which walks
     toward `get_enemy_nat` while map coverage is low.
 
-    Skips the Queen currently claimed by Macro Zerg's main-plateau opening
-    tumors (`state.main_queen_tag`): that claim drives placement itself.
+    Skips Queens claimed by Macro Zerg opening tumors (`main_queen_tag` /
+    `natural_queen_tag`): those claims drive placement themselves with a
+    sticky single-command path so inject/highway cannot thrash them.
     """
 
     def routine(ctx: "BotContext") -> None:
@@ -158,16 +180,23 @@ def spread_creep() -> CombatRoutine:
             ctx.mediator.assign_role(tag=newest.tag, role=UnitRole.QUEEN_CREEP)
             return
 
-        main_claim = (
-            ctx.state.main_queen_tag
-            if (
-                ctx.state.main_queen_tag is not None
-                and not ctx.state.main_queen_tumor_done
-            )
-            else None
-        )
+        # Opening tumor claims drive their Queen themselves (sticky single
+        # command path). Do not also highway-drive them — that was the
+        # inject/tumor thrash: two routines fighting over the same Queen.
+        reserved: set[int] = set()
+        if (
+            ctx.state.main_queen_tag is not None
+            and not ctx.state.main_queen_tumor_done
+        ):
+            reserved.add(ctx.state.main_queen_tag)
+        if (
+            ctx.state.natural_queen_tag is not None
+            and not ctx.state.natural_queen_tumor_done
+        ):
+            reserved.add(ctx.state.natural_queen_tag)
+
         for queen in creep_queens:
-            if main_claim is not None and queen.tag == main_claim:
+            if queen.tag in reserved:
                 continue
             target = _creep_highway_target(ctx, queen.position)
             _place_tumor_toward(ctx, queen, target, queen=True)
