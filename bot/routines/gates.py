@@ -15,6 +15,7 @@ from sc2.ids.upgrade_id import UpgradeId
 from bot.core.types import Gate
 from bot.intel.army import (
     enemy_army_type_ids,
+    early_aggression as intel_early_aggression,
     leave_army_supply,
     leave_enemy_army_supply,
 )
@@ -232,6 +233,16 @@ def intel_scaled_army_leave() -> Gate:
     return gate
 
 
+
+
+
+def early_aggression() -> Gate:
+    """True while Kuuro's early-pressure latch is set — combat defend overlay."""
+
+    def gate(ctx: "BotContext") -> bool:
+        return bool(intel_early_aggression(ctx))
+
+    return gate
 
 def training_started(unit_type: UnitTypeId) -> Gate:
     """True once at least one is queued or in production - not merely
