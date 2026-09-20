@@ -49,7 +49,10 @@ gas bank stays safe either way, and the step still sits below upgrades
 in `macro_steps`. `z.tech_up(SPIRE)` stays Lair-gated + air-scout
 only; both Pit and Spire place via `BuildZergStructure` (not ares
 `BuildStructure`/`request_zerg_placement`, which stuck a Spire Drone in
-main while Voidrays were on the map). Lair itself stays `_SEQUENCE`-
+main while Voidrays were on the map). While Kuuro's `early_aggression`
+latch is on, Spire / Pit / Hive and non-scripted expands (4th/5th /
+overflow) hold — scripted opening, drones, spines, and ling/Roach
+defend stay free. Lair itself stays `_SEQUENCE`-
 owned — without those gates, `TechUp` would happily morph Lair itself
 the moment it's economically able to.
 `_scripted_gas_scaling` replaces `c.gas_buildings()` outright rather than
@@ -671,6 +674,9 @@ def _post_opening_production(ctx):
 def _expansions_after_scripted_third(ctx):
     """4th/5th bases only - never the scripted 3rd.
 
+    Also holds while `gates.early_aggression()` is on (Jason light
+    econ pause) so minerals do not leak into bases under pressure.
+
     `c.expansions(gate=supply>=27)` alone is not enough: supply hits 27
     while `_SEQUENCE` is still on the post-ling worker/overlord stretch
     (well before `expand@3`), and `ExpansionController(to_count=max_bases)`
@@ -681,11 +687,18 @@ def _expansions_after_scripted_third(ctx):
     """
     if ctx.state.opening_step_index <= _THIRD_EXPAND_INDEX:
         return None
+    # Light econ pause: hold 4th/5th while Kuuro's early-aggression latch
+    # is on (scripted natural/3rd untouched — those live in `_SEQUENCE`).
+    if gates.early_aggression()(ctx):
+        return None
     return c.expansions(gate=gates.supply_at_least(27))(ctx)
 
 
 def _overflow_after_scripted_opening(ctx):
     """Mineral-overflow hatches only after the scripted opening is spent.
+
+    Holds while `gates.early_aggression()` is on — same light econ
+    pause as `_expansions_after_scripted_third`.
 
     Confirmed live: at 115.8s with a 570 mineral bank (threshold 500),
     `overflow_hatcheries` → `ExpansionController` queued hatch #3 on a
@@ -694,6 +707,9 @@ def _overflow_after_scripted_opening(ctx):
     until ~3:20 and pushed Metabolic Boost ~35s past its deadline.
     """
     if ctx.state.opening_step_index < len(_SEQUENCE):
+        return None
+    # Same early-aggression pause as `_expansions_after_scripted_third`.
+    if gates.early_aggression()(ctx):
         return None
     return z.overflow_hatcheries(mineral_threshold=500)(ctx)
 
@@ -1355,10 +1371,13 @@ BUILD = BuildDefinition(
         # Spire only - Pit/Hive sit below Tunneling Claws (see after
         # `_reserve_upgrade_bank`/`_spawn_macro_army`). Lair itself stays
         # `_SEQUENCE`-owned.
+        # Light econ pause: no Spire while early_aggression latch is on.
         z.tech_up(
             UnitTypeId.SPIRE,
             gate=gates.all_of(
-                gates.structure_started(UnitTypeId.LAIR), intel_army.enemy_has_air_units
+                gates.structure_started(UnitTypeId.LAIR),
+                intel_army.enemy_has_air_units,
+                gates.negate(gates.early_aggression()),
             ),
         ),
         z.evolution_chambers(),
@@ -1380,6 +1399,7 @@ BUILD = BuildDefinition(
         # forever when Claws never starts). Was a hard Claws-only gate after
         # Pit above upgrades ate the Glial 100/100 bank; step still sits
         # below `_reserve_upgrade_bank`.
+        # Light econ pause: no Pit/Hive while early_aggression latch is on.
         z.tech_up(
             UnitTypeId.INFESTATIONPIT,
             gate=gates.all_of(
@@ -1388,11 +1408,15 @@ BUILD = BuildDefinition(
                     gates.upgrade_started(UpgradeId.TUNNELINGCLAWS),
                     gates.upgrade_done(UpgradeId.GLIALRECONSTITUTION),
                 ),
+                gates.negate(gates.early_aggression()),
             ),
         ),
         z.tech_up(
             UnitTypeId.HIVE,
-            gate=gates.structure_started(UnitTypeId.INFESTATIONPIT),
+            gate=gates.all_of(
+                gates.structure_started(UnitTypeId.INFESTATIONPIT),
+                gates.negate(gates.early_aggression()),
+            ),
         ),
         # Mineral sink: >5000 bank → every 30s pull 6 drones for 3 Spine +
         # 3 Spore beside the army (needs creep under the ball).
