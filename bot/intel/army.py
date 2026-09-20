@@ -11,6 +11,7 @@ from collections.abc import Iterable, Sequence
 from typing import Any
 
 from ares.consts import UnitRole
+from sc2.ids.unit_typeid import UnitTypeId
 
 from bot.consts import WORKER_TYPES
 from bot.core.context import BotContext
@@ -130,3 +131,215 @@ def early_aggression(ctx: BotContext) -> bool:
     """
     return bool(getattr(ctx.state, "early_aggression", False))
 
+
+
+# --- early aggression latch -------------------------------------------------
+
+# Early window / clear hysteresis (seconds of game time).
+_EARLY_WINDOW_S: float = 5 * 60.0
+_CLEAR_HOLD_S: float = 12.0
+# Visible combat near our main / natural.
+_HOME_THREAT_RADIUS: float = 28.0
+# Scouted bio/gateway ball size that counts as mid pressure.
+_MID_BALL_MIN: int = 4
+_MID_CENTER_RADIUS: float = 22.0
+# Proxy production closer to us than to the enemy by this margin.
+_PROXY_MARGIN: float = 20.0
+# Sudden worker deaths between frames.
+_WORKER_DEATH_SPIKE: int = 3
+# Past opening + army OK clear floor (commit-able DEFENDING supply).
+_CLEAR_ARMY_SUPPLY: float = 14.0
+
+_EARLY_PRESSURE_TYPES: frozenset[UnitTypeId] = frozenset(
+    {
+        UnitTypeId.MARINE,
+        UnitTypeId.REAPER,
+        UnitTypeId.HELLION,
+        UnitTypeId.HELLIONTANK,
+        UnitTypeId.ZEALOT,
+        UnitTypeId.ADEPT,
+        UnitTypeId.STALKER,
+        UnitTypeId.BANELING,
+        UnitTypeId.ZERGLING,
+    }
+)
+
+_PROXY_PRODUCTION: frozenset[UnitTypeId] = frozenset(
+    {
+        UnitTypeId.BARRACKS,
+        UnitTypeId.BARRACKSFLYING,
+        UnitTypeId.FACTORY,
+        UnitTypeId.FACTORYFLYING,
+        UnitTypeId.GATEWAY,
+        UnitTypeId.WARPGATE,
+        UnitTypeId.CYBERNETICSCORE,
+        UnitTypeId.ROBOTICSFACILITY,
+        UnitTypeId.SPINECRAWLER,
+        UnitTypeId.SPORECRAWLER,
+    }
+)
+
+
+def _our_home_points(ctx: BotContext) -> list[Any]:
+    points: list[Any] = []
+    try:
+        points.append(ctx.production_location)
+    except Exception:  # noqa: BLE001 - arcade / missing map data
+        pass
+    try:
+        nat = ctx.own_nat
+        if nat is not None:
+            points.append(nat)
+    except Exception:  # noqa: BLE001
+        pass
+    return points
+
+
+def _enemy_start(ctx: BotContext) -> Any | None:
+    starts = getattr(ctx.bot, "enemy_start_locations", None) or ()
+    return starts[0] if starts else None
+
+
+def _in_early_window(ctx: BotContext) -> bool:
+    """Pre-Roach Warren (or hard 5:00)."""
+    time_s = float(getattr(ctx.bot, "time", 0.0) or 0.0)
+    if time_s > _EARLY_WINDOW_S:
+        return False
+    structures = getattr(ctx.bot, "structures", None)
+    if structures is None:
+        return True
+    try:
+        warren = structures(UnitTypeId.ROACHWARREN)
+        ready = getattr(warren, "ready", warren)
+        if ready is not None and len(ready) > 0:
+            return False
+    except Exception:  # noqa: BLE001
+        return True
+    return True
+
+
+def _combat_near_home(ctx: BotContext) -> bool:
+    homes = _our_home_points(ctx)
+    if not homes:
+        return False
+    for unit in enemy_army(ctx):
+        pos = getattr(unit, "position", None)
+        if pos is None:
+            continue
+        for home in homes:
+            try:
+                if pos.distance_to(home) <= _HOME_THREAT_RADIUS:
+                    return True
+            except Exception:  # noqa: BLE001
+                continue
+    return False
+
+
+def _proxy_production(ctx: BotContext) -> bool:
+    """Enemy production closer to us than to their start — seen only."""
+    enemy_structs = getattr(ctx.bot, "enemy_structures", None)
+    if not enemy_structs:
+        return False
+    homes = _our_home_points(ctx)
+    enemy_start = _enemy_start(ctx)
+    if not homes or enemy_start is None:
+        return False
+    home = homes[0]
+    for struct in enemy_structs:
+        if getattr(struct, "type_id", None) not in _PROXY_PRODUCTION:
+            continue
+        pos = getattr(struct, "position", None)
+        if pos is None:
+            continue
+        try:
+            if pos.distance_to(home) + _PROXY_MARGIN < pos.distance_to(enemy_start):
+                return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
+
+
+def _mid_ball(ctx: BotContext) -> bool:
+    """Scouted early pressure types near map center or past mid toward us."""
+    map_center = getattr(getattr(ctx.bot, "game_info", None), "map_center", None)
+    if map_center is None:
+        return False
+    homes = _our_home_points(ctx)
+    enemy_start = _enemy_start(ctx)
+    count = 0
+    for unit in enemy_army(ctx):
+        if getattr(unit, "type_id", None) not in _EARLY_PRESSURE_TYPES:
+            continue
+        pos = getattr(unit, "position", None)
+        if pos is None:
+            continue
+        try:
+            near_center = pos.distance_to(map_center) <= _MID_CENTER_RADIUS
+        except Exception:  # noqa: BLE001
+            near_center = False
+        past_mid = False
+        if homes and enemy_start is not None:
+            try:
+                past_mid = pos.distance_to(homes[0]) < pos.distance_to(enemy_start)
+            except Exception:  # noqa: BLE001
+                past_mid = False
+        if near_center or past_mid:
+            count += 1
+            if count >= _MID_BALL_MIN:
+                return True
+    return False
+
+
+def _worker_death_spike(ctx: BotContext) -> bool:
+    workers = getattr(ctx.bot, "workers", None)
+    try:
+        count = int(len(workers)) if workers is not None else 0
+    except Exception:  # noqa: BLE001
+        count = 0
+    prev = getattr(ctx.state, "early_aggression_worker_count", None)
+    spike = bool(prev is not None and prev - count >= _WORKER_DEATH_SPIKE)
+    ctx.state.early_aggression_worker_count = count
+    return spike
+
+
+def _pressure_signal(ctx: BotContext) -> bool:
+    """Seen early-aggression signal this frame — never invent units in fog."""
+    # Worker spike always updates the counter; evaluate others independently.
+    spike = _worker_death_spike(ctx)
+    return spike or _combat_near_home(ctx) or _proxy_production(ctx) or _mid_ball(ctx)
+
+
+def _army_ok_to_clear(ctx: BotContext) -> bool:
+    try:
+        return leave_army_supply(ctx) >= _CLEAR_ARMY_SUPPLY
+    except Exception:  # noqa: BLE001
+        return float(getattr(ctx.bot, "supply_army", 0.0) or 0.0) >= _CLEAR_ARMY_SUPPLY
+
+
+def observe_early_aggression(ctx: BotContext) -> bool:
+    """Set/clear fog-stable ``RunState.early_aggression`` each frame.
+
+    Call once per frame from ``main.on_step`` (next to leave-intel observe).
+    Raises on seen early pressure; clears after quiet hold when past the early
+    window or our commit-able army is OK. Fog alone never invents units or
+    clears the latch.
+    """
+    now = float(getattr(ctx.bot, "time", 0.0) or 0.0)
+    signal = _pressure_signal(ctx)
+
+    if signal:
+        ctx.state.early_aggression_last_threat_at = now
+        # Latch while still early, or whenever combat is already on our doorstep.
+        if _in_early_window(ctx) or _combat_near_home(ctx):
+            ctx.state.early_aggression = True
+        return bool(ctx.state.early_aggression)
+
+    if not getattr(ctx.state, "early_aggression", False):
+        return False
+
+    last = float(getattr(ctx.state, "early_aggression_last_threat_at", 0.0) or 0.0)
+    quiet = (now - last) >= _CLEAR_HOLD_S
+    if quiet and (not _in_early_window(ctx) or _army_ok_to_clear(ctx)):
+        ctx.state.early_aggression = False
+        return False
+    return True

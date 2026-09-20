@@ -22,7 +22,7 @@ from sc2.unit import Unit
 from bot.common.log import log_event
 from bot.core import BotContext, CombatEngine, MacroEngine, RunState, roles
 from bot.core.registry import UnknownBuild, default_build, get_build
-from bot.intel import observe_leave_intel
+from bot.intel import observe_early_aggression, observe_leave_intel
 
 # Harness default leave (`scripts/harness/harness_common.DEFAULT_LEAVE_SECONDS`):
 # 7:00 via `run_game(..., game_time_limit=...)`. `run.py` itself has no
@@ -136,6 +136,7 @@ class KauKauBot(AresBot):
         await super(KauKauBot, self).on_step(iteration)
 
         observe_leave_intel(self.ctx)
+        observe_early_aggression(self.ctx)
         self.macro.execute(self.ctx)
         self.combat.execute(self.ctx)
         if self.ctx.build.on_step is not None:
