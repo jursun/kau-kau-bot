@@ -196,7 +196,12 @@ from bot.behaviors.zerg import (
     pending_larva_trained,
 )
 from bot.builds.definition import Army, BuildDefinition, Combat, Economy
-from bot.consts import HOME_ZERGLING_CAP, ROACH_SWARM_HOST_COMP, ZERGLING_DEFENDER_ROLE
+from bot.consts import (
+    HOME_ZERGLING_CAP,
+    HOME_ZERGLING_CAP_EARLY_AGGRO,
+    ROACH_SWARM_HOST_COMP,
+    ZERGLING_DEFENDER_ROLE,
+)
 from bot.intel import army as intel_army
 from bot.routines import combat, creep, gates, overlords as overlord_routines, overseers as overseer_routines, scouting
 from bot.steps import common as c
@@ -635,13 +640,22 @@ def _post_opening_production(ctx):
     if ctx.state.opening_step_index < len(_SEQUENCE):
         return None
 
+    from bot.intel import early_aggression as _early_aggro
+
     workers = BuildWorkers(to_count=ctx.worker_target)
-    army = z.spawn_macro_army(
-        gate=gates.structure_started(UnitTypeId.ROACHWARREN)
-    )(ctx)
+    under_pressure = _early_aggro(ctx)
+    army_gate = (
+        gates.structure_started(UnitTypeId.SPAWNINGPOOL)
+        if under_pressure
+        else gates.structure_started(UnitTypeId.ROACHWARREN)
+    )
+    army = z.spawn_macro_army(gate=army_gate)(ctx)
 
     economy_at_target = ctx.bot.supply_workers >= ctx.worker_target
-    army_first = gates.after_wave(1)(ctx) and economy_at_target and army is not None
+    army_first = (
+        under_pressure
+        or (gates.after_wave(1)(ctx) and economy_at_target)
+    ) and army is not None
 
     plan = MacroPlan()
     if army_first:
@@ -1128,10 +1142,17 @@ def _macro_zerg_on_unit_created(ctx, unit) -> None:
     `combat.defend_with_zerglings`.
     """
     if unit.type_id == UnitTypeId.ZERGLING:
+        from bot.intel import early_aggression as _early_aggro
+
         home = ctx.mediator.get_units_from_role(
             role=ZERGLING_DEFENDER_ROLE, unit_type=UnitTypeId.ZERGLING
         )
-        if len(home) < HOME_ZERGLING_CAP:
+        cap = (
+            HOME_ZERGLING_CAP_EARLY_AGGRO
+            if _early_aggro(ctx)
+            else HOME_ZERGLING_CAP
+        )
+        if len(home) < cap:
             ctx.mediator.assign_role(tag=unit.tag, role=ZERGLING_DEFENDER_ROLE)
         return
 
@@ -1214,6 +1235,7 @@ BUILD = BuildDefinition(
             # Intel-scaled leave (see wave_gate), then stream every new
             # army unit into ATTACKING from then on.
             combat.release_first_wave_then_stream(muster=True),
+            combat.reinforce_home_vs_early_aggression(),
             combat.defend_home(),
             combat.defend_with_zerglings(),
             # Dig-in before attack_squads so hurt Roaches burrow instead of
@@ -1303,6 +1325,17 @@ BUILD = BuildDefinition(
             per_base=1,
             gate=gates.after_time(270.0),
             check_interval=15.0,
+        ),
+        # Early-aggression overlay: cheap spine pair at the natural while
+        # Kuuro's latch is on (no _SEQUENCE edits). Drops when latch clears
+        # via gate — existing spines stay.
+        z.spine_crawlers(
+            2,
+            gate=gates.all_of(
+                gates.early_aggression(),
+                gates.structure_started(UnitTypeId.SPAWNINGPOOL),
+                gates.minerals_at_least(200),
+            ),
         ),
         # Maintain 3 Overseers once Lair exists (home / army / scout roles
         # in `routines.overseers.manage_overseers`).

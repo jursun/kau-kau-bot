@@ -163,6 +163,9 @@ class RunState:
     (enter peel below `min_engage_range`, stay peeled until past
     `resume_range`) - stops oscillate at the engage boundary."""
     defender_hold: dict[int, Point2] = field(default_factory=dict)
+    early_aggression: bool = False
+    """Fog-stable early pressure latch (Kuuro observe_early_aggression).
+    Combat overlay reads via intel.early_aggression / gates.early_aggression."""
     """DEFENDING unit tag → sticky hold Point2 (matched to live holds by
     nearest, not list index — townhall iteration order is unstable)."""
     swarm_host_hold: dict[int, Point2] = field(default_factory=dict)

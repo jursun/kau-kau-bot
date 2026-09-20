@@ -1036,6 +1036,70 @@ def test_attack_squads_ignores_workers_in_intel_army_for_force() -> None:
         _restore_targeting(original)
 
 
+
+
+def test_early_aggression_widens_defender_engage() -> None:
+    """Under early_aggression, defenders collapse farther from the hold."""
+    ctx = _ctx()
+    ctx.state.early_aggression = True
+    hold = Point2((40.0, 40.0))
+    unit = _unit(1, Point2((40.0, 40.0)))
+    unit.type_id = UnitTypeId.ROACH
+    unit.orders = []
+    unit.order_target = None
+    unit.health_percentage = 1.0
+    enemy = _unit(90, Point2((55.0, 40.0)))  # 15 dist: outside 12, inside 18
+    enemy.type_id = UnitTypeId.MARINE
+    ctx.mediator.get_units_from_role.return_value = [unit]
+    ctx.mediator.get_main_ground_threats_near_townhall = []
+    ctx.mediator.get_units_in_range.return_value = [[enemy]]
+    ctx.bot.units = MagicMock(return_value=[])
+    original = targeting.hold_positions
+    targeting.hold_positions = lambda _ctx: [hold]
+    try:
+        combat.defend_home()(ctx)
+    finally:
+        targeting.hold_positions = original
+    assert ctx.bot.register_behavior.called
+
+
+def test_release_first_wave_holds_leave_under_early_aggression() -> None:
+    ctx = _ctx()
+    ctx.state.early_aggression = True
+    ctx.state.wave_number = 0
+    ling = _unit(1)
+    ling.type_id = UnitTypeId.ZERGLING
+    ctx.mediator.get_units_from_role.return_value = [ling]
+    combat.release_first_wave_then_stream()(ctx)
+    ctx.mediator.batch_assign_role.assert_not_called()
+
+
+def test_reinforce_home_vs_early_aggression_peels_lings() -> None:
+    ctx = _ctx()
+    ctx.state.early_aggression = True
+    home = _unit(1)
+    home.type_id = UnitTypeId.ZERGLING
+    spare = _unit(2)
+    spare.type_id = UnitTypeId.ZERGLING
+
+    def _from_role(role=None, unit_type=None, **kwargs):
+        if role == combat.ZERGLING_DEFENDER_ROLE:
+            return [home]
+        return []
+
+    ctx.mediator.get_units_from_role.side_effect = _from_role
+
+    def _units_in_role(role):
+        if role == UnitRole.DEFENDING:
+            return [spare]
+        return []
+
+    ctx.units_in_role = MagicMock(side_effect=_units_in_role)
+    combat.reinforce_home_vs_early_aggression()(ctx)
+    ctx.mediator.assign_role.assert_called()
+    assert ctx.mediator.assign_role.call_args.kwargs["tag"] == 2
+
+
 def test_defend_home_assigns_sticky_hold_slots() -> None:
     """Reordering units or hold points must not bounce defenders between holds."""
     ctx = _ctx()

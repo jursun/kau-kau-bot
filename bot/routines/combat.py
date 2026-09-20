@@ -79,6 +79,8 @@ def _active_crew_tags(ctx: "BotContext") -> set[int]:
 
 
 DEFENDER_ENGAGE_RANGE: float = 12.0
+DEFENDER_ENGAGE_RANGE_EARLY_AGGRO: float = 18.0
+"""Wider collapse radius while Kuuro early_aggression latch is on."""
 DEFENDER_HOLD_ARRIVE: float = 3.0
 """Within this of the hold point: issue no move (settled)."""
 SQUAD_ENGAGE_RANGE: float = 11.5
@@ -194,10 +196,20 @@ def release_first_wave_then_stream(muster: bool = True) -> CombatRoutine:
     _WAVE1_FORCE_MIN_FRAC: float = 0.5
 
     def routine(ctx: "BotContext") -> None:
+        from bot.intel import early_aggression as _early_aggro
+
         defenders = ctx.units_in_role(UnitRole.DEFENDING)
         if not defenders:
             return
         tags = {u.tag for u in defenders}
+
+        # Hold the leave while early pressure is latched — overlay stays home.
+        if ctx.state.wave_number < 1 and _early_aggro(ctx):
+            ctx.log_once(
+                "early_aggression_hold_leave",
+                "EARLY_AGGRO hold leave — defending until latch clears",
+            )
+            return
 
         if ctx.state.wave_number >= 1:
             # Streaming: no size floor, no mustering - straight to the front.
@@ -645,13 +657,20 @@ def _sticky_hold_point(
     return holds[best]
 
 
-def _defender_maneuver(ctx: "BotContext", unit, home_threats, hold) -> CombatManeuver | None:
-    """Orders for one defender. Returns None when settled — no order spam."""
-    # Lone scouting SCVs/Probes in 12 range made the whole ball Attack↔Move
+def _defender_maneuver(
+    ctx: "BotContext",
+    unit,
+    home_threats,
+    hold,
+    *,
+    engage_range: float = DEFENDER_ENGAGE_RANGE,
+) -> CombatManeuver | None:
+    """Orders for one defender. Returns None when settled - no order spam."""
+    # Lone scouting SCVs/Probes in 12 range made the whole ball Attack/Move
     # thrash at the ramp once warps stacked (debug: 461/461 engages were SCV).
     near = [
         e
-        for e in _enemies_near(ctx, unit.position, DEFENDER_ENGAGE_RANGE)
+        for e in _enemies_near(ctx, unit.position, engage_range)
         if e.type_id not in WORKER_TYPES
     ]
     if near:
@@ -685,6 +704,48 @@ def _defender_maneuver(ctx: "BotContext", unit, home_threats, hold) -> CombatMan
     return maneuver
 
 
+
+def reinforce_home_vs_early_aggression() -> CombatRoutine:
+    """Peel extra Zerglings onto home defense while early_aggression is on.
+
+    Raises the home cap to ``HOME_ZERGLING_CAP_EARLY_AGGRO`` from ATTACKING /
+    DEFENDING ling pools. When the latch clears, surplus home lings are left
+    on ``ZERGLING_DEFENDER_ROLE`` until natural attrition / later waves — we
+    do not thrash roles every frame on clear.
+    """
+
+    def routine(ctx: "BotContext") -> None:
+        from bot.consts import HOME_ZERGLING_CAP, HOME_ZERGLING_CAP_EARLY_AGGRO
+        from bot.intel import early_aggression as _early_aggro
+
+        if not _early_aggro(ctx):
+            return
+        home = list(
+            ctx.mediator.get_units_from_role(
+                role=ZERGLING_DEFENDER_ROLE, unit_type=UnitTypeId.ZERGLING
+            )
+        )
+        need = HOME_ZERGLING_CAP_EARLY_AGGRO - len(home)
+        if need <= 0:
+            return
+        # Prefer idle DEFENDING lings, then ATTACKING — never steal workers.
+        pool: list = []
+        for role in (UnitRole.DEFENDING, UnitRole.ATTACKING):
+            for u in ctx.units_in_role(role):
+                if u.type_id == UnitTypeId.ZERGLING and u.tag not in {
+                    h.tag for h in home
+                }:
+                    pool.append(u)
+        for unit in pool[:need]:
+            ctx.mediator.assign_role(tag=unit.tag, role=ZERGLING_DEFENDER_ROLE)
+            ctx.log_once(
+                f"early_aggro_home_ling_{unit.tag}",
+                f"EARLY_AGGRO peel ling {unit.tag} to home defense",
+            )
+
+    return routine
+
+
 def defend_home() -> CombatRoutine:
     """Units still in DEFENDING hold the natural and collapse on anything near."""
 
@@ -708,13 +769,22 @@ def defend_home() -> CombatRoutine:
             return
         # Hurt Roaches dig via regen_burrow - do not Move/Attack them here
         # or we cancel Burrow every frame (DEFEND hold log spam / thrash).
+        from bot.intel import early_aggression as _early_aggro
+
+        engage = (
+            DEFENDER_ENGAGE_RANGE_EARLY_AGGRO
+            if _early_aggro(ctx)
+            else DEFENDER_ENGAGE_RANGE
+        )
         for unit in defenders:
             if _roach_wants_regen_burrow(ctx, unit):
                 continue
             if _already_ordered_ability(unit, AbilityId.BURROWDOWN_ROACH):
                 continue
             hold = _sticky_hold_point(ctx, unit, holds, ctx.state.defender_hold)
-            maneuver = _defender_maneuver(ctx, unit, home_threats, hold)
+            maneuver = _defender_maneuver(
+                ctx, unit, home_threats, hold, engage_range=engage
+            )
             if maneuver is not None:
                 ctx.bot.register_behavior(maneuver)
 
@@ -747,6 +817,13 @@ def defend_with_zerglings() -> CombatRoutine:
         holds = targeting.hold_positions(ctx)
         if not holds:
             return
+        from bot.intel import early_aggression as _early_aggro
+
+        engage = (
+            DEFENDER_ENGAGE_RANGE_EARLY_AGGRO
+            if _early_aggro(ctx)
+            else DEFENDER_ENGAGE_RANGE
+        )
         for unit in zerglings:
             hold = _sticky_hold_point(
                 ctx,
@@ -755,7 +832,9 @@ def defend_with_zerglings() -> CombatRoutine:
                 ctx.state.zergling_defender_hold,
                 log_label="ZERGLING_DEFEND",
             )
-            maneuver = _defender_maneuver(ctx, unit, home_threats, hold)
+            maneuver = _defender_maneuver(
+                ctx, unit, home_threats, hold, engage_range=engage
+            )
             if maneuver is not None:
                 ctx.bot.register_behavior(maneuver)
 

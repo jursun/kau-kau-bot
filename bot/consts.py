@@ -145,6 +145,8 @@ CORRUPTOR_ROLE: UnitRole = UnitRole.CONTROL_GROUP_THREE
 # How many Zerglings Macro Zerg keeps on `ZERGLING_DEFENDER_ROLE` at home;
 # extras join the army wave (`army.types` includes Zergling).
 HOME_ZERGLING_CAP: int = 6
+# While early_aggression latch is on, peel more lings home.
+HOME_ZERGLING_CAP_EARLY_AGGRO: int = 12
 
 # Macro Zerg: hard cap on the Swarm Host siege squad — Locusts chip
 # fortified statics; more than this steals larva from the Roach ball.

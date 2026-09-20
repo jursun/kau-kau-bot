@@ -35,7 +35,7 @@ from bot.consts import (
     ROACH_SWARM_HOST_CORRUPTOR_COMP,
 )
 from bot.core.types import Gate, MacroStep
-from bot.intel.army import enemy_has_air_units
+from bot.intel.army import early_aggression, enemy_has_air_units
 from bot.routines import targeting
 from bot.steps import common
 
@@ -522,6 +522,18 @@ def spawn_macro_army(gate: Gate = _always) -> MacroStep:
         if not gate(ctx):
             return None
         # TODO: pick counter comp from scouted enemy army composition.
+        # Early-aggression overlay: flood home defense (lings, Roaches once
+        # Warren tech is ready) — do not wait on gas-starved / Host ratios.
+        if early_aggression(ctx):
+            roach_ready = (
+                ctx.bot.tech_requirement_progress(UnitTypeId.ROACH) >= 1.0
+            )
+            if roach_ready:
+                return SpawnController(dict(LING_HEAVY_ROACH_COMP), spawn_target=None)
+            return SpawnController(
+                {UnitTypeId.ZERGLING: {"proportion": 1.0, "priority": 0}},
+                spawn_target=None,
+            )
         gas_starved = _gas_starved(ctx)
         roach_ready = ctx.bot.tech_requirement_progress(UnitTypeId.ROACH) >= 1.0
         swarm_host_ready = (

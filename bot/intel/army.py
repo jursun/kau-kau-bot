@@ -121,3 +121,12 @@ def leave_army_supply(ctx: BotContext) -> float:
         sum(ctx.bot.calculate_supply_cost(unit.type_id) for unit in defenders)
     )
 
+
+def early_aggression(ctx: BotContext) -> bool:
+    """Fog-stable early-pressure latch for combat overlay.
+
+    Kuuro's ``observe_early_aggression`` owns set/clear on
+    ``RunState.early_aggression``. Combat / gates only read this.
+    """
+    return bool(getattr(ctx.state, "early_aggression", False))
+
