@@ -163,11 +163,15 @@ class RunState:
     (enter peel below `min_engage_range`, stay peeled until past
     `resume_range`) - stops oscillate at the engage boundary."""
     defender_hold: dict[int, Point2] = field(default_factory=dict)
+    """DEFENDING unit tag → sticky hold Point2 (matched to live holds by
+    nearest, not list index — townhall iteration order is unstable)."""
     early_aggression: bool = False
     """Fog-stable early pressure latch (Kuuro observe_early_aggression).
     Combat overlay reads via intel.early_aggression / gates.early_aggression."""
-    """DEFENDING unit tag → sticky hold Point2 (matched to live holds by
-    nearest, not list index — townhall iteration order is unstable)."""
+    early_aggression_last_threat_at: float = 0.0
+    """Game time we last saw a real early-aggression signal (not fog invent)."""
+    early_aggression_worker_count: int | None = None
+    """Prior-frame worker count for sudden-death spike detection."""
     swarm_host_hold: dict[int, Point2] = field(default_factory=dict)
     """Legacy per-base Swarm Host hold map — cleared each frame by
     `routines.combat.siege_with_swarm_hosts` (Hosts now group behind the

@@ -15,6 +15,7 @@ from bot.intel.army import (
     early_aggression,
     leave_army_supply,
     leave_enemy_army_supply,
+    observe_early_aggression,
     observe_leave_intel,
 )
 from bot.intel.notes import OpponentNotes, get_opponent_id
@@ -42,6 +43,7 @@ __all__ = [
     "influence_parking_tags",
     "is_supply_blocked",
     "leave_enemy_army_supply",
+    "observe_early_aggression",
     "observe_leave_intel",
     "observe_seen_tech",
     "units_parked_in_influence",
