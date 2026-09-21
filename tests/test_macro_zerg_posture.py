@@ -99,11 +99,11 @@ def test_count_pending_upgrades() -> None:
 
 
 def _army_ready_ctx(**bot_attrs) -> BotContext:
-    """`_ctx()` plus enough state that `z.spawn_macro_army` (inside
-    `_spawn_macro_army`) returns a real `SpawnController` (Lair/Roach
-    Warren done, Roach tech-ready) - shared by the tests below, though
-    `_reserve_upgrade_bank` itself no longer depends on it (it returns the
-    `UpgradeSlots` behavior directly, not nested inside a combined plan)."""
+    """`_ctx()` plus enough state that `z.spawn_macro_army` returns a real
+    `SpawnController` (Lair/Roach Warren done, Roach tech-ready) - shared
+    by the tests below, though `_reserve_upgrade_bank` itself no longer
+    depends on it (it returns the `UpgradeSlots` behavior directly, not
+    nested inside a combined plan)."""
     ctx = _ctx(time=310.0, **bot_attrs)
 
     def structures(unit_type):
@@ -165,12 +165,6 @@ def test_reserve_upgrade_bank_does_not_hold_when_behind() -> None:
     upgrades = mz._reserve_upgrade_bank(ctx)
     assert isinstance(upgrades, UpgradeSlots)
     assert upgrades.prioritize is False
-
-
-def test_spawn_macro_army_returns_a_spawn_controller() -> None:
-    ctx = _army_ready_ctx()
-    army = mz._spawn_macro_army(ctx)
-    assert army.__class__.__name__ == "SpawnController"
 
 
 def test_overseers_step_fixed_count() -> None:

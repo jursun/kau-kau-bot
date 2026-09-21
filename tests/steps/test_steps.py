@@ -511,12 +511,16 @@ def test_early_aggression_spines_place_at_natural() -> None:
 
     plan = z.early_aggression_spines(2, gate=lambda _ctx: True)(ctx)
 
+    # One at a time, not both in the same plan - see the step's own
+    # docstring for the live-confirmed placement collision that fixed
+    # (queuing both let the 2nd spine pick the 1st's still-unregistered
+    # tile).
     assert isinstance(plan, MacroPlan)
-    assert len(plan.macros) == 2
-    for macro in plan.macros:
-        assert isinstance(macro, BuildSporeCrawler)
-        assert macro.base_location == natural
-        assert macro.structure_type == UnitTypeId.SPINECRAWLER
+    assert len(plan.macros) == 1
+    macro = plan.macros[0]
+    assert isinstance(macro, BuildSporeCrawler)
+    assert macro.base_location == natural
+    assert macro.structure_type == UnitTypeId.SPINECRAWLER
 
 
 def test_early_aggression_spines_skip_when_natural_already_has_count() -> None:
