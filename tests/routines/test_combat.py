@@ -24,6 +24,7 @@ from ares.behaviors.combat.individual import (
     AttackTarget,
     KeepUnitSafe,
     MoveToSafeTarget,
+    PathUnitToTarget,
     ShootTargetInRange,
     UseAbility,
 )
@@ -2185,6 +2186,238 @@ def test_release_home_zerglings_after_early_noop_during_window() -> None:
     combat.release_home_zerglings_after_early()(ctx)
 
     ctx.mediator.assign_role.assert_not_called()
+
+
+# --- cast_fungal_growth ----------------------------------------------------
+
+
+def _enemy(tag: int, position: Point2) -> MagicMock:
+    unit = _unit(tag, position)
+    unit.type_id = UnitTypeId.MARINE  # anything not in WORKER_TYPES
+    return unit
+
+
+def _infestor(tag: int, position: Point2, energy: float) -> MagicMock:
+    unit = _unit(tag, position)
+    unit.energy = energy
+    # Real `Unit.is_using_ability` returns bool; a bare MagicMock() would
+    # be truthy by default and make every test look "already mid-cast".
+    unit.is_using_ability = MagicMock(return_value=False)
+    return unit
+
+
+def test_best_fungal_clumps_reports_one_clump_for_a_tight_ball() -> None:
+    """5 enemies within a tight radius of each other must collapse to a
+    single reported clump, not 5 near-duplicates - each of the 5 positions
+    individually clears the min-clump count."""
+    center = Point2((50.0, 50.0))
+    enemies = [
+        _enemy(i, Point2((50.0 + i * 0.1, 50.0)))
+        for i in range(5)
+    ]
+
+    clumps = combat._best_fungal_clumps(enemies)
+
+    assert len(clumps) == 1
+    assert cy_distance_to(clumps[0], center) < 1.0
+
+
+def test_best_fungal_clumps_ignores_units_below_the_minimum() -> None:
+    enemies = [_enemy(i, Point2((float(i) * 20.0, 0.0))) for i in range(3)]
+
+    assert combat._best_fungal_clumps(enemies) == []
+
+
+def test_best_fungal_clumps_reports_two_distinct_far_apart_balls() -> None:
+    near_a = [_enemy(i, Point2((0.0 + i * 0.1, 0.0))) for i in range(4)]
+    near_b = [_enemy(10 + i, Point2((100.0 + i * 0.1, 0.0))) for i in range(4)]
+
+    clumps = combat._best_fungal_clumps(near_a + near_b)
+
+    assert len(clumps) == 2
+
+
+def test_cast_fungal_growth_does_nothing_without_an_infestor() -> None:
+    ctx = _ctx()
+    ctx.mediator.get_units_from_role.return_value = []
+
+    combat.cast_fungal_growth()(ctx)
+
+    ctx.bot.register_behavior.assert_not_called()
+
+
+def test_cast_fungal_growth_casts_on_a_clump_in_range() -> None:
+    from bot.consts import INFESTOR_ROLE
+
+    ctx = _ctx()
+    ctx.mediator.get_ground_grid = "ground-grid"
+    ctx.mediator.get_squads.return_value = []
+
+    infestor = _infestor(9, Point2((0.0, 0.0)), energy=100)
+    ctx.mediator.get_units_from_role.side_effect = (
+        lambda role: [infestor] if role == INFESTOR_ROLE else []
+    )
+
+    clump_center = Point2((5.0, 0.0))  # within FUNGAL_GROWTH_RANGE (10)
+    ctx.mediator.get_cached_enemy_army = [
+        _enemy(i, Point2((5.0 + i * 0.1, 0.0))) for i in range(4)
+    ]
+
+    combat.cast_fungal_growth()(ctx)
+
+    registered = ctx.bot.register_behavior.call_args.args[0]
+    casts = [b for b in registered.micros if isinstance(b, UseAbility)]
+    assert len(casts) == 1
+    assert casts[0].ability == AbilityId.FUNGALGROWTH_FUNGALGROWTH
+    assert casts[0].unit is infestor
+    assert cy_distance_to(casts[0].target, clump_center) < 1.0
+
+    # KeepUnitSafe must run first - see the equivalent escort_overseers note.
+    assert isinstance(registered.micros[0], KeepUnitSafe)
+
+
+def test_cast_fungal_growth_paths_toward_an_out_of_range_clump() -> None:
+    from bot.consts import INFESTOR_ROLE
+
+    ctx = _ctx()
+    ctx.mediator.get_ground_grid = "ground-grid"
+    ctx.mediator.get_squads.return_value = []
+
+    infestor = _infestor(9, Point2((0.0, 0.0)), energy=100)
+    ctx.mediator.get_units_from_role.side_effect = (
+        lambda role: [infestor] if role == INFESTOR_ROLE else []
+    )
+    # Well past FUNGAL_GROWTH_RANGE (10).
+    ctx.mediator.get_cached_enemy_army = [
+        _enemy(i, Point2((50.0 + i * 0.1, 0.0))) for i in range(4)
+    ]
+
+    combat.cast_fungal_growth()(ctx)
+
+    registered = ctx.bot.register_behavior.call_args.args[0]
+    assert not [b for b in registered.micros if isinstance(b, UseAbility)]
+    paths = [b for b in registered.micros if isinstance(b, PathUnitToTarget)]
+    assert len(paths) == 1
+    assert paths[0].unit is infestor
+
+
+def test_cast_fungal_growth_skips_casting_below_energy_threshold() -> None:
+    from bot.consts import INFESTOR_ROLE
+
+    ctx = _ctx()
+    ctx.mediator.get_ground_grid = "ground-grid"
+    ctx.mediator.get_squads.return_value = []
+
+    infestor = _infestor(9, Point2((0.0, 0.0)), energy=50)  # below the 75 cost
+    ctx.mediator.get_units_from_role.side_effect = (
+        lambda role: [infestor] if role == INFESTOR_ROLE else []
+    )
+    ctx.mediator.get_cached_enemy_army = [
+        _enemy(i, Point2((5.0 + i * 0.1, 0.0))) for i in range(4)
+    ]
+
+    combat.cast_fungal_growth()(ctx)
+
+    registered = ctx.bot.register_behavior.call_args.args[0]
+    assert not [b for b in registered.micros if isinstance(b, UseAbility)]
+
+
+def test_cast_fungal_growth_two_infestors_split_across_two_clumps() -> None:
+    """Regression test: without per-frame claiming, two in-range Infestors
+    both dump Fungal on the biggest clump while a second real clump goes
+    untouched."""
+    from bot.consts import INFESTOR_ROLE
+
+    ctx = _ctx()
+    ctx.mediator.get_ground_grid = "ground-grid"
+    ctx.mediator.get_squads.return_value = []
+
+    infestor_a = _infestor(9, Point2((5.0, 0.0)), energy=100)
+    infestor_b = _infestor(10, Point2((-5.0, 0.0)), energy=100)
+    ctx.mediator.get_units_from_role.side_effect = (
+        lambda role: [infestor_a, infestor_b] if role == INFESTOR_ROLE else []
+    )
+
+    clump_near_a = [_enemy(i, Point2((5.0 + i * 0.1, 0.0))) for i in range(4)]
+    clump_near_b = [_enemy(10 + i, Point2((-5.0 + i * 0.1, 0.0))) for i in range(4)]
+    ctx.mediator.get_cached_enemy_army = clump_near_a + clump_near_b
+
+    combat.cast_fungal_growth()(ctx)
+
+    calls = ctx.bot.register_behavior.call_args_list
+    casts = [
+        b
+        for call in calls
+        for b in call.args[0].micros
+        if isinstance(b, UseAbility)
+    ]
+    assert len(casts) == 2
+    cast_units = {c.unit.tag for c in casts}
+    assert cast_units == {9, 10}
+    targets = [c.target for c in casts]
+    assert cy_distance_to(targets[0], targets[1]) > 5.0
+
+
+def test_cast_fungal_growth_follows_squad_without_a_clump() -> None:
+    from bot.consts import INFESTOR_ROLE
+
+    ctx = _ctx()
+    ctx.mediator.get_ground_grid = "ground-grid"
+    ctx.mediator.get_cached_enemy_army = []
+
+    infestor = _infestor(9, Point2((0.0, 0.0)), energy=100)
+    ctx.mediator.get_units_from_role.side_effect = (
+        lambda role: [infestor] if role == INFESTOR_ROLE else []
+    )
+
+    squad = _squad([_unit(1, Point2((70.0, 70.0))), _unit(2, Point2((72.0, 70.0)))])
+    ctx.mediator.get_squads.return_value = [squad]
+
+    destination = Point2((999.0, 999.0))
+    original = (targeting.rally_point, targeting.attack_target)
+    targeting.attack_target = lambda _ctx, _pos: destination
+    try:
+        combat.cast_fungal_growth()(ctx)
+    finally:
+        _restore_targeting(original)
+
+    registered = ctx.bot.register_behavior.call_args.args[0]
+    moves = [b for b in registered.micros if isinstance(b, MoveToSafeTarget)]
+    assert len(moves) == 1
+    assert moves[0].unit is infestor
+    assert moves[0].target == destination
+
+
+def test_cast_fungal_growth_does_not_reissue_an_in_progress_cast() -> None:
+    """Regression test: confirmed live via a forced-clump debug scenario -
+    without this guard, the routine recomputes the best clump every frame
+    and reissues Fungal at a freshly-picked target before the local
+    `energy` observation even reflects the previous cast's cost, canceling
+    and restarting the same cast over and over (16 reissues logged across
+    ~1.6s in that run)."""
+    from bot.consts import INFESTOR_ROLE
+
+    ctx = _ctx()
+    ctx.mediator.get_ground_grid = "ground-grid"
+    ctx.mediator.get_squads.return_value = []
+
+    infestor = _infestor(9, Point2((0.0, 0.0)), energy=100)
+    infestor.is_using_ability.return_value = True
+    ctx.mediator.get_units_from_role.side_effect = (
+        lambda role: [infestor] if role == INFESTOR_ROLE else []
+    )
+    ctx.mediator.get_cached_enemy_army = [
+        _enemy(i, Point2((5.0 + i * 0.1, 0.0))) for i in range(4)
+    ]
+
+    combat.cast_fungal_growth()(ctx)
+
+    infestor.is_using_ability.assert_called_with(AbilityId.FUNGALGROWTH_FUNGALGROWTH)
+    registered = ctx.bot.register_behavior.call_args.args[0]
+    assert not [b for b in registered.micros if isinstance(b, UseAbility)]
+    assert not [b for b in registered.micros if isinstance(b, PathUnitToTarget)]
+    # KeepUnitSafe is still the one thing that must always run.
+    assert isinstance(registered.micros[0], KeepUnitSafe)
 
 
 if __name__ == "__main__":

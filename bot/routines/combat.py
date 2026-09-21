@@ -37,6 +37,7 @@ from bot.builds.definition import _always
 from bot.consts import (
     CORRUPTOR_ROLE,
     IGNORED_ENEMY_TYPES,
+    INFESTOR_ROLE,
     WORKER_TYPES,
     ZERGLING_DEFENDER_ROLE,
 )
@@ -1986,6 +1987,121 @@ def escort_corruptors() -> CombatRoutine:
                 maneuver.add(AttackTarget(unit=corruptor, target=closest))
             elif target is not None:
                 maneuver.add(MoveToSafeTarget(unit=corruptor, grid=grid, target=target))
+            ctx.bot.register_behavior(maneuver)
+
+    return routine
+
+
+# Fungal Growth: 75 energy, 10 cast range, 2.25 effect radius (ladder values).
+FUNGAL_GROWTH_ENERGY_COST: float = 75.0
+FUNGAL_GROWTH_RANGE: float = 10.0
+FUNGAL_GROWTH_RADIUS: float = 2.25
+# Fewer enemies than this packed together isn't worth rooting/damaging one
+# at a time - save the energy for an actual clump.
+FUNGAL_GROWTH_MIN_CLUMP: int = 4
+
+
+def _best_fungal_clumps(enemies: list[Unit]) -> list[Point2]:
+    """Enemy positions with >= `FUNGAL_GROWTH_MIN_CLUMP` other enemies
+    within Fungal's radius, biggest first, greedily de-duplicated (kept only
+    if farther than 1.5x the radius from every clump already kept) so two
+    points deep inside the same ball of units don't both get reported as
+    separate clumps.
+
+    Nothing else in this build groups enemies spatially - `intel.army.
+    enemy_army_supply` is a scalar and `enemy_army` is a flat list - so this
+    is a from-scratch nearest-neighbor count rather than a shared helper.
+    """
+    candidates: list[tuple[int, Point2]] = []
+    for enemy in enemies:
+        count = sum(
+            1
+            for other in enemies
+            if cy_distance_to(enemy.position, other.position) <= FUNGAL_GROWTH_RADIUS
+        )
+        if count >= FUNGAL_GROWTH_MIN_CLUMP:
+            candidates.append((count, enemy.position))
+    candidates.sort(key=lambda c: c[0], reverse=True)
+
+    clumps: list[Point2] = []
+    for _, position in candidates:
+        if all(
+            cy_distance_to(position, kept) > FUNGAL_GROWTH_RADIUS * 1.5
+            for kept in clumps
+        ):
+            clumps.append(position)
+    return clumps
+
+
+def cast_fungal_growth() -> CombatRoutine:
+    """Infestor: root/damage the biggest enemy clumps with Fungal Growth,
+    otherwise follow the biggest ATTACKING squad like `escort_corruptors`.
+    Kept out of `army.types` on its own `INFESTOR_ROLE` (see
+    `core.roles.SUPPORT_ROLES`) - a caster has no place in a muster/attack
+    wave headcount.
+
+    Each frame, ready Infestors (enough energy, in range) claim the biggest
+    unclaimed clump within range, largest first via `_best_fungal_clumps`'s
+    own ordering, so two Infestors don't both dump Fungal on the same spot
+    while a second real clump sits untouched. An Infestor with energy but no
+    clump in range yet walks toward the biggest one instead of just
+    following the squad, so it's in position by the time it recharges.
+    """
+
+    def routine(ctx: "BotContext") -> None:
+        infestors = list(ctx.mediator.get_units_from_role(role=INFESTOR_ROLE))
+        if not infestors:
+            return
+
+        squads = ctx.mediator.get_squads(
+            role=UnitRole.ATTACKING, squad_radius=SQUAD_RADIUS
+        )
+        follow_target = None
+        if squads:
+            biggest = max(squads, key=lambda squad: len(squad.squad_units))
+            follow_target = targeting.squad_destination(ctx, biggest.squad_position)
+
+        clumps = _best_fungal_clumps(enemy_army(ctx))
+        grid = ctx.mediator.get_ground_grid
+        claimed: set[int] = set()
+        for infestor in infestors:
+            maneuver = CombatManeuver()
+            maneuver.add(KeepUnitSafe(unit=infestor, grid=grid))
+
+            # Already mid-cast: leave it be. Local `energy`/target-clump
+            # state only updates on the next observation, so re-evaluating
+            # every frame while a cast is resolving keeps re-issuing Fungal
+            # at a freshly-recomputed target and cancels the one already in
+            # flight - confirmed live via a forced-clump scenario (16
+            # redundant re-casts logged across ~1.6s before the energy
+            # drop was even visible).
+            if infestor.is_using_ability(AbilityId.FUNGALGROWTH_FUNGALGROWTH):
+                ctx.bot.register_behavior(maneuver)
+                continue
+
+            has_energy = infestor.energy >= FUNGAL_GROWTH_ENERGY_COST
+            cast_target = None
+            if has_energy:
+                for index, clump in enumerate(clumps):
+                    if index in claimed:
+                        continue
+                    if cy_distance_to(infestor.position, clump) <= FUNGAL_GROWTH_RANGE:
+                        cast_target = clump
+                        claimed.add(index)
+                        break
+
+            if cast_target is not None:
+                maneuver.add(
+                    UseAbility(
+                        AbilityId.FUNGALGROWTH_FUNGALGROWTH, infestor, cast_target
+                    )
+                )
+            elif has_energy and clumps:
+                maneuver.add(PathUnitToTarget(unit=infestor, grid=grid, target=clumps[0]))
+            elif follow_target is not None:
+                maneuver.add(
+                    MoveToSafeTarget(unit=infestor, grid=grid, target=follow_target)
+                )
             ctx.bot.register_behavior(maneuver)
 
     return routine

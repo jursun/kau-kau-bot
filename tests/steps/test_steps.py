@@ -14,7 +14,7 @@ Runs under pytest, or standalone with no test dependency:
 from __future__ import annotations
 
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from ares.behaviors.macro import (
     BuildStructure,
@@ -673,6 +673,69 @@ def test_spawn_macro_army_default_is_roach_ling() -> None:
         float(v["proportion"]) for v in behavior.army_composition_dict.values()
     )
     assert abs(total - 1.0) < 1e-6
+
+
+def _structures_ready(*ready_types: UnitTypeId) -> MagicMock:
+    """`ctx.bot.structures(unit_type).ready` is truthy only for the given
+    types - lets a test make Infestation Pit/Spire ready independently
+    instead of the all-or-nothing single-mock pattern the other
+    `spawn_macro_army` tests use."""
+
+    def structures(unit_type: UnitTypeId) -> MagicMock:
+        is_ready = unit_type in ready_types
+        ready = MagicMock()
+        ready.__bool__ = lambda self, v=is_ready: v
+        return MagicMock(ready=ready, amount=1 if is_ready else 0)
+
+    return MagicMock(side_effect=structures)
+
+
+def test_spawn_macro_army_folds_in_infestor_once_infestation_pit_ready() -> None:
+    ctx = _ctx()
+    ctx.bot.minerals = 400
+    ctx.bot.vespene = 400
+    ctx.bot.tech_requirement_progress = MagicMock(return_value=1.0)
+    ctx.bot.structures = _structures_ready(UnitTypeId.INFESTATIONPIT)
+
+    behavior = z.spawn_macro_army(gate=lambda _c: True)(ctx)
+    comp = behavior.army_composition_dict
+    assert UnitTypeId.INFESTOR in comp
+    assert UnitTypeId.CORRUPTOR not in comp
+    total = sum(float(v["proportion"]) for v in comp.values())
+    assert abs(total - 1.0) < 1e-6
+
+
+def test_spawn_macro_army_folds_in_infestor_alongside_corruptor_when_air() -> None:
+    ctx = _ctx()
+    ctx.bot.minerals = 400
+    ctx.bot.vespene = 400
+    ctx.bot.tech_requirement_progress = MagicMock(return_value=1.0)
+    ctx.bot.structures = _structures_ready(
+        UnitTypeId.INFESTATIONPIT, UnitTypeId.SPIRE
+    )
+
+    with patch("bot.steps.zerg.enemy_has_air_units", return_value=True):
+        behavior = z.spawn_macro_army(gate=lambda _c: True)(ctx)
+
+    comp = behavior.army_composition_dict
+    assert UnitTypeId.INFESTOR in comp
+    assert UnitTypeId.CORRUPTOR in comp
+    total = sum(float(v["proportion"]) for v in comp.values())
+    assert abs(total - 1.0) < 1e-6
+
+
+def test_spawn_macro_army_skips_infestor_while_gas_starved() -> None:
+    """Regression test: Infestor is exactly as gas-hungry as Corruptor -
+    folding it into a gas-starved comp would fight the ratio that comp is
+    meant to fix. See `bot.consts.ROACH_LING_INFESTOR_COMP`'s own comment."""
+    ctx = _ctx()
+    ctx.bot.minerals = 800
+    ctx.bot.vespene = 50
+    ctx.bot.tech_requirement_progress = MagicMock(return_value=1.0)
+    ctx.bot.structures = _structures_ready(UnitTypeId.INFESTATIONPIT)
+
+    behavior = z.spawn_macro_army(gate=lambda _c: True)(ctx)
+    assert UnitTypeId.INFESTOR not in behavior.army_composition_dict
 
 
 def test_forward_crawler_wave_waits_on_minerals_and_interval() -> None:

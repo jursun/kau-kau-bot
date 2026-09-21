@@ -13,7 +13,7 @@ from sc2.data import Race
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.unit import Unit
 
-from bot.consts import CORRUPTOR_ROLE, ZERGLING_DEFENDER_ROLE
+from bot.consts import CORRUPTOR_ROLE, INFESTOR_ROLE, ZERGLING_DEFENDER_ROLE
 
 if TYPE_CHECKING:
     from bot.core.context import BotContext
@@ -24,11 +24,13 @@ SUPPORT_ROLES: dict[Race, dict[UnitTypeId, UnitRole]] = {
         UnitTypeId.QUEEN: UnitRole.QUEEN_INJECT,
         # Keep these out of DEFENDING/ATTACKING (see Protoss's Prism/Observer/
         # Adept below) - `release_waves()` would otherwise promote a
-        # Corruptor straight into a squad muster it must never join, and a
+        # Corruptor straight into a squad muster it must never join, an
+        # Infestor into a wave headcount it has no business padding, and a
         # Zergling into an offensive wave it's meant to stay out of
         # until Macro Zerg peels it onto scout/defender roles
         # (see `consts.ZERGLING_SCOUT_ROLE` / `ZERGLING_DEFENDER_ROLE`).
         UnitTypeId.CORRUPTOR: CORRUPTOR_ROLE,
+        UnitTypeId.INFESTOR: INFESTOR_ROLE,
         UnitTypeId.ZERGLING: ZERGLING_DEFENDER_ROLE,
     },
     Race.Terran: {},

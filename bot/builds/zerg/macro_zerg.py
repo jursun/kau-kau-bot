@@ -1256,6 +1256,7 @@ BUILD = BuildDefinition(
                 min_engage_range=_ROACH_MIN_ENGAGE_RANGE,
             ),
             combat.escort_corruptors(),
+            combat.cast_fungal_growth(),
             overseer_routines.manage_overseers(),
             creep.spread_creep(),
             creep.spread_tumors(),

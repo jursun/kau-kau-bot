@@ -79,6 +79,26 @@ LING_HEAVY_CORRUPTOR_COMP: dict[UnitTypeId, dict[str, float | int]] = {
     UnitTypeId.CORRUPTOR: {"proportion": 0.20, "priority": 0},
 }
 
+# Once Infestation Pit is ready (late game - it only gets built after
+# Tunneling Claws, see `macro_zerg.py`'s tech_up gate), fold Infestor in at
+# Roach's expense, same "at the other units' expense" pattern Corruptor
+# uses above. Skipped entirely while gas-starved (`spawn_macro_army`) -
+# Infestor is exactly as gas-hungry as Corruptor (150), and gas-starved
+# already means "spend the surplus on Zerglings instead", so adding
+# another expensive gas sink there would fight the ratio it's meant to fix.
+ROACH_LING_INFESTOR_COMP: dict[UnitTypeId, dict[str, float | int]] = {
+    UnitTypeId.ROACH: {"proportion": 0.65, "priority": 0},
+    UnitTypeId.INFESTOR: {"proportion": 0.15, "priority": 0},
+    UnitTypeId.ZERGLING: {"proportion": 0.20, "priority": 1},
+}
+
+ROACH_LING_CORRUPTOR_INFESTOR_COMP: dict[UnitTypeId, dict[str, float | int]] = {
+    UnitTypeId.ROACH: {"proportion": 0.50, "priority": 0},
+    UnitTypeId.CORRUPTOR: {"proportion": 0.20, "priority": 0},
+    UnitTypeId.INFESTOR: {"proportion": 0.15, "priority": 0},
+    UnitTypeId.ZERGLING: {"proportion": 0.15, "priority": 1},
+}
+
 # How skewed mineral:gas must be before Macro Zerg flips to ling-heavy.
 GAS_STARVED_MINERAL_RATIO: float = 5.0
 
@@ -126,6 +146,10 @@ SUPPLY_BUILDER_ROLE: UnitRole = UnitRole.CONTROL_GROUP_ONE
 # Macro Zerg: Corruptor stays out of DEFENDING/ATTACKING so
 # `release_waves()` never sweeps it into a muster.
 CORRUPTOR_ROLE: UnitRole = UnitRole.CONTROL_GROUP_THREE
+
+# Macro Zerg: Infestor is a caster, not a muster/attack-wave headcount -
+# same reasoning as Corruptor above.
+INFESTOR_ROLE: UnitRole = UnitRole.CONTROL_GROUP_TWO
 
 # Macro Zerg: Zergling is a dedicated home defender, never an offensive unit
 # How many Zerglings Macro Zerg keeps on `ZERGLING_DEFENDER_ROLE` at home;
