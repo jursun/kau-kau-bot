@@ -278,24 +278,12 @@ def rally_point(ctx: "BotContext") -> Point2:
 
 
 def hold_positions(ctx: "BotContext") -> list[Point2]:
-    """Rally, then behind each mineral line so worker harass is spotted early.
+    """Where home defenders gather: in front of the natural (`rally_point`).
 
-    A build that pins its rally (`combat.rally`) holds there and nowhere
-    else: its army is deliberately not at home, and the mineral-line
-    positions would drag defenders back across the map one at a time.
-
-    Mineral-line extras are sorted by position so townhall iteration order
-    cannot swap slot indices frame-to-frame (that remapped sticky holds and
-    made Zealots/Stalkers thrash between lines).
+    One ball at the natural front beats splitting across mineral lines —
+    a big attack hits one place, and scattered defenders never reform in
+    time. Builds that pin `combat.rally` (proxy armies) already collapsed
+    here to that single point; everyone else uses the same natural-front
+    gather now.
     """
-    points: list[Point2] = [rally_point(ctx)]
-    if ctx.build.combat.rally is not None:
-        return points
-    extras: list[Point2] = []
-    for th in ctx.ready_townhalls:
-        extras.extend(
-            ctx.mediator.get_behind_mineral_positions(th_pos=th.position)[:1]
-        )
-    extras.sort(key=lambda p: (round(p.x, 1), round(p.y, 1)))
-    points.extend(extras)
-    return points
+    return [rally_point(ctx)]

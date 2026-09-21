@@ -46,7 +46,65 @@ def _ai(townhalls, queens, pending: int = 0, afford: bool = True) -> MagicMock:
     ai.units.return_value = _Units(queens)
     ai.already_pending.return_value = pending
     ai.can_afford.return_value = afford
+    # Prefer-main tiebreak uses start_location (main hatch).
+    ai.start_location = (
+        townhalls[0].position if townhalls else Point2((10.0, 10.0))
+    )
     return ai
+
+
+def test_third_queen_prefers_natural_when_each_base_already_has_one() -> None:
+    """After 1/base, the next queen (natural inject) trains at natural.
+
+    Natural's first queen is the CREEP extra — the 3rd must fill natural
+    inject, not stack a second on main.
+    """
+    main_pos = Point2((10.0, 10.0))
+    natural_pos = Point2((50.0, 50.0))
+    main = _townhall(1, main_pos)
+    natural = _townhall(2, natural_pos)
+    ai = _ai(
+        townhalls=[natural, main],
+        queens=[_queen(main_pos, tag=1), _queen(natural_pos, tag=2)],
+    )
+    ai.start_location = main_pos
+    ai.mediator.get_own_nat = natural_pos
+    home = {1: main.tag, 2: natural.tag}
+
+    did_act = TrainQueens(
+        to_count=3, max_per_townhall=2, home_townhall=home
+    ).execute(ai, {}, ai.mediator)
+
+    assert did_act is True
+    natural.train.assert_called_once_with(UnitTypeId.QUEEN)
+    main.train.assert_not_called()
+
+
+def test_fourth_queen_goes_to_main_after_natural_has_two() -> None:
+    """Once natural has inject+creep, the next extra fills main."""
+    main_pos = Point2((10.0, 10.0))
+    natural_pos = Point2((50.0, 50.0))
+    main = _townhall(1, main_pos)
+    natural = _townhall(2, natural_pos)
+    ai = _ai(
+        townhalls=[natural, main],
+        queens=[
+            _queen(main_pos, tag=1),
+            _queen(natural_pos, tag=2),
+            _queen(natural_pos, tag=3),
+        ],
+    )
+    ai.start_location = main_pos
+    ai.mediator.get_own_nat = natural_pos
+    home = {1: main.tag, 2: natural.tag, 3: natural.tag}
+
+    did_act = TrainQueens(
+        to_count=4, max_per_townhall=2, home_townhall=home
+    ).execute(ai, {}, ai.mediator)
+
+    assert did_act is True
+    main.train.assert_called_once_with(UnitTypeId.QUEEN)
+    natural.train.assert_not_called()
 
 
 def test_a_fresh_townhall_is_preferred_over_one_that_already_has_a_queen() -> None:

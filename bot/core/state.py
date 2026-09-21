@@ -172,10 +172,6 @@ class RunState:
     """Game time we last saw a real early-aggression signal (not fog invent)."""
     early_aggression_worker_count: int | None = None
     """Prior-frame worker count for sudden-death spike detection."""
-    swarm_host_hold: dict[int, Point2] = field(default_factory=dict)
-    """Legacy per-base Swarm Host hold map — cleared each frame by
-    `routines.combat.siege_with_swarm_hosts` (Hosts now group behind the
-    attack ball). Kept so RunState shape stays stable."""
     chargelot_wave_gate_ready_since: float | None = None
     """When wave_gate first passed while under wave1_min (force-leave clock)."""
     chargelot_warp_wave_open: bool = False
@@ -267,41 +263,29 @@ class RunState:
     natural expansion site (see `builds.zerg.macro_zerg._claim_natural_
     scout`) - a one-shot claim, never re-enters even if that Drone dies
     en route."""
+    natural_extra_queen_tag: int | None = None
+    """Tag of the first Queen trained at the natural - permanent `UnitRole.
+    QUEEN_CREEP` extra for defense + creep (see `builds.zerg.macro_zerg.
+    _macro_zerg_on_unit_created`). Cleared if she dies so a later natural-
+    trained Queen can take the designation."""
     natural_queen_tag: int | None = None
     """Queen pulled onto `UnitRole.QUEEN_CREEP` to spend its starting 25
-    energy on a Creep Tumor instead of an inject (see `builds.zerg.
-    macro_zerg._claim_natural_queen_tumor`) - cleared once handed back to
-    `UnitRole.QUEEN_INJECT`, or if it dies before ever placing the tumor."""
+    energy on a Creep Tumor (see `builds.zerg.macro_zerg.
+    _claim_natural_queen_tumor`) - usually the same tag as
+    `natural_extra_queen_tag`. Cleared if she dies before placing the
+    tumor; after the tumor lands she stays on creep duty (does not return
+    to inject)."""
     natural_queen_tumor_baseline: frozenset[int] = frozenset()
     """Creep Tumor tags that already existed at the moment `natural_queen_
     tag` was claimed - "done" means a tumor *not* in this set has appeared,
-    not just "a tumor exists somewhere" (confirmed live as necessary once a
-    second claim mechanism, `_claim_main_queen_tumor`, was added: an
-    already-placed tumor from an earlier claim persists on the map, so a
-    bare existence check let a freshly-claimed Queen read as "done" the
-    very next frame, before it had walked or cast anything at all)."""
+    not just "a tumor exists somewhere"."""
     natural_queen_tumor_done: bool = False
     """Latched once the pulled Queen's tumor is confirmed - never re-enters,
     even if that Queen later dies."""
-    main_queen_tag: int | None = None
-    """Same idea as `natural_queen_tag`, for the main instead - see
-    `builds.zerg.macro_zerg._claim_main_queen_tumor`."""
-    main_queen_tumor_baseline: frozenset[int] = frozenset()
-    """Main-*plateau* Creep Tumor tags present when `main_queen_tag` was
-    claimed (see `builds.zerg.macro_zerg._main_area_tumor_tags`). "Done"
-    means `_MAIN_OPENING_TUMORS` *new* tags in that area, not any tumor
-    anywhere — otherwise a natural-side tumor (or QueenSpreadCreep walking
-    the forward chain) would clear the claim without covering the main."""
-    main_queen_tumor_done: bool = False
-    """Same idea as `natural_queen_tumor_done`, for the main instead."""
-    main_queen_tumor_spot: Point2 | None = None
-    """Sticky main-plateau tumor tile while `main_queen_tag` is claimed.
-    Stops `_drive_main_queen_tumor` from re-picking a new creep edge every
-    frame (visual thrash: Queen oscillating hatch ↔ rim). Cleared when the
-    claim finishes or the Queen dies."""
     natural_queen_tumor_spot: Point2 | None = None
-    """Sticky tumor tile while `natural_queen_tag` is claimed — same thrash
-    fix as `main_queen_tumor_spot`. Cleared when the claim finishes or dies."""
+    """Sticky tumor tile while `natural_queen_tag` is claimed — stops
+    re-picking a new creep edge every frame (hatch ↔ tumor thrash). Cleared
+    when the claim finishes or the Queen dies."""
     queen_home_townhall: dict[int, int] = field(default_factory=dict)
     """Queen tag -> the townhall tag nearest it *at creation*, snapshotted
     once in `builds.zerg.macro_zerg._macro_zerg_on_unit_created` rather
@@ -319,6 +303,10 @@ class RunState:
     """Last game time `steps.zerg.spore_crawlers` ran its per-base missing
     check (see that step's `check_interval`). `None` until the first check
     after the gate opens."""
+    last_spine_check_at: float | None = None
+    """Last game time `steps.zerg.spine_crawlers` ran its expansion
+    (3rd+) missing check. `None` until the first check after the gate
+    opens."""
     last_forward_crawler_wave_at: float | None = None
     """Last game time Macro Zerg dispatched a 6-worker Spine/Spore wave
     beside the army (`steps.zerg.forward_crawler_wave`)."""
@@ -337,6 +325,10 @@ class RunState:
     `defender_hold`, via `routines.combat._sticky_hold_point`, but kept in
     its own map since Zergling is on a dedicated defender role rather than
     `UnitRole.DEFENDING` (see `routines.combat.defend_with_zerglings`)."""
+    zergling_scout_destinations: dict[int, Point2] = field(default_factory=dict)
+    """Opening ling-scout tag → sticky watch Point2 (see
+    `routines.scouting.scout_with_zerglings`). Cleared when the ling leaves
+    `ZERGLING_SCOUT_ROLE`."""
     overseer_home_tag: int | None = None
     """Overseer parked at home for detection (see `routines.overseers`)."""
     overseer_army_tag: int | None = None

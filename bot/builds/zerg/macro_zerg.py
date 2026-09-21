@@ -1,4 +1,4 @@
-"""Macro Zerg — Roach -> Swarm Host, scripted opening lives entirely here.
+"""Macro Zerg — Roach / Zergling macro, scripted opening lives entirely here.
 
 `zerg_builds.yml`'s `OpeningBuildOrder` is deliberately empty: the
 BuildOrderRunner's YAML step DSL (`ConstantWorkerProductionTill` racing the
@@ -42,6 +42,9 @@ plus 1 spare for creep spread, for the whole game, not just the opening's
 first few bases (see its own comment in `macro_steps`).
 `z.spore_crawlers` is the same shape (1 per owned base in the mineral
 line), opening at 4:30 with a 15s missing-base recheck.
+`z.spine_crawlers` mirrors that for the 3rd base and up (main/natural
+skipped); early-aggression still plants a fixed spine pair at the nat
+via `z.early_aggression_spines`.
 `z.tech_up(INFESTATIONPIT)` opens once Tunneling Claws has started
 *or* Glial is done (Claws still preferred; Glial-done is the escape so
 Pit/Hive/Hosts are not hard-blocked when Claws never starts). Glial's
@@ -80,9 +83,9 @@ consistently missing its 12s deadline by ~3s (a 14th Drone, chasing
 `ctx.worker_target`, trained ahead of it every time), not - as first
 suspected - some unavoidable drone-morph-time floor.
 
-`z.spawn_macro_army()` (actual Roach/Swarm Host production) is gated on
+`z.spawn_macro_army()` (actual Roach production) is gated on
 Roach Warren existing - NOT redundant with the tech-readiness check it
-already does internally. That reasoning holds for Roach/Swarm Host
+already does internally. That reasoning holds for Roaches
 themselves, but `SpawnController`'s "only one tech-ready unit in the
 comp" escape hatch fires for *Zergling* the moment Spawning Pool exists,
 long before Roach Warren - confirmed live as a real bug: with nothing
@@ -121,59 +124,61 @@ docstring for why (`ExpansionController.execute()` never looks at
 confirmed live for the natural).
 
 After the opening, Glial → Burrow → Tunneling Claws claim gas before
-Infestation Pit (Swarm Host — cheap, passive map-control damage from
-Locusts, meant to be dug in at each base rather than committed to a
-fight). Spire (Corruptor escort) still waits until the enemy has shown
-air. Once Lair is commanded, `_reserve_upgrade_bank` always gets first
-look at the frame's spend, ahead of `_post_opening_production` below it,
-so the next upgrade's bank actually accumulates instead of leaking to
-army production a few gas at a time - see its own docstring for the
-live-confirmed bug this replaces. Concurrent-upgrade slot count and
-army-vs-tech spend priority are supply-based (`intel.army.
-army_behind_on_supply`): behind on army supply → more units / fewer
-concurrent upgrades and army wins ties; ahead or even → tech focus.
-`z.spawn_macro_army` handles the composition switch between phases —
-see its own docstring for why a static comp dict alone would stall
-production in the Roach-only window. Counter comps from scouting are a
-placeholder; baseline is Roach + Swarm Host (+ Corruptor on air).
+Infestation Pit (Hive path). Spire (Corruptor escort) still waits until
+the enemy has shown air. Once Lair is commanded, `_reserve_upgrade_bank`
+always gets first look at the frame's spend, ahead of
+`_post_opening_production` below it, so the next upgrade's bank actually
+accumulates instead of leaking to army production a few gas at a time -
+see its own docstring for the live-confirmed bug this replaces.
+Concurrent-upgrade slot count and army-vs-tech spend priority are
+supply-based (`intel.army.army_behind_on_supply`): behind on army supply
+→ more units / fewer concurrent upgrades and army wins ties; ahead or
+even → tech focus. `z.spawn_macro_army` handles the composition switch
+between phases — see its own docstring for why a static comp dict alone
+would stall production in the Roach-only window. Counter comps from
+scouting are a placeholder; baseline is Roach + Zergling (+ Corruptor on
+air).
 
 This is a continuous macro identity, not a scripted all-in leave time:
 `gates.intel_scaled_army_leave` (Kuuro `enemy_army_supply`) opens
 `combat.release_first_wave_then_stream` once our army supply beats the
 scouted enemy by a margin — leave sooner vs greedy/fog, hold longer vs a
 real army — then streams new units into ATTACKING forever after.
-`combat.defend_home()` holds before that, and Swarm Host/Corruptor never
-enter that pipeline at all — see `combat.siege_with_swarm_hosts`/
-`combat.escort_corruptors` and `core.roles.SUPPORT_ROLES`. Home Zerglings
-stay on `ZERGLING_DEFENDER_ROLE` (`combat.defend_with_zerglings`); extras
-join the attack wave. Once Burrow is done, hurt Roaches (<25% HP) dig in
-via `combat.regen_burrow_roaches` until fully healed, then unburrow. With
-Tunneling Claws they also retreat toward home on the influence grid while
-burrowed so they heal at a safe distance.
+`combat.defend_home()` holds before that, and Corruptors never enter that
+pipeline at all — see `combat.escort_corruptors` and
+`core.roles.SUPPORT_ROLES`. Home Zerglings stay on `ZERGLING_DEFENDER_ROLE`
+(`combat.defend_with_zerglings`); extras join the attack wave. Once Burrow
+is done, hurt Roaches (<25% HP) dig in via `combat.regen_burrow_roaches`
+until ~50% health, then unburrow. With Tunneling Claws they also retreat
+toward home on the influence grid while burrowed so they heal at a safe
+distance.
 
 The starting Overlord is sent scouting from `bot.main.on_start` rather than
 through `core.roles.assign_on_created` — it exists before the game-start
 event stream begins, so it never fires `on_unit_created` (see `core.roles.
 assign_starting_scout`).
 
-`_claim_natural_queen_tumor` spends the natural's Queen's starting 25
-energy on a Creep Tumor before it ever injects, by parking it on
-`UnitRole.QUEEN_CREEP` — the same pool `routines.creep.spread_creep`
-already drives with ares' own `QueenSpreadCreep` — until a tumor is
-confirmed, then handing it back to `UnitRole.QUEEN_INJECT` for normal duty.
-`_claim_main_queen_tumor` pulls the 3rd Queen (`z.train_queens`' "+1
-extra") and *directly* plants two tumors on the main high-ground rim
-(vision + full creep coverage) — it does not use `QueenSpreadCreep`, which
-paths toward the enemy natural when map coverage is low and walked the
-Queen outside the natural instead (confirmed live).
+The first Zerglings park on `ZERGLING_SCOUT_ROLE` as four permanent
+scouts (`scouting.scout_with_zerglings`): enemy-nat front, mid-map,
+tower-or-enemy-3rd, tower-or-enemy-4th. They only scout and kite — never
+reassigned to defense. Further lings fill home defense during the early
+window / early_aggression, then stream into ATTACKING with the Roaches.
+
+Queens target 1 per base (inject own hatch only) plus 2 extras on
+defense + creep (`z.train_queens(..., extra=2)`). The first Queen trained
+at the natural is designated the permanent natural extra
+(`natural_extra_queen_tag`) and stays on `UnitRole.QUEEN_CREEP`. The
+next spare beyond one-per-base injectors (typically the 4th queen on
+2 bases) is also designated `QUEEN_CREEP` at spawn.
+`_claim_natural_queen_tumor` spends that Queen's starting 25 energy on a
+Creep Tumor before she joins highway creep; she stays on creep/defense
+afterward (not handed back to inject).
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from math import cos, floor, pi, sin
-
 from ares.behaviors.macro import (
     BuildStructure,
     BuildWorkers,
@@ -182,7 +187,7 @@ from ares.behaviors.macro import (
     UpgradeController,
 )
 from ares.consts import UnitRole
-from cython_extensions import cy_distance_to_squared, cy_towards
+from cython_extensions import cy_center, cy_distance_to_squared
 from cython_extensions.general_utils import cy_has_creep
 from sc2.data import Race
 from sc2.ids.ability_id import AbilityId
@@ -200,13 +205,24 @@ from bot.behaviors.zerg import (
 )
 from bot.builds.definition import Army, BuildDefinition, Combat, Economy
 from bot.consts import (
+    FOCUS_MAIN,
+    FOCUS_NATURAL,
     HOME_ZERGLING_CAP,
     HOME_ZERGLING_CAP_EARLY_AGGRO,
-    ROACH_SWARM_HOST_COMP,
+    ROACH_LING_COMP,
     ZERGLING_DEFENDER_ROLE,
+    ZERGLING_SCOUT_ROLE,
 )
 from bot.intel import army as intel_army
-from bot.routines import combat, creep, gates, overlords as overlord_routines, overseers as overseer_routines, scouting
+from bot.routines import (
+    combat,
+    creep,
+    gates,
+    overlords as overlord_routines,
+    overseers as overseer_routines,
+    scouting,
+    targeting,
+)
 from bot.steps import common as c
 from bot.steps import zerg as z
 
@@ -239,7 +255,6 @@ class _Step:
     supply: int
     kind: str
     target: int = 0
-
 
 # Supply 19-30 is a hand-ordered interleave, per an explicit request:
 # Auto Worker stops at 21, not 19 (see `_AUTO_WORKER_WINDOWS`'s (4, 21)
@@ -430,7 +445,7 @@ def _scripted_production(ctx):
         #
         # Deliberately NOT extended to "roach_warren" (the only other
         # `BuildStructure` kind): by that point in `_SEQUENCE`, Zergling is
-        # long tech-ready and Roach/Swarm Host aren't yet, so `z.
+        # long tech-ready and Roach isn't yet, so `z.
         # spawn_macro_army()`'s own single-tech-ready overproduce escape
         # hatch is live - holding this step back would open the exact
         # frame for it to spend the Warren's own minerals on Zerglings
@@ -440,7 +455,6 @@ def _scripted_production(ctx):
         # every step's gate.
         return None
     return _step_behavior(ctx, step)
-
 
 # (after this `_SEQUENCE` index is issued, keep training Drones until this
 # supply) - "Auto Worker" in the build order. Gated on *index*, not supply:
@@ -500,7 +514,6 @@ def _scripted_worker_production(ctx):
         return None
     return BuildWorkers(to_count=ctx.worker_target)
 
-
 # After this time, grow total gas buildings by 1 every `_GAS_SCALE_INTERVAL`
 # seconds until capped at `_GAS_SCALE_MAX` - a later, separate concern from
 # the scripted opening's own two gas entries (`_SEQUENCE`'s "gas" kind,
@@ -514,7 +527,6 @@ _GAS_SCALE_INTERVAL: float = 20.0
 _GAS_SCALE_BASE: int = 2  # matches `_SEQUENCE`'s own final gas target
 _GAS_SCALE_MAX: int = 8
 
-
 # `c.auto_supply()`'s own gate (see its call site in `macro_steps`): true
 # once the scripted opening's own Overlord production has run its full
 # course (`_SEQUENCE`'s last "overlord" entry targets 6). Left ungated
@@ -524,19 +536,37 @@ _GAS_SCALE_MAX: int = 8
 # reacts to `supply_left <= 5` once `supply_used >= 13`, which is *more*
 # cautious than this build's own hand-tuned Overlord pacing actually needs,
 # so it kept racing ahead of `_SEQUENCE`'s own next scripted Overlord entry
-# for the same larva. Gated on the *outcome* of the scripted Overlord
-# entries (a live unit/pending count), not a raw supply threshold or
-# `_SEQUENCE` index, so it can't itself race the identically-supply-gated
-# 6th Overlord entry the same way the old Auto Worker windows once raced
-# the 13-supply Overlord (see `_AUTO_WORKER_WINDOWS`'s own comment).
+# for the same larva.
+#
+# Gate on *opening progress* (past the last overlord step), not live
+# Overlord count: once the scripted stretch is done, `opening_step_index`
+# never walks back, so a later kill or Overseer morph can't flip this
+# false and shut off `auto_supply` — confirmed live as minerals pooling
+# after an Overlord died mid-game. Live count is only a fallback while
+# the opening is still on those entries (and counts Overseers so a morph
+# mid-stretch doesn't look like we never hit the target).
 _FINAL_SCRIPTED_OVERLORD_COUNT: int = 6
+_LAST_OVERLORD_STEP_INDEX: int = max(
+    i for i, s in enumerate(_SEQUENCE) if s.kind == "overlord"
+)
+
+
+def _supply_provider_count(ctx) -> int:
+    """Overlords + Overseers (+ pending) — morphs still provide supply."""
+    bot = ctx.bot
+    return (
+        bot.units(UnitTypeId.OVERLORD).amount
+        + bot.units(UnitTypeId.OVERSEER).amount
+        + bot.units(UnitTypeId.OVERSEERSIEGEMODE).amount
+        + bot.already_pending(UnitTypeId.OVERLORD)
+        + bot.already_pending(UnitTypeId.OVERSEER)
+    )
 
 
 def _scripted_overlords_exhausted(ctx) -> bool:
-    have = ctx.bot.units(UnitTypeId.OVERLORD).amount + ctx.bot.already_pending(
-        UnitTypeId.OVERLORD
-    )
-    return have >= _FINAL_SCRIPTED_OVERLORD_COUNT
+    if ctx.state.opening_step_index > _LAST_OVERLORD_STEP_INDEX:
+        return True
+    return _supply_provider_count(ctx) >= _FINAL_SCRIPTED_OVERLORD_COUNT
 
 
 def _gas_scale_target(time: float) -> int | None:
@@ -552,7 +582,6 @@ def _scripted_gas_scaling(ctx):
     if target is None:
         return None
     return ZergGasBuildingController(to_count=target)
-
 
 # Post-5:00 army vs tech posture (see module docstring).
 _POST_FIVE: float = 300.0
@@ -729,7 +758,6 @@ def _lair_commanded(ctx) -> bool:
         for th in bot.townhalls
     )
 
-
 # Game-time mark to pull a Drone aside and start it walking toward the
 # natural expansion site - see `_claim_natural_scout`. Time-gated rather
 # than supply-gated: the natural is the *first* expansion, so there's no
@@ -775,7 +803,6 @@ def _claim_natural_scout(ctx) -> None:
     scout.move(location)
     ctx.log(f"MACRO_ZERG pre-walking Drone {scout.tag} toward natural at {location}")
 
-
 # Radius from the natural townhall a Queen must spawn within to be claimed
 # as "the natural's queen" - see `_claim_natural_queen_tumor`.
 _NATURAL_QUEEN_RADIUS: float = 15.0
@@ -783,32 +810,19 @@ _NATURAL_QUEEN_RADIUS: float = 15.0
 
 def _creep_tumor_tags(ctx) -> frozenset[int]:
     """Tags of every Creep Tumor (mid-cast or burrowed) that exists right
-    now - the raw material both `_claim_natural_queen_tumor`/`_claim_main_
-    queen_tumor` snapshot as a baseline at claim time, then diff against
-    later to detect "a *new* one appeared" rather than "one exists".
+    now - snapshotted as a baseline at natural-queen claim time, then
+    diffed against later to detect "a *new* one appeared" rather than
+    "one exists".
 
-    That distinction is load-bearing, not stylistic: ares' own `QueenSpread
-    Creep` (what `routines.creep.spread_creep` drives a `QUEEN_CREEP`-role
-    Queen with) doesn't place the first tumor near the claiming townhall at
-    all - once total map creep coverage is low (always true this early), it
-    walks the tumor chain toward `mediator.get_enemy_nat` instead, so a
-    fixed-radius "did it land near home" check never actually saw either
-    Queen's tumor (confirmed live - see git history on this module for the
-    abandoned proximity-radius attempt). A bare "does any tumor exist"
-    check has its own, different bug once a *second* claim mechanism
-    exists: an already-placed tumor from an earlier, already-finished claim
-    keeps existing on the map, so it satisfies the next claim's "done"
-    check on its very first frame, before that Queen has moved or cast
-    anything at all (confirmed live: the main's claim logged "pulled" and
-    "back on inject duty" in the same frame). Diffing against a baseline
-    fixes both: no assumption about where the tumor lands, and no
-    confusion with a tumor some earlier claim already placed.
+    That distinction is load-bearing: ares' own `QueenSpreadCreep` doesn't
+    place the first tumor near the claiming townhall when map creep is
+    low — it walks toward `mediator.get_enemy_nat` instead — so a fixed-
+    radius proximity check never saw the tumor. Diffing against a baseline
+    avoids assuming where the tumor lands.
 
     Creep Tumors are structures, not units, in this API (`bot.units(...)`
     never matches them - confirmed live: without checking `structures(...)`
-    specifically, a claimed Queen just kept casting indefinitely, walking
-    the whole opening creep chain toward the enemy natural instead of
-    handing back after its first tumor).
+    specifically, a claimed Queen just kept casting indefinitely).
     """
     tumors = ctx.bot.structures(UnitTypeId.CREEPTUMORQUEEN) | ctx.bot.structures(
         UnitTypeId.CREEPTUMORBURROWED
@@ -817,15 +831,18 @@ def _creep_tumor_tags(ctx) -> frozenset[int]:
 
 
 def _claim_natural_queen_tumor(ctx) -> None:
-    """One-shot: spend the natural's Queen's starting 25 energy on a Creep
-    Tumor instead of its first inject, then hand it back to normal inject
-    duty.
+    """One-shot: spend the natural-extra Queen's starting 25 energy on a
+    Creep Tumor, then leave her on `UnitRole.QUEEN_CREEP` for defense +
+    highway creep (she is the designated permanent extra, not an injector).
 
-    Reassigns the claimed Queen to `UnitRole.QUEEN_CREEP` (keeps
-    `InjectLarva` from sweeping her mid-walk) and drives the plant itself
-    with a sticky single-command path. `spread_creep` skips this tag while
-    the claim is active — sharing the Queen with highway creep was the
-    hatch ↔ tumor thrash (two routines re-issuing move every frame).
+    Prefers `natural_extra_queen_tag` when already designated at spawn;
+    otherwise claims an energetic Queen near the natural and latches her
+    as the extra. `spread_creep` skips this tag while the claim is active —
+    sharing the Queen with highway creep was the hatch ↔ tumor thrash.
+
+    Plants toward the first priority creep spot (natural front), not a
+    random creep edge under the Queen (that put the opening tumor behind
+    the natural mineral line).
 
     Detects "done" by diffing `_creep_tumor_tags` against the baseline
     snapshotted at claim time (see that function's own comment for why a
@@ -836,6 +853,17 @@ def _claim_natural_queen_tumor(ctx) -> None:
     """
     if ctx.state.natural_queen_tumor_done:
         return
+
+    # Designated extra died before the tumor — free the latch so a later
+    # natural-trained Queen can take the designation on create.
+    extra = ctx.state.natural_extra_queen_tag
+    if extra is not None and not any(
+        q.tag == extra for q in ctx.bot.units(UnitTypeId.QUEEN)
+    ):
+        ctx.state.natural_extra_queen_tag = None
+        if ctx.state.natural_queen_tag == extra:
+            ctx.state.natural_queen_tag = None
+            ctx.state.natural_queen_tumor_spot = None
 
     if ctx.state.natural_queen_tag is None:
         townhalls = ctx.bot.townhalls.ready
@@ -848,14 +876,39 @@ def _claim_natural_queen_tumor(ctx) -> None:
         natural = sorted(
             townhalls, key=lambda th: th.distance_to(ctx.production_location)
         )[1]
-        candidates = ctx.mediator.get_units_from_role(
-            role=UnitRole.QUEEN_INJECT, unit_type=UnitTypeId.QUEEN
-        ).filter(
-            lambda q: q.energy >= 25 and q.distance_to(natural) < _NATURAL_QUEEN_RADIUS
-        )
-        if not candidates:
-            return  # try again next frame
-        queen = candidates.closest_to(natural)
+
+        queen = None
+        # Prefer the designated natural-extra Queen (already on CREEP from
+        # spawn) over hunting injectors near the hatch.
+        if ctx.state.natural_extra_queen_tag is not None:
+            for role in (UnitRole.QUEEN_CREEP, UnitRole.QUEEN_INJECT):
+                pool = ctx.mediator.get_units_from_role(
+                    role=role, unit_type=UnitTypeId.QUEEN
+                )
+                match = next(
+                    (
+                        q
+                        for q in pool
+                        if q.tag == ctx.state.natural_extra_queen_tag and q.energy >= 25
+                    ),
+                    None,
+                )
+                if match is not None:
+                    queen = match
+                    break
+        if queen is None:
+            candidates = ctx.mediator.get_units_from_role(
+                role=UnitRole.QUEEN_INJECT, unit_type=UnitTypeId.QUEEN
+            ).filter(
+                lambda q: q.energy >= 25
+                and q.distance_to(natural) < _NATURAL_QUEEN_RADIUS
+            )
+            if not candidates:
+                return  # try again next frame
+            queen = candidates.closest_to(natural)
+            if ctx.state.natural_extra_queen_tag is None:
+                ctx.state.natural_extra_queen_tag = queen.tag
+
         ctx.state.natural_queen_tag = queen.tag
         ctx.state.natural_queen_tumor_baseline = _creep_tumor_tags(ctx)
         ctx.state.natural_queen_tumor_spot = None
@@ -872,6 +925,8 @@ def _claim_natural_queen_tumor(ctx) -> None:
         # the slot instead of leaving this latched forever.
         ctx.state.natural_queen_tag = None
         ctx.state.natural_queen_tumor_spot = None
+        if ctx.state.natural_extra_queen_tag == tag:
+            ctx.state.natural_extra_queen_tag = None
         return
 
     # Exclusive until done: keep role on QUEEN_CREEP every frame so inject
@@ -884,124 +939,51 @@ def _claim_natural_queen_tumor(ctx) -> None:
         return
 
     if _creep_tumor_tags(ctx) <= ctx.state.natural_queen_tumor_baseline:
-        # Drive ourselves with a sticky spot — do not share command path with
-        # highway `spread_creep` (that re-picks edges every frame → thrash).
+        # Drive toward priority creep (nat front first) — NOT a random edge
+        # next to the Queen. Nearby-edge from queen.position planted behind
+        # the natural mineral line (confirmed live: spot==(68,33) while nat
+        # front was ~(73,49)).
         sticky = ctx.state.natural_queen_tumor_spot
         if sticky is None or not cy_has_creep(ctx.mediator.get_creep_grid, sticky):
-            edge = ctx.mediator.find_nearby_creep_edge_position(
-                position=queen.position,
-                search_radius=18.0,
-                unit_tag=tag,
-                cache_result=False,
+            from bot.routines import creep as creep_mod
+
+            priorities = creep_mod._priority_creep_locations(ctx)
+            goal = priorities[0] if priorities else queen.position
+            grid = ctx.mediator.get_ground_grid
+            path_spot = ctx.mediator.get_next_tumor_on_path(
+                grid=grid,
+                from_pos=queen.position,
+                to_pos=goal,
+                find_alternative=True,
+                min_separation=creep_mod._TUMOR_MIN_SEPARATION,
             )
-            if edge is not None:
-                sticky = Point2(edge)
+            sticky = Point2(path_spot) if path_spot is not None else None
+            if sticky is None or not cy_has_creep(ctx.mediator.get_creep_grid, sticky):
+                # Prefer an edge near the priority goal, not under the Queen.
+                edge = ctx.mediator.find_nearby_creep_edge_position(
+                    position=goal,
+                    search_radius=18.0,
+                    unit_tag=tag,
+                    cache_result=False,
+                )
+                sticky = Point2(edge) if edge is not None else None
+            if sticky is not None and cy_has_creep(
+                ctx.mediator.get_creep_grid, sticky
+            ):
                 ctx.state.natural_queen_tumor_spot = sticky
+            else:
+                sticky = None
         if sticky is not None:
             _drive_queen_to_tumor_spot(ctx, queen, sticky)
         return
 
     ctx.state.natural_queen_tumor_done = True
     ctx.state.natural_queen_tumor_spot = None
-    ctx.mediator.assign_role(tag=tag, role=UnitRole.QUEEN_INJECT)
-    ctx.log(f"MACRO_ZERG natural Queen {tag} back on inject duty")
-
-
-# Total (live + pending) Queen count that must exist before pulling one for
-# the main's own opening Creep Tumors - see `_claim_main_queen_tumor`. `z.
-# train_queens(per_base=1, maximum=6, extra=1)`'s own "+1 extra" slot is
-# exactly this 3rd Queen (main and natural each already hold their own 1 by
-# the time a 3rd trains at all), so claiming it here doesn't compete with
-# either base's first, inject-critical Queen the way claiming Queen #1 or #2
-# would.
-_MAIN_QUEEN_TUMOR_AT_COUNT: int = 3
-# How many Creep Tumors to plant on the main plateau before handing the
-# Queen back. Two covers the rim for vision + fills creep the natural
-# chain never reaches.
-_MAIN_OPENING_TUMORS: int = 2
-# Stay on the main high ground — past this, a spot is "outside" the main.
-_MAIN_TUMOR_AREA_RADIUS: float = 18.0
-# Keep successive main tumors apart so they cover different rim arcs.
-_MAIN_TUMOR_CLEARANCE: float = 9.0
-
-
-def _main_area_tumor_tags(ctx) -> frozenset[int]:
-    """Creep Tumors currently sitting on the main plateau (not the natural)."""
-    main = ctx.production_location
-    home_height = ctx.bot.get_terrain_height(main)
-    radius_sq = _MAIN_TUMOR_AREA_RADIUS**2
-    tags: set[int] = set()
-    tumors = ctx.bot.structures(UnitTypeId.CREEPTUMORQUEEN) | ctx.bot.structures(
-        UnitTypeId.CREEPTUMORBURROWED
-    )
-    for tumor in tumors:
-        if cy_distance_to_squared(tumor.position, main) > radius_sq:
-            continue
-        if ctx.bot.get_terrain_height(tumor.position) != home_height:
-            continue
-        tags.add(tumor.tag)
-    return frozenset(tags)
-
-
-def _pick_main_tumor_spot(ctx, queen) -> Point2 | None:
-    """Creep-edge tile on the main high ground, clear of existing tumors."""
-    main = ctx.production_location
-    home_height = ctx.bot.get_terrain_height(main)
-    area_sq = _MAIN_TUMOR_AREA_RADIUS**2
-    clear_sq = _MAIN_TUMOR_CLEARANCE**2
-    existing = [
-        t.position
-        for t in (
-            ctx.bot.structures(UnitTypeId.CREEPTUMORQUEEN)
-            | ctx.bot.structures(UnitTypeId.CREEPTUMORBURROWED)
-        )
-        if cy_distance_to_squared(t.position, main) <= area_sq
-    ]
-    creep_grid = ctx.mediator.get_creep_grid
-
-    def _usable(point: Point2) -> bool:
-        if cy_distance_to_squared(point, main) > area_sq:
-            return False
-        if ctx.bot.get_terrain_height(point) != home_height:
-            return False
-        if not cy_has_creep(creep_grid, point):
-            return False
-        if not ctx.bot.in_pathing_grid(point):
-            return False
-        return all(cy_distance_to_squared(point, e) >= clear_sq for e in existing)
-
-    edge = ctx.mediator.find_nearby_creep_edge_position(
-        position=main,
-        search_radius=_MAIN_TUMOR_AREA_RADIUS,
-        unit_tag=queen.tag,
-        cache_result=False,
-    )
-    if edge is not None and _usable(edge):
-        return Point2(edge)
-
-    # Prefer the rim toward the natural / map center (high-ground edge
-    # vision), then fill remaining arcs around the hatch.
-    nat = ctx.own_nat
-    toward = Point2(cy_towards(main, nat, 12.0)) if nat is not None else Point2(
-        cy_towards(main, ctx.bot.game_info.map_center, 12.0)
-    )
-    candidates: list[Point2] = [toward]
-    for radius in (8.0, 11.0, 14.0, 16.0):
-        for index in range(12):
-            angle = 2.0 * pi * index / 12
-            candidates.append(
-                Point2(
-                    (
-                        floor(main.x + radius * cos(angle)) + 0.5,
-                        floor(main.y + radius * sin(angle)) + 0.5,
-                    )
-                )
-            )
-    candidates.sort(key=lambda p: cy_distance_to_squared(p, toward))
-    for point in candidates:
-        if _usable(point):
-            return point
-    return None
+    # Permanent extra: stay on creep/defense, do not return to inject.
+    ctx.mediator.assign_role(tag=tag, role=UnitRole.QUEEN_CREEP)
+    if ctx.state.natural_extra_queen_tag is None:
+        ctx.state.natural_extra_queen_tag = tag
+    ctx.log(f"MACRO_ZERG natural Queen {tag} staying on creep/defense duty")
 
 
 def _queen_already_ordered_to(queen, spot: Point2) -> bool:
@@ -1020,12 +1002,27 @@ def _queen_already_ordered_to(queen, spot: Point2) -> bool:
         return cy_distance_to_squared(pos, spot) < 4.0
     return False
 
+# Last natural opening cast (tag -> time) — failed under-self casts used to
+# re-issue every frame with no order_target latch.
+_NATURAL_TUMOR_CAST_AT: dict[int, float] = {}
+_NATURAL_TUMOR_CAST_COOLDOWN: float = 1.5
+
 
 def _drive_queen_to_tumor_spot(ctx, queen, spot: Point2) -> None:
-    """Single command path: walk once, then cast once — no re-pull spam."""
+    """Single command path: walk once, then cast once — no re-pull spam.
+
+    BUILD_CREEPTUMOR_QUEEN has game-data cast_range 0 — the Queen must stand
+    on/near the plant tile (confirmed live OOR spam at dist ~2.9 with the
+    old center-dist-3 gate).
+    """
     if queen.is_using_ability(AbilityId.BUILD_CREEPTUMOR):
         return
-    if cy_distance_to_squared(queen.position, spot) > 25.0:
+    if not cy_has_creep(ctx.mediator.get_creep_grid, spot):
+        return
+    dist_sq = cy_distance_to_squared(queen.position, spot)
+    q_r = float(getattr(queen, "radius", 0.875) or 0.875)
+    max_sq = (q_r + 0.25) ** 2
+    if dist_sq > max_sq:
         if not _queen_already_ordered_to(queen, spot):
             queen.move(spot)
         return
@@ -1033,143 +1030,67 @@ def _drive_queen_to_tumor_spot(ctx, queen, spot: Point2) -> None:
         return
     if _queen_already_ordered_to(queen, spot):
         return
+    try:
+        if not ctx.bot.is_visible(spot):
+            if not _queen_already_ordered_to(queen, spot):
+                queen.move(spot)
+            return
+    except Exception:
+        pass
+    import time
+
+    last = _NATURAL_TUMOR_CAST_AT.get(queen.tag, 0.0)
+    if time.time() - last < _NATURAL_TUMOR_CAST_COOLDOWN:
+        return
+    _NATURAL_TUMOR_CAST_AT[queen.tag] = time.time()
     queen(AbilityId.BUILD_CREEPTUMOR_QUEEN, spot)
 
 
-def _drive_main_queen_tumor(ctx, queen) -> None:
-    """Move/cast a main-claim Queen onto a sticky main-plateau tumor spot."""
-    if queen.is_using_ability(AbilityId.BUILD_CREEPTUMOR):
-        return
-
-    sticky = ctx.state.main_queen_tumor_spot
-    if sticky is not None:
-        # Drop sticky only when it is no longer a usable main-plateau plant.
-        main = ctx.production_location
-        area_sq = _MAIN_TUMOR_AREA_RADIUS**2
-        if (
-            cy_distance_to_squared(sticky, main) > area_sq
-            or ctx.bot.get_terrain_height(sticky)
-            != ctx.bot.get_terrain_height(main)
-            or not cy_has_creep(ctx.mediator.get_creep_grid, sticky)
-        ):
-            sticky = None
-            ctx.state.main_queen_tumor_spot = None
-
-    if sticky is None:
-        sticky = _pick_main_tumor_spot(ctx, queen)
-        if sticky is None:
-            # Stay on the plateau while energy recharges / creep fills.
-            home = ctx.production_location
-            if cy_distance_to_squared(queen.position, home) > 36.0:
-                if not _queen_already_ordered_to(queen, home):
-                    queen.move(home)
-            return
-        ctx.state.main_queen_tumor_spot = sticky
-
-    _drive_queen_to_tumor_spot(ctx, queen, sticky)
-
-
-def _claim_main_queen_tumor(ctx) -> None:
-    """Once the 3rd Queen exists, plant `_MAIN_OPENING_TUMORS` on the main
-    high ground, then hand her back to inject.
-
-    Does **not** hand off to `QueenSpreadCreep`: that behavior paths toward
-    `get_enemy_nat` while map creep coverage is low, so the Queen walked
-    past the natural and planted next to the forward tumor chain instead of
-    covering the main rim (confirmed live). Placement is driven here each
-    frame via `_drive_main_queen_tumor`; `spread_creep` skips this tag while
-    the claim is active.
-    """
-    if ctx.state.main_queen_tumor_done:
-        return
-
-    if ctx.state.main_queen_tag is None:
-        if not ctx.state.natural_queen_tumor_done:
-            return  # let the natural's claim finish first - see older docstring
-        have = ctx.bot.units(UnitTypeId.QUEEN).amount + ctx.bot.already_pending(
-            UnitTypeId.QUEEN
-        )
-        if have < _MAIN_QUEEN_TUMOR_AT_COUNT:
-            return  # 3rd queen not trained yet
-        main = ctx.production_location
-        candidates = ctx.mediator.get_units_from_role(
-            role=UnitRole.QUEEN_INJECT, unit_type=UnitTypeId.QUEEN
-        ).filter(lambda q: q.energy >= 25 and q.distance_to(main) < _NATURAL_QUEEN_RADIUS)
-        if not candidates:
-            return  # try again next frame
-        queen = candidates.closest_to(main)
-        ctx.state.main_queen_tag = queen.tag
-        ctx.state.main_queen_tumor_baseline = _main_area_tumor_tags(ctx)
-        ctx.state.main_queen_tumor_spot = None
-        ctx.mediator.assign_role(tag=queen.tag, role=UnitRole.QUEEN_CREEP)
-        ctx.log(
-            f"MACRO_ZERG main Queen {queen.tag} pulled for "
-            f"{_MAIN_OPENING_TUMORS} main-plateau creep tumors"
-        )
-        return
-
-    tag = ctx.state.main_queen_tag
-    still_claimed = ctx.mediator.get_units_from_role(
-        role=UnitRole.QUEEN_CREEP, unit_type=UnitTypeId.QUEEN
-    )
-    queen = next((q for q in still_claimed if q.tag == tag), None)
-    if queen is None:
-        ctx.state.main_queen_tag = None
-        ctx.state.main_queen_tumor_spot = None
-        return
-
-    # Exclusive until done — reaffirm creep role every frame.
-    ctx.mediator.assign_role(tag=tag, role=UnitRole.QUEEN_CREEP)
-
-    placed = _main_area_tumor_tags(ctx) - ctx.state.main_queen_tumor_baseline
-    if len(placed) < _MAIN_OPENING_TUMORS:
-        # After each successful plant, drop sticky so the next tumor covers
-        # a different rim arc (clearance check in `_pick_main_tumor_spot`).
-        if ctx.state.main_queen_tumor_spot is not None and any(
-            cy_distance_to_squared(ctx.state.main_queen_tumor_spot, t.position) < _MAIN_TUMOR_CLEARANCE**2
-            for t in (
-                ctx.bot.structures(UnitTypeId.CREEPTUMORQUEEN)
-                | ctx.bot.structures(UnitTypeId.CREEPTUMORBURROWED)
-            )
-            if t.tag in placed
-        ):
-            ctx.state.main_queen_tumor_spot = None
-        _drive_main_queen_tumor(ctx, queen)
-        return
-
-    ctx.state.main_queen_tumor_done = True
-    ctx.state.main_queen_tumor_spot = None
-    ctx.mediator.assign_role(tag=tag, role=UnitRole.QUEEN_INJECT)
-    ctx.log(
-        f"MACRO_ZERG main Queen {tag} back on inject duty "
-        f"({len(placed)} main tumors placed)"
-    )
-
-
 def _macro_zerg_on_unit_created(ctx, unit) -> None:
-    """Queen home snapshot + peel a home Zergling cap off the army.
+    """Queen home snapshot, natural-extra designation, opening ling roles.
 
     Queens: snapshot which townhall trained a new Queen, once, at the one
     moment that's unambiguous - see `TrainQueens`'s own `home_townhall`
-    docstring for why a live-position lookup later can't be trusted.
+    docstring for why a live-position lookup later can't be trusted. The
+    first Queen whose home is the natural is permanently assigned
+    `QUEEN_CREEP` as one of the two defense/creep extras. A later spare
+    (injectors > bases — usually the 4th queen) is also assigned
+    `QUEEN_CREEP` at spawn.
 
-    Zerglings: `army.types` includes Zergling so extras join attack waves,
-    but the first `HOME_ZERGLING_CAP` stay on `ZERGLING_DEFENDER_ROLE` for
-    `combat.defend_with_zerglings`.
+    Zerglings: `army.types` includes Zergling so extras join attack waves.
+    Opening scouts park on `ZERGLING_SCOUT_ROLE` — four permanent parks
+    (enemy-nat front, mid, tower/3rd, tower/4th). They only scout and kite.
+    Further lings fill `ZERGLING_DEFENDER_ROLE` up to `HOME_ZERGLING_CAP`
+    during the early window / early_aggression, then stream into ATTACKING.
     """
     if unit.type_id == UnitTypeId.ZERGLING:
         from bot.intel import early_aggression as _early_aggro
+        from bot.intel.army import in_early_window as _in_early_window
 
-        home = ctx.mediator.get_units_from_role(
-            role=ZERGLING_DEFENDER_ROLE, unit_type=UnitTypeId.ZERGLING
+        # Permanent opening scouts (4): scout + kite only — never pulled
+        # onto home defense / early-aggression garrison.
+        scouts = ctx.mediator.get_units_from_role(
+            role=ZERGLING_SCOUT_ROLE, unit_type=UnitTypeId.ZERGLING
         )
-        cap = (
-            HOME_ZERGLING_CAP_EARLY_AGGRO
-            if _early_aggro(ctx)
-            else HOME_ZERGLING_CAP
-        )
-        if len(home) < cap:
-            ctx.mediator.assign_role(tag=unit.tag, role=ZERGLING_DEFENDER_ROLE)
+        cap = scouting.opening_zergling_scout_cap(ctx)
+        if len(scouts) < cap:
+            ctx.mediator.assign_role(tag=unit.tag, role=ZERGLING_SCOUT_ROLE)
+            return
+
+        # Home garrison only during early window / early_aggression.
+        if _early_aggro(ctx) or _in_early_window(ctx):
+            home = ctx.mediator.get_units_from_role(
+                role=ZERGLING_DEFENDER_ROLE, unit_type=UnitTypeId.ZERGLING
+            )
+            home_cap = (
+                HOME_ZERGLING_CAP_EARLY_AGGRO
+                if _early_aggro(ctx)
+                else HOME_ZERGLING_CAP
+            )
+            if len(home) < home_cap:
+                ctx.mediator.assign_role(
+                    tag=unit.tag, role=ZERGLING_DEFENDER_ROLE
+                )
         return
 
     if unit.type_id != UnitTypeId.QUEEN:
@@ -1180,14 +1101,51 @@ def _macro_zerg_on_unit_created(ctx, unit) -> None:
     home = townhalls.closest_to(unit.position)
     ctx.state.queen_home_townhall[unit.tag] = home.tag
 
+    # Designate the first Queen trained at the natural as a permanent
+    # defense/creep extra (not an inject Queen for that base).
+    if ctx.state.natural_extra_queen_tag is None and len(townhalls) >= 2:
+        natural = sorted(
+            townhalls, key=lambda th: th.distance_to(ctx.production_location)
+        )[1]
+        if home.tag == natural.tag:
+            ctx.state.natural_extra_queen_tag = unit.tag
+            ctx.mediator.assign_role(tag=unit.tag, role=UnitRole.QUEEN_CREEP)
+            ctx.log(
+                f"MACRO_ZERG Queen {unit.tag} designated natural extra "
+                f"(creep/defense)"
+            )
+            return
+
+    # Second creep/defense extra: once every base already has an injector
+    # (or will, counting this queen) and we still want 2 CREEP queens,
+    # promote this spare immediately (typically the 4th queen on 2 bases).
+    # Waiting on `spread_creep`'s per-frame promote left her injecting.
+    from bot.routines.creep import _DESIRED_CREEP_QUEENS
+
+    creep_queens = ctx.mediator.get_units_from_role(
+        role=UnitRole.QUEEN_CREEP, unit_type=UnitTypeId.QUEEN
+    )
+    injectors = ctx.mediator.get_units_from_role(
+        role=UnitRole.QUEEN_INJECT, unit_type=UnitTypeId.QUEEN
+    )
+    # This unit was just born onto QUEEN_INJECT (roles.assign_on_created).
+    promote = (
+        len(creep_queens) < _DESIRED_CREEP_QUEENS
+        and len(injectors) > ctx.base_count
+    )
+    if promote:
+        ctx.mediator.assign_role(tag=unit.tag, role=UnitRole.QUEEN_CREEP)
+        ctx.log(
+            f"MACRO_ZERG Queen {unit.tag} designated creep/defense extra "
+            f"({len(creep_queens) + 1}/{_DESIRED_CREEP_QUEENS})"
+        )
+
 
 def _macro_zerg_on_step(ctx) -> None:
     """`BuildDefinition` only has one `on_step` slot - all of this
     build's per-frame concerns are called from here."""
     _claim_natural_scout(ctx)
     _claim_natural_queen_tumor(ctx)
-    _claim_main_queen_tumor(ctx)
-
 
 # Roach's own attack range is 4 - retreat once an enemy closes inside 3, so
 # it holds anywhere from 3 to 4 rather than closing to melee. Same idiom as
@@ -1197,13 +1155,34 @@ def _macro_zerg_on_step(ctx) -> None:
 # comment for why handing Roach the grid here would reintroduce the exact
 # "never engaged" bug `never_retreat` was added to fix. Peel hysteresis in
 # `_kite_maneuver` (resume at 4) stops the one-squad Move↔Shoot thrash at
-# the 3-range boundary.
+# the 3-range boundary. `kite_types` now only kites when outnumbered —
+# when ahead (or pushing the enemy main-ramp choke) Roaches stutter-step
+# with the group, matching Four Rax Marines.
 _ROACH_MIN_ENGAGE_RANGE: float = 3.0
 
 
+def attack_objective(ctx) -> Point2:
+    """Roach push destination: enemy ramp choke → main → hunt leftovers.
+
+    Same shape as `four_rax_proxy.attack_objective` so `StutterGroupForward`
+    walks through the main-ramp bottleneck between shots instead of
+    A-moving into a pile-up on the ramp.
+    """
+    if not targeting.enemy_natural_cleared(ctx):
+        return targeting.enemy_ramp_bottom(ctx)
+    if not targeting.enemy_main_fallen(ctx):
+        return ctx.bot.enemy_start_locations[0]
+    attackers = ctx.units_in_role(UnitRole.ATTACKING)
+    from_pos = (
+        Point2(cy_center(attackers))
+        if attackers
+        else ctx.bot.enemy_start_locations[0]
+    )
+    return targeting.hunt_remaining_bases(ctx, from_pos)
+
 BUILD = BuildDefinition(
     name="Macro Zerg",
-    label="Macro Zerg (Roach/Swarm Host)",
+    label="Macro Zerg (Roach/Zergling)",
     race=Race.Zerg,
     economy=Economy(
         worker_target=80,
@@ -1215,9 +1194,9 @@ BUILD = BuildDefinition(
         long_distance_mine=True,
     ),
     army=Army(
-        comp=ROACH_SWARM_HOST_COMP,
-        # Roach + Zergling both wave-eligible; the first
-        # `HOME_ZERGLING_CAP` Zerglings are peeled onto
+        comp=ROACH_LING_COMP,
+        # Roach + Zergling both wave-eligible; one Zergling per observation
+        # tower parks on `ZERGLING_SCOUT_ROLE`, then further lings fill
         # `ZERGLING_DEFENDER_ROLE` in `_macro_zerg_on_unit_created`.
         types=frozenset({UnitTypeId.ROACH, UnitTypeId.ZERGLING}),
         upgrades=(
@@ -1252,11 +1231,14 @@ BUILD = BuildDefinition(
             # army unit into ATTACKING from then on.
             combat.release_first_wave_then_stream(muster=True),
             combat.reinforce_home_vs_early_aggression(),
+            # After early window: home/scout lings join DEFENDING → ATTACKING.
+            combat.release_home_zerglings_after_early(),
             combat.defend_home(),
             combat.defend_with_zerglings(),
-            # Dig-in before attack_squads so hurt Roaches burrow instead of
-            # kiting into the fight; attack_squads also skips those tags.
-            # Tunneling Claws: burrowed Roaches peel home while healing.
+            # 2 enemy-main + 2 tower/mid scouts; join army when early ends.
+            scouting.scout_with_zerglings(),
+            # Dig-in before attack_squads so damaged Roaches burrow and
+            # tunnel home to full HP; attack_squads also skips those tags.
             combat.regen_burrow_roaches(),
             # never_retreat=True: Zergling (melee, still in this squad for
             # the breach-worker micro above) gains nothing from kiting off
@@ -1265,17 +1247,14 @@ BUILD = BuildDefinition(
             # short-circuiting the whole squad's advance the instant any one
             # member was mid-cooldown on enemy-influenced ground, which a
             # close-range brawl makes true almost constantly). Roach is
-            # split out via kite_types instead: it has an actual ranged
-            # attack (4) worth kiting with, unlike Zergling - see
-            # `_ROACH_MIN_ENGAGE_RANGE`'s own comment for the exact distance
-            # and why it skips the influence grid `never_retreat` also
-            # protects against.
+            # split out via kite_types: range-4 kite when outnumbered
+            # (no influence grid), stutter-step when ahead or on the enemy
+            # main-ramp choke — same force/choke idiom as Four Rax Marines.
             combat.attack_squads(
                 never_retreat=True,
                 kite_types=frozenset({UnitTypeId.ROACH}),
                 min_engage_range=_ROACH_MIN_ENGAGE_RANGE,
             ),
-            combat.siege_with_swarm_hosts(),
             combat.escort_corruptors(),
             overseer_routines.manage_overseers(),
             creep.spread_creep(),
@@ -1289,6 +1268,8 @@ BUILD = BuildDefinition(
         wave1_min=8,
         wave_growth=1.15,
         wave_stage_label="Roach Pushes",
+        attack_objective=attack_objective,
+        focus=(FOCUS_MAIN, FOCUS_NATURAL),
         # Roach/Zergling stand and fight on bad ground on purpose (never_
         # retreat/kite_types above) - see Combat.ignore_influence_parking's
         # own docstring for the confirmed live false-positive this avoids.
@@ -1321,15 +1302,14 @@ BUILD = BuildDefinition(
         # whatever's left.
         _scripted_production,
         # Always-on, not scripted: 1 Queen per ready townhall (`per_base=1`),
-        # plus 1 spare for creep spread (`extra`, see `routines.creep.
-        # spread_creep`) - no supply gate or fixed count, since a Queen is
-        # simply wanted the moment each base can support one. `TrainQueens`
-        # already requires a ready Spawning Pool internally, so this is a
-        # no-op before then regardless. Replaces the old scripted "1 queen
-        # @ 21, 2 @ 23, 3 @ 28" entries outright - those were pinned to the
-        # opening's own first three bases specifically; this scales to
-        # however many bases actually exist, for the whole game.
-        z.train_queens(per_base=1, maximum=6, extra=1),
+        # plus 2 extras for defense + creep (`extra`, see `routines.creep.
+        # spread_creep`). The natural's first Queen is the designated
+        # permanent extra (`natural_extra_queen_tag`); the 3rd lands at
+        # the natural via TrainQueens' prefer-natural tiebreak so natural
+        # still gets an injector. No supply gate — a Queen
+        # is wanted the moment each base can support one.
+        # `TrainQueens` requires a ready Spawning Pool internally.
+        z.train_queens(per_base=1, maximum=8, extra=2),
         # Same maintenance shape as queens: 1 Spore Crawler per owned base
         # in the mineral line, forever. Opens at 4:30 and only re-scans for
         # missing crawlers every 15s so this does not fight larva every
@@ -1337,6 +1317,15 @@ BUILD = BuildDefinition(
         # (before army) so MacroPlan actually reaches it — at the bottom
         # behind `spawn_macro_army` it never spent (confirmed live: Stage 2
         # "3 Spore Crawlers" never happened through leave-330).
+        # Spines before Spores: both wake on the same 15s tick and MacroPlan
+        # short-circuits on the first nested plan that acts — Spores-first
+        # starved Spines forever (confirmed live: SPINE maintain logged
+        # every 15s, zero COMPLETE spinecrawler).
+        z.spine_crawlers(
+            per_base=1,
+            gate=gates.after_time(270.0),
+            check_interval=15.0,
+        ),
         z.spore_crawlers(
             per_base=1,
             gate=gates.after_time(270.0),
@@ -1345,7 +1334,7 @@ BUILD = BuildDefinition(
         # Early-aggression overlay: cheap spine pair at the natural while
         # Kuuro's latch is on (no _SEQUENCE edits). Drops when latch clears
         # via gate — existing spines stay.
-        z.spine_crawlers(
+        z.early_aggression_spines(
             2,
             gate=gates.all_of(
                 gates.early_aggression(),

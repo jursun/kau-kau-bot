@@ -50,24 +50,20 @@ CHARGELOT_FLOOD_COMP: dict[UnitTypeId, dict[str, float | int]] = {
     UnitTypeId.ZEALOT: {"proportion": 0.6, "priority": 1},
 }
 
-# Macro Zerg: Roach frontline, Swarm Host for cheap map-control chip damage,
-# a Zergling trickle for creep escort / worker-line defense. See
-# `steps.zerg.spawn_macro_army` for the phased fallback used before
-# Infestation Pit is up, the Corruptor variant below, and the ling-heavy
-# comps when mineral:gas > 5:1.
-ROACH_SWARM_HOST_COMP: dict[UnitTypeId, dict[str, float | int]] = {
-    UnitTypeId.ROACH: {"proportion": 0.65, "priority": 0},
-    UnitTypeId.SWARMHOSTMP: {"proportion": 0.25, "priority": 1},
-    UnitTypeId.ZERGLING: {"proportion": 0.10, "priority": 2},
+# Macro Zerg: Roach frontline with a Zergling trickle for creep escort /
+# worker-line defense. See `steps.zerg.spawn_macro_army` for the Corruptor
+# variant and the ling-heavy comps when mineral:gas > 5:1.
+ROACH_LING_COMP: dict[UnitTypeId, dict[str, float | int]] = {
+    UnitTypeId.ROACH: {"proportion": 0.80, "priority": 0},
+    UnitTypeId.ZERGLING: {"proportion": 0.20, "priority": 1},
 }
 
 # Once Spire is up and the enemy has shown air (see `intel.army.
 # enemy_has_air_units`), fold Corruptor in at the other units' expense.
-ROACH_SWARM_HOST_CORRUPTOR_COMP: dict[UnitTypeId, dict[str, float | int]] = {
-    UnitTypeId.ROACH: {"proportion": 0.55, "priority": 0},
-    UnitTypeId.SWARMHOSTMP: {"proportion": 0.20, "priority": 1},
-    UnitTypeId.CORRUPTOR: {"proportion": 0.15, "priority": 0},
-    UnitTypeId.ZERGLING: {"proportion": 0.10, "priority": 2},
+ROACH_LING_CORRUPTOR_COMP: dict[UnitTypeId, dict[str, float | int]] = {
+    UnitTypeId.ROACH: {"proportion": 0.65, "priority": 0},
+    UnitTypeId.CORRUPTOR: {"proportion": 0.20, "priority": 0},
+    UnitTypeId.ZERGLING: {"proportion": 0.15, "priority": 1},
 }
 
 # Mineral-flooded / gas-starved (minerals:gas > 5:1): spend larva on
@@ -77,16 +73,9 @@ LING_HEAVY_ROACH_COMP: dict[UnitTypeId, dict[str, float | int]] = {
     UnitTypeId.ROACH: {"proportion": 0.20, "priority": 1},
 }
 
-LING_HEAVY_SWARM_COMP: dict[UnitTypeId, dict[str, float | int]] = {
+LING_HEAVY_CORRUPTOR_COMP: dict[UnitTypeId, dict[str, float | int]] = {
     UnitTypeId.ZERGLING: {"proportion": 0.60, "priority": 0},
     UnitTypeId.ROACH: {"proportion": 0.20, "priority": 1},
-    UnitTypeId.SWARMHOSTMP: {"proportion": 0.20, "priority": 2},
-}
-
-LING_HEAVY_CORRUPTOR_COMP: dict[UnitTypeId, dict[str, float | int]] = {
-    UnitTypeId.ZERGLING: {"proportion": 0.50, "priority": 0},
-    UnitTypeId.ROACH: {"proportion": 0.15, "priority": 1},
-    UnitTypeId.SWARMHOSTMP: {"proportion": 0.15, "priority": 2},
     UnitTypeId.CORRUPTOR: {"proportion": 0.20, "priority": 0},
 }
 
@@ -134,11 +123,8 @@ PROXY_CREW_ROLE: UnitRole = UnitRole.GATE_KEEPER
 # Same unused-slot trick: must not sit in GATHERING or BUILDING.
 SUPPLY_BUILDER_ROLE: UnitRole = UnitRole.CONTROL_GROUP_ONE
 
-# Macro Zerg: Swarm Host and Corruptor both need to stay out of
-# DEFENDING/ATTACKING (see `core.roles.SUPPORT_ROLES`) so `release_waves()`
-# never sweeps them into a squad muster — same unused-slot trick as above,
-# on the next two free generic `UnitRole` control-group slots.
-SWARM_HOST_ROLE: UnitRole = UnitRole.CONTROL_GROUP_TWO
+# Macro Zerg: Corruptor stays out of DEFENDING/ATTACKING so
+# `release_waves()` never sweeps it into a muster.
 CORRUPTOR_ROLE: UnitRole = UnitRole.CONTROL_GROUP_THREE
 
 # Macro Zerg: Zergling is a dedicated home defender, never an offensive unit
@@ -147,10 +133,9 @@ CORRUPTOR_ROLE: UnitRole = UnitRole.CONTROL_GROUP_THREE
 HOME_ZERGLING_CAP: int = 6
 # While early_aggression latch is on, peel more lings home.
 HOME_ZERGLING_CAP_EARLY_AGGRO: int = 12
-
-# Macro Zerg: hard cap on the Swarm Host siege squad — Locusts chip
-# fortified statics; more than this steals larva from the Roach ball.
-SWARM_HOST_SIEGE_CAP: int = 5
+# Opening Zerglings: 4 permanent scouts (enemy-nat front, mid, tower/3rd,
+# tower/4th) — scout + kite only; never pulled onto home defense.
+# Cap: `scouting.OPENING_LING_SCOUT_CAP` / `opening_zergling_scout_cap`.
 
 # Permanent home-defender role for that home cap — see
 # `builds.zerg.macro_zerg._macro_zerg_on_unit_created`. Safe to key this off
@@ -158,3 +143,6 @@ SWARM_HOST_SIEGE_CAP: int = 5
 # currently the only Zerg build; revisit if a second one wants different
 # home/attack splits.
 ZERGLING_DEFENDER_ROLE: UnitRole = UnitRole.CONTROL_GROUP_FOUR
+# Opening ling scouts — permanent scout + kite role; never reassigned to
+# home defense or the attack wave.
+ZERGLING_SCOUT_ROLE: UnitRole = UnitRole.CONTROL_GROUP_FIVE

@@ -83,7 +83,7 @@ def test_report_title_stays_roach_pushes() -> None:
     assert "Stage 5: All-In Attack" not in result
 
 
-def test_stage_3_tracks_the_full_roach_swarm_host_tech_chain() -> None:
+def test_stage_3_tracks_the_full_roach_tech_chain() -> None:
     """Regression test for the actual reason this build needs its own
     `_init_milestones` override: Burrow/Tunneling Claws alone wouldn't
     auto-derive any Stage 3 trackers from `BaseValidator`, which would

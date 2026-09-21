@@ -21,6 +21,7 @@ from ares.behaviors.combat import CombatManeuver
 from ares.behaviors.combat.group import AMoveGroup, KeepGroupSafe, StutterGroupForward
 from ares.behaviors.combat.individual import (
     AMove,
+    AttackTarget,
     KeepUnitSafe,
     MoveToSafeTarget,
     ShootTargetInRange,
@@ -96,16 +97,37 @@ def test_release_waves_marks_promoted_units_as_mustering() -> None:
 
 
 def _amove_target(ctx: BotContext, squad: UnitSquad) -> Point2:
-    """Run attack_squads for one squad and return the AMoveGroup target."""
+    """Run attack_squads for one squad and return the advance target.
+
+    With no enemy army nearby, attack_squads scatters per-unit AMove
+    (structure cleanup) instead of one AMoveGroup — either shape is fine
+    for destination checks as long as every unit heads to the same patched
+    attack point.
+    """
     ctx.mediator.get_units_in_range.return_value = [[]]  # no close enemies
     ctx.mediator.get_squads.return_value = [squad]
 
     combat.attack_squads()(ctx)
 
-    registered = ctx.bot.register_behavior.call_args.args[0]
-    amoves = [b for b in registered.micros if isinstance(b, AMoveGroup)]
-    assert len(amoves) == 1, "expected exactly one AMoveGroup"
-    return amoves[0].target
+    registered = [
+        c.args[0] for c in ctx.bot.register_behavior.call_args_list
+    ]
+    group = [
+        b
+        for plan in registered
+        for b in plan.micros
+        if isinstance(b, AMoveGroup)
+    ]
+    if group:
+        assert len(group) == 1, "expected exactly one AMoveGroup"
+        return group[0].target
+    singles = [
+        b for plan in registered for b in plan.micros if isinstance(b, AMove)
+    ]
+    assert singles, "expected AMoveGroup or per-unit AMove"
+    targets = {b.target for b in singles}
+    assert len(targets) == 1, "scatter should share the patched attack point"
+    return singles[0].target
 
 
 def _squad(units: list[MagicMock]) -> UnitSquad:
@@ -492,8 +514,8 @@ def test_never_retreat_still_commits_when_badly_outnumbered() -> None:
 
 
 def test_never_retreat_falls_back_to_amove_with_no_close_enemy() -> None:
-    """No nearby enemy: just advance toward the destination, same as the
-    influence-retreat path's own fallback."""
+    """No nearby army: advance without KeepGroupSafe / stutter — per-unit
+    AMove to the destination (no balling for structure hunt)."""
     rally = Point2((50.0, 50.0))
     attack = Point2((999.0, 999.0))
     original = _patch_targeting(rally, attack)
@@ -506,10 +528,11 @@ def test_never_retreat_falls_back_to_amove_with_no_close_enemy() -> None:
 
         combat.attack_squads(never_retreat=True)(ctx)
 
-        registered = ctx.bot.register_behavior.call_args.args[0]
-        assert not any(isinstance(m, KeepGroupSafe) for m in registered.micros)
-        assert not any(isinstance(m, StutterGroupForward) for m in registered.micros)
-        amoves = [m for m in registered.micros if isinstance(m, AMoveGroup)]
+        plans = [c.args[0] for c in ctx.bot.register_behavior.call_args_list]
+        micros = [m for plan in plans for m in plan.micros]
+        assert not any(isinstance(m, KeepGroupSafe) for m in micros)
+        assert not any(isinstance(m, StutterGroupForward) for m in micros)
+        amoves = [m for m in micros if isinstance(m, AMove)]
         assert len(amoves) == 1
         assert amoves[0].target == attack
     finally:
@@ -521,9 +544,9 @@ def test_never_retreat_falls_back_to_amove_with_no_close_enemy() -> None:
 
 def test_kite_types_splits_roach_into_per_unit_kiting() -> None:
     """Regression test for the exact request: Roach (range 4) should
-    maintain 3-4 distance while attacking, same idiom as Marine/Stalker,
-    while Zergling (still in the same squad, still melee) keeps the
-    never_retreat commit behavior it needed already."""
+    maintain 3-4 distance while attacking when outnumbered, same idiom as
+    Marine/Stalker, while Zergling (still in the same squad, still melee)
+    keeps the never_retreat commit behavior it needed already."""
     rally = Point2((50.0, 50.0))
     attack = Point2((999.0, 999.0))
     original_targeting = _patch_targeting(rally, attack)
@@ -534,9 +557,10 @@ def test_kite_types_splits_roach_into_per_unit_kiting() -> None:
         roach.type_id = UnitTypeId.ROACH
         zergling = _unit(2, Point2((11.0, 10.0)))
         zergling.type_id = UnitTypeId.ZERGLING
-        enemy = _unit(90, Point2((12.0, 10.0)))
-        ctx.mediator.get_cached_enemy_army = [enemy]
-        ctx.mediator.get_units_in_range.return_value = [[enemy]]
+        # Three enemies → our 2-supply squad is outnumbered → Roach kites.
+        enemies = [_unit(90 + i, Point2((12.0 + i, 10.0))) for i in range(3)]
+        ctx.mediator.get_cached_enemy_army = enemies
+        ctx.mediator.get_units_in_range.return_value = [enemies]
         ctx.mediator.get_squads.return_value = [_squad([roach, zergling])]
 
         combat.attack_squads(
@@ -576,22 +600,57 @@ def test_kite_types_splits_roach_into_per_unit_kiting() -> None:
         _restore_in_range(original_in_range)
 
 
-def test_kite_types_applies_even_when_our_force_is_larger() -> None:
-    """Unlike the bare `min_engage_range` path (only kites when outnumbered
-    - see `test_attack_squads_stutters_when_ahead_even_with_min_engage_
-    range`), `kite_types` is unconditional: Roach should hold its distance
-    on offense regardless of the force-size comparison."""
+def test_kite_types_stutters_when_our_force_is_larger() -> None:
+    """Like Marines with min_engage_range: advantage → StutterGroupForward,
+    not unconditional kite."""
     rally = Point2((50.0, 50.0))
     attack = Point2((999.0, 999.0))
     original_targeting = _patch_targeting(rally, attack)
     original_in_range = _patch_in_range({})
     try:
         ctx = _ctx()
-        roach = _unit(1, Point2((10.0, 10.0)))
-        roach.type_id = UnitTypeId.ROACH
-        weak_enemy = _unit(90, Point2((12.0, 10.0)))  # our force is larger
+        roaches = [_unit(i, Point2((10.0 + i, 10.0))) for i in range(3)]
+        for r in roaches:
+            r.type_id = UnitTypeId.ROACH
+        weak_enemy = _unit(90, Point2((12.0, 10.0)))
         ctx.mediator.get_cached_enemy_army = [weak_enemy]
         ctx.mediator.get_units_in_range.return_value = [[weak_enemy]]
+        ctx.mediator.get_squads.return_value = [_squad(roaches)]
+
+        combat.attack_squads(
+            never_retreat=True,
+            kite_types=frozenset({UnitTypeId.ROACH}),
+            min_engage_range=3.0,
+        )(ctx)
+
+        registered = ctx.bot.register_behavior.call_args.args[0]
+        stutters = [b for b in registered.micros if isinstance(b, StutterGroupForward)]
+        assert len(stutters) == 1
+        assert stutters[0].group == roaches
+        assert not any(getattr(m, "unit", None) in roaches for m in registered.micros)
+    finally:
+        _restore_targeting(original_targeting)
+        _restore_in_range(original_in_range)
+
+
+def test_kite_types_stutters_through_enemy_ramp_choke() -> None:
+    """Even when outnumbered, stutter through the main-ramp choke instead of
+    peeling in place (Marine push idiom)."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    ramp = Point2((100.0, 100.0))
+    original_targeting = _patch_targeting(rally, attack)
+    original_in_range = _patch_in_range({})
+    try:
+        ctx = _ctx()
+        ramp_mock = MagicMock()
+        ramp_mock.bottom_center = ramp
+        ctx.mediator.get_enemy_ramp = ramp_mock
+        roach = _unit(1, Point2((101.0, 100.0)))  # on the choke
+        roach.type_id = UnitTypeId.ROACH
+        enemies = [_unit(90 + i, Point2((102.0 + i, 100.0))) for i in range(3)]
+        ctx.mediator.get_cached_enemy_army = enemies
+        ctx.mediator.get_units_in_range.return_value = [enemies]
         ctx.mediator.get_squads.return_value = [_squad([roach])]
 
         combat.attack_squads(
@@ -601,7 +660,9 @@ def test_kite_types_applies_even_when_our_force_is_larger() -> None:
         )(ctx)
 
         registered = ctx.bot.register_behavior.call_args.args[0]
-        assert any(getattr(m, "unit", None) is roach for m in registered.micros)
+        stutters = [b for b in registered.micros if isinstance(b, StutterGroupForward)]
+        assert len(stutters) == 1
+        assert not any(getattr(m, "unit", None) is roach for m in registered.micros)
     finally:
         _restore_targeting(original_targeting)
         _restore_in_range(original_in_range)
@@ -674,6 +735,53 @@ def test_kite_types_skipped_while_still_mustering() -> None:
         _restore_targeting(original_targeting)
 
 
+def test_attack_squads_scatters_when_only_structures_nearby() -> None:
+    """No enemy army → each unit AMoves to its nearest structure instead
+    of one AMoveGroup collapsing onto a single building."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original = _patch_targeting(rally, attack)
+    try:
+        ctx = _ctx()
+        roach_a = _unit(1, Point2((10.0, 10.0)))
+        roach_a.type_id = UnitTypeId.ROACH
+        roach_b = _unit(2, Point2((30.0, 10.0)))
+        roach_b.type_id = UnitTypeId.ROACH
+        pylon_near_a = _unit(90, Point2((12.0, 10.0)))
+        pylon_near_a.is_structure = True
+        pylon_near_b = _unit(91, Point2((32.0, 10.0)))
+        pylon_near_b.is_structure = True
+        ctx.mediator.get_cached_enemy_army = []
+        ctx.mediator.get_units_in_range.return_value = [
+            [pylon_near_a, pylon_near_b]
+        ]
+        ctx.mediator.get_squads.return_value = [_squad([roach_a, roach_b])]
+
+        combat.attack_squads(
+            never_retreat=True,
+            kite_types=frozenset({UnitTypeId.ROACH}),
+            min_engage_range=3.0,
+        )(ctx)
+
+        amoves = [
+            m
+            for c in ctx.bot.register_behavior.call_args_list
+            for m in c.args[0].micros
+            if isinstance(m, AMove)
+        ]
+        assert len(amoves) == 2
+        by_unit = {m.unit: m.target for m in amoves}
+        assert by_unit[roach_a] == pylon_near_a.position
+        assert by_unit[roach_b] == pylon_near_b.position
+        assert not any(
+            isinstance(m, AMoveGroup)
+            for c in ctx.bot.register_behavior.call_args_list
+            for m in c.args[0].micros
+        )
+    finally:
+        _restore_targeting(original)
+
+
 def test_attack_squads_stutters_when_ahead_even_with_min_engage_range() -> None:
     """Having a kite range configured must not kite a fight we are winning -
     stutter-step is the aggressive path when our supply is larger."""
@@ -705,8 +813,8 @@ def test_attack_squads_stutters_when_ahead_even_with_min_engage_range() -> None:
 
 
 def test_structures_do_not_count_as_enemy_force_for_kite_vs_stutter() -> None:
-    """A lone Hatchery in range is not an army - Marines should stutter into
-    it, not kite off its supply cost."""
+    """A lone Hatchery is not an army — do not kite off its supply; scatter
+    each unit onto the building instead of one AMoveGroup."""
     rally = Point2((50.0, 50.0))
     attack = Point2((999.0, 999.0))
     original = _patch_targeting(rally, attack)
@@ -716,21 +824,21 @@ def test_structures_do_not_count_as_enemy_force_for_kite_vs_stutter() -> None:
         hatch = _unit(90, Point2((11.0, 10.0)))
         hatch.is_structure = True
         hatch.type_id = UnitTypeId.HATCHERY
-        # Expensive if counted - would flip the comparison wrongly.
         ctx.bot.calculate_supply_cost.side_effect = (
             lambda t: 10.0 if t == UnitTypeId.HATCHERY else 1.0
         )
-        # Structures are not in the intel army feed — force falls back to
-        # `_enemies_near` and must still stutter, not kite.
         ctx.mediator.get_cached_enemy_army = []
         ctx.mediator.get_units_in_range.return_value = [[hatch]]
         ctx.mediator.get_squads.return_value = [_squad(units)]
 
         combat.attack_squads(min_engage_range=3.0)(ctx)
 
-        registered = ctx.bot.register_behavior.call_args.args[0]
-        assert isinstance(registered.micros[0], KeepGroupSafe)
-        assert any(isinstance(b, StutterGroupForward) for b in registered.micros)
+        plans = [c.args[0] for c in ctx.bot.register_behavior.call_args_list]
+        micros = [m for plan in plans for m in plan.micros]
+        assert not any(isinstance(m, KeepUnitSafe) for m in micros), "no kite"
+        amoves = [m for m in micros if isinstance(m, AMove)]
+        assert len(amoves) == 1
+        assert amoves[0].target == hatch.position
     finally:
         _restore_targeting(original)
 
@@ -980,14 +1088,18 @@ def main() -> int:
 
 
 def test_attack_squads_influence_retreat_runs_before_amove() -> None:
-    """KeepGroupSafe is first so unsafe ground influence wins over AMove."""
+    """With enemy army nearby, KeepGroupSafe is first so unsafe ground
+    influence wins over AMove. (No-army frames scatter instead — see
+    `test_attack_squads_scatters_when_only_structures_nearby`.)"""
     rally = Point2((50.0, 50.0))
     attack = Point2((999.0, 999.0))
     original = _patch_targeting(rally, attack)
     try:
         ctx = _ctx()
         units = [_unit(1, Point2((10.0, 10.0))), _unit(2, Point2((12.0, 10.0)))]
-        ctx.mediator.get_units_in_range.return_value = [[]]
+        enemy = _unit(90, Point2((11.0, 10.0)))
+        ctx.mediator.get_cached_enemy_army = [enemy]
+        ctx.mediator.get_units_in_range.return_value = [[enemy]]
         ctx.mediator.get_squads.return_value = [_squad(units)]
 
         combat.attack_squads()(ctx)
@@ -1132,6 +1244,125 @@ def test_defend_home_assigns_sticky_hold_slots() -> None:
         assert ctx.state.defender_hold == first
     finally:
         targeting.hold_positions = original
+
+
+def test_sticky_hold_does_not_relog_when_hold_point_jitters() -> None:
+    """Behind-mineral holds can drift several tiles; that must snap quietly,
+    not reassign + spam `ZERGLING_DEFEND hold` every frame."""
+    ctx = _ctx()
+    ctx.log = MagicMock()
+    hold_a = Point2((40.0, 40.0))
+    hold_b = Point2((80.0, 80.0))
+    unit = _unit(1, Point2((40.0, 40.0)))
+    unit.type_id = UnitTypeId.ZERGLING
+    hold_map: dict[int, Point2] = {}
+
+    first = combat._sticky_hold_point(
+        ctx, unit, [hold_a, hold_b], hold_map, log_label="ZERGLING_DEFEND"
+    )
+    assert first == hold_a
+    assert ctx.log.call_count == 1
+
+    # Same logical hold, drifted ~5 tiles (old 2.5 radius would reassign).
+    jittered = Point2((45.0, 40.0))
+    ctx.log.reset_mock()
+    second = combat._sticky_hold_point(
+        ctx, unit, [jittered, hold_b], hold_map, log_label="ZERGLING_DEFEND"
+    )
+    assert second == jittered
+    assert hold_map[1] == jittered
+    ctx.log.assert_not_called()
+
+
+def test_defender_maneuver_zerglings_attack_scout_worker_in_base() -> None:
+    ctx = _ctx()
+    hold = Point2((40.0, 40.0))
+    ling = _unit(1, Point2((40.0, 40.0)))
+    ling.type_id = UnitTypeId.ZERGLING
+    ling.orders = []
+    ling.order_target = None
+    scout = _unit(90, Point2((12.0, 12.0)))
+    scout.type_id = UnitTypeId.PROBE
+    ctx.bot.start_location = Point2((10.0, 10.0))
+    ctx.mediator.get_own_nat = Point2((30.0, 30.0))
+    th = MagicMock()
+    th.position = Point2((10.0, 10.0))
+    ctx.bot.townhalls = [th]
+    ctx.bot.enemy_units = [scout]
+    ctx.mediator.get_units_in_range.return_value = [[]]  # no army nearby
+
+    maneuver = combat._defender_maneuver(
+        ctx, ling, [], hold, chase_workers=True
+    )
+
+    assert maneuver is not None
+    attacks = [m for m in maneuver.micros if isinstance(m, AttackTarget)]
+    assert len(attacks) == 1
+    assert attacks[0].target is scout
+
+
+def test_defender_maneuver_zerglings_do_not_chase_scout_off_map() -> None:
+    ctx = _ctx()
+    hold = Point2((40.0, 40.0))
+    ling = _unit(1, Point2((40.0, 40.0)))
+    ling.type_id = UnitTypeId.ZERGLING
+    ling.orders = []
+    ling.order_target = None
+    # Far past any base leash — fleeing scout.
+    scout = _unit(90, Point2((100.0, 100.0)))
+    scout.type_id = UnitTypeId.PROBE
+    ctx.bot.start_location = Point2((10.0, 10.0))
+    ctx.mediator.get_own_nat = Point2((30.0, 30.0))
+    th = MagicMock()
+    th.position = Point2((10.0, 10.0))
+    ctx.bot.townhalls = [th]
+    ctx.bot.enemy_units = [scout]
+    ctx.mediator.get_units_in_range.return_value = [[]]
+
+    maneuver = combat._defender_maneuver(
+        ctx, ling, [], hold, chase_workers=True
+    )
+
+    assert maneuver is None, "settled at hold; scout left the leash"
+
+
+def test_defender_maneuver_settled_hysteresis_skips_renudge() -> None:
+    """Idle just outside ARRIVE but inside SETTLED must not re-issue move."""
+    ctx = _ctx()
+    hold = Point2((40.0, 40.0))
+    # 5 tiles out — past ARRIVE (4) but inside SETTLED (7).
+    ling = _unit(1, Point2((45.0, 40.0)))
+    ling.type_id = UnitTypeId.ZERGLING
+    ling.orders = []
+    ling.order_target = None
+    ctx.mediator.get_units_in_range.return_value = [[]]
+    ctx.bot.enemy_units = []
+
+    assert combat._defender_maneuver(ctx, ling, [], hold) is None
+
+
+def test_defender_maneuver_without_chase_workers_ignores_scout() -> None:
+    ctx = _ctx()
+    hold = Point2((40.0, 40.0))
+    zealot = _unit(1, Point2((40.0, 40.0)))
+    zealot.type_id = UnitTypeId.ZEALOT
+    zealot.orders = []
+    zealot.order_target = None
+    scout = _unit(90, Point2((12.0, 12.0)))
+    scout.type_id = UnitTypeId.PROBE
+    ctx.bot.start_location = Point2((10.0, 10.0))
+    ctx.mediator.get_own_nat = Point2((30.0, 30.0))
+    th = MagicMock()
+    th.position = Point2((10.0, 10.0))
+    ctx.bot.townhalls = [th]
+    ctx.bot.enemy_units = [scout]
+    ctx.mediator.get_units_in_range.return_value = [[scout]]
+
+    maneuver = combat._defender_maneuver(
+        ctx, zealot, [], hold, chase_workers=False
+    )
+
+    assert maneuver is None
 
 
 def test_defend_home_does_not_reissue_when_settled_at_hold() -> None:
@@ -1305,6 +1536,36 @@ def test_stalker_pick_target_uses_priority_order_end_to_end() -> None:
 
 
 
+def test_zergling_target_score_prefers_immortal_over_stalker() -> None:
+    immortal = combat.zergling_target_score(
+        type_id=UnitTypeId.IMMORTAL, vital=100.0
+    )
+    stalker = combat.zergling_target_score(
+        type_id=UnitTypeId.STALKER, vital=50.0
+    )
+    assert immortal < stalker
+
+
+def test_pick_zergling_focus_chases_immortal_outside_melee_range() -> None:
+    """Immortals just outside weapon range must still beat in-range Stalkers."""
+    ling = _unit(1, Point2((100.0, 100.0)))
+    stalker = _unit(90, Point2((101.0, 100.0)))
+    stalker.type_id = UnitTypeId.STALKER
+    stalker.health = 80.0
+    stalker.shield = 80.0
+    immortal = _unit(91, Point2((105.0, 100.0)))
+    immortal.type_id = UnitTypeId.IMMORTAL
+    immortal.health = 200.0
+    immortal.shield = 100.0
+    original = combat.cy_in_attack_range
+    combat.cy_in_attack_range = lambda unit, enemies, *a, **k: [stalker]
+    try:
+        picked = combat.pick_zergling_focus_target(ling, [stalker, immortal])
+    finally:
+        combat.cy_in_attack_range = original
+    assert picked is immortal
+
+
 def test_zergling_target_score_prefers_immortal_over_marine() -> None:
     immortal = combat.zergling_target_score(
         type_id=UnitTypeId.IMMORTAL, vital=200.0
@@ -1325,6 +1586,46 @@ def test_zergling_target_score_avoids_colossus_when_alternatives_exist() -> None
     assert stalker < colossus
 
 
+def test_roach_target_score_prefers_colossus_over_stalker() -> None:
+    colossus = combat.roach_target_score(
+        type_id=UnitTypeId.COLOSSUS, vital=200.0, lings_present=False
+    )
+    stalker = combat.roach_target_score(
+        type_id=UnitTypeId.STALKER, vital=10.0, lings_present=False
+    )
+    assert colossus < stalker
+
+
+def test_roach_focus_types_are_ground_only() -> None:
+    air = {
+        UnitTypeId.CARRIER,
+        UnitTypeId.TEMPEST,
+        UnitTypeId.LIBERATORAG,
+        UnitTypeId.VOIDRAY,
+        UnitTypeId.BANSHEE,
+        UnitTypeId.MUTALISK,
+    }
+    assert not (combat.ROACH_FOCUS_TYPES & air)
+    for ground_hvt in (
+        UnitTypeId.GHOST,
+        UnitTypeId.ARCHON,
+        UnitTypeId.DARKTEMPLAR,
+        UnitTypeId.LURKERMPBURROWED,
+        UnitTypeId.INFESTOR,
+    ):
+        assert ground_hvt in combat.ROACH_FOCUS_TYPES
+
+
+def test_roach_target_score_prefers_ghost_over_marine() -> None:
+    ghost = combat.roach_target_score(
+        type_id=UnitTypeId.GHOST, vital=200.0, lings_present=False
+    )
+    marine = combat.roach_target_score(
+        type_id=UnitTypeId.MARINE, vital=10.0, lings_present=False
+    )
+    assert ghost < marine
+
+
 def test_roach_target_score_deprioritizes_tank_when_lings_present() -> None:
     tank_with_lings = combat.roach_target_score(
         type_id=UnitTypeId.SIEGETANKSIEGED, vital=10.0, lings_present=True
@@ -1337,6 +1638,26 @@ def test_roach_target_score_deprioritizes_tank_when_lings_present() -> None:
         type_id=UnitTypeId.SIEGETANKSIEGED, vital=10.0, lings_present=False
     )
     assert tank_alone < tank_with_lings
+
+
+def test_pick_roach_hvt_target_chases_colossus_outside_range() -> None:
+    roach = _unit(1, Point2((10.0, 10.0)))
+    roach.type_id = UnitTypeId.ROACH
+    colossus = _unit(90, Point2((20.0, 10.0)))
+    colossus.type_id = UnitTypeId.COLOSSUS
+    colossus.health = 200.0
+    colossus.shield = 0.0
+    stalker = _unit(91, Point2((12.0, 10.0)))
+    stalker.type_id = UnitTypeId.STALKER
+    stalker.health = 10.0
+    stalker.shield = 0.0
+    # Only Stalker in weapon range — still chase the Colossus.
+    original = _patch_in_range({1: [stalker]})
+    try:
+        picked = combat.pick_roach_hvt_target(roach, [colossus, stalker])
+        assert picked is colossus
+    finally:
+        _restore_in_range(original)
 
 
 def test_pick_zergling_focus_target_picks_marauder_over_hellion() -> None:
@@ -1526,7 +1847,7 @@ def test_regen_burrow_roaches_skips_claws_move_when_already_moving() -> None:
     ctx.mediator.get_units_in_range.return_value = [[_unit(90, Point2((52.0, 50.0)))]]
     ctx.mediator.is_position_safe.return_value = False
     burrowed = _unit(1, Point2((50.0, 50.0)))
-    burrowed.health_percentage = 0.5
+    burrowed.health_percentage = 0.4
     burrowed.is_moving = True
     order = MagicMock()
     order.ability = MagicMock()
@@ -1551,15 +1872,15 @@ def test_regen_burrow_roaches_skips_claws_move_when_already_moving() -> None:
     ctx.bot.register_behavior.assert_not_called()
 
 
-def test_regen_burrow_roaches_burrows_below_25_percent() -> None:
+def test_regen_burrow_roaches_burrows_when_not_full_hp() -> None:
     ctx = _ctx()
     ctx.bot.state.upgrades = {UpgradeId.BURROW}
     hurt = _unit(1)
     hurt.type_id = UnitTypeId.ROACH
-    hurt.health_percentage = 0.24
+    hurt.health_percentage = 0.99
     healthy = _unit(2)
     healthy.type_id = UnitTypeId.ROACH
-    healthy.health_percentage = 0.25
+    healthy.health_percentage = 1.0
 
     def _units(unit_type):
         if unit_type == UnitTypeId.ROACH:
@@ -1582,9 +1903,8 @@ def test_regen_burrow_roaches_burrows_below_25_percent() -> None:
 def test_regen_burrow_roaches_unburrows_at_full_health() -> None:
     ctx = _ctx()
     ctx.bot.state.upgrades = {UpgradeId.BURROW}
-    ctx.mediator.get_units_in_range.return_value = [[]]  # clear of enemies
-    full = _unit(1)
-    full.health_percentage = 1.0
+    ready = _unit(1)
+    ready.health_percentage = 1.0
     healing = _unit(2)
     healing.health_percentage = 0.99
 
@@ -1592,7 +1912,7 @@ def test_regen_burrow_roaches_unburrows_at_full_health() -> None:
         if unit_type == UnitTypeId.ROACH:
             return []
         if unit_type == UnitTypeId.ROACHBURROWED:
-            return [full, healing]
+            return [ready, healing]
         return []
 
     ctx.bot.units = MagicMock(side_effect=_units)
@@ -1603,15 +1923,15 @@ def test_regen_burrow_roaches_unburrows_at_full_health() -> None:
     assert len(registered) == 1
     assert isinstance(registered[0], UseAbility)
     assert registered[0].ability == AbilityId.BURROWUP_ROACH
-    assert registered[0].unit is full
+    assert registered[0].unit is ready
 
 
-def test_regen_burrow_roaches_stays_burrowed_when_surrounded_at_full_hp() -> None:
-    """Full HP is not enough — do not surface into the same fight."""
+def test_regen_burrow_roaches_unburrows_even_when_army_nearby() -> None:
+    """At full HP, surface to fight — do not wait for a clear bubble."""
     ctx = _ctx()
     ctx.bot.state.upgrades = {UpgradeId.BURROW}
-    full = _unit(1, Point2((50.0, 50.0)))
-    full.health_percentage = 1.0
+    ready = _unit(1, Point2((50.0, 50.0)))
+    ready.health_percentage = 1.0
     enemy = _unit(90, Point2((52.0, 50.0)))
     ctx.mediator.get_units_in_range.return_value = [[enemy]]
 
@@ -1619,7 +1939,87 @@ def test_regen_burrow_roaches_stays_burrowed_when_surrounded_at_full_hp() -> Non
         if unit_type == UnitTypeId.ROACH:
             return []
         if unit_type == UnitTypeId.ROACHBURROWED:
-            return [full]
+            return [ready]
+        return []
+
+    ctx.bot.units = MagicMock(side_effect=_units)
+
+    combat.regen_burrow_roaches()(ctx)
+
+    registered = [c.args[0] for c in ctx.bot.register_behavior.call_args_list]
+    assert len(registered) == 1
+    assert isinstance(registered[0], UseAbility)
+    assert registered[0].ability == AbilityId.BURROWUP_ROACH
+
+
+def test_regen_burrow_roaches_unburrows_near_structures_only() -> None:
+    """Structures must not pin ready Roaches underground."""
+    ctx = _ctx()
+    ctx.bot.state.upgrades = {UpgradeId.BURROW}
+    ready = _unit(1, Point2((50.0, 50.0)))
+    ready.health_percentage = 1.0
+    pylon = _unit(90, Point2((52.0, 50.0)))
+    pylon.is_structure = True
+    ctx.mediator.get_units_in_range.return_value = [[pylon]]
+
+    def _units(unit_type):
+        if unit_type == UnitTypeId.ROACH:
+            return []
+        if unit_type == UnitTypeId.ROACHBURROWED:
+            return [ready]
+        return []
+
+    ctx.bot.units = MagicMock(side_effect=_units)
+
+    combat.regen_burrow_roaches()(ctx)
+
+    registered = [c.args[0] for c in ctx.bot.register_behavior.call_args_list]
+    assert len(registered) == 1
+    assert isinstance(registered[0], UseAbility)
+    assert registered[0].ability == AbilityId.BURROWUP_ROACH
+
+
+def test_regen_burrow_roaches_unburrows_despite_unsafe_influence() -> None:
+    """Stale influence must not keep ready Roaches down."""
+    ctx = _ctx()
+    ctx.bot.state.upgrades = {UpgradeId.BURROW, UpgradeId.TUNNELINGCLAWS}
+    ctx.bot.start_location = Point2((10.0, 10.0))
+    ctx.mediator.is_position_safe.return_value = False
+    ctx.mediator.get_units_in_range.return_value = [[]]
+    ready = _unit(1, Point2((50.0, 50.0)))
+    ready.health_percentage = 1.0
+
+    def _units(unit_type):
+        if unit_type == UnitTypeId.ROACH:
+            return []
+        if unit_type == UnitTypeId.ROACHBURROWED:
+            return [ready]
+        return []
+
+    ctx.bot.units = MagicMock(side_effect=_units)
+
+    combat.regen_burrow_roaches()(ctx)
+
+    registered = [c.args[0] for c in ctx.bot.register_behavior.call_args_list]
+    assert len(registered) == 1
+    assert isinstance(registered[0], UseAbility)
+    assert registered[0].ability == AbilityId.BURROWUP_ROACH
+
+
+def test_regen_burrow_roaches_stays_burrowed_below_full_when_surrounded() -> None:
+    """Below full HP still sit/peel — do not surface into the fight early."""
+    ctx = _ctx()
+    ctx.bot.state.upgrades = {UpgradeId.BURROW}
+    healing = _unit(1, Point2((50.0, 50.0)))
+    healing.health_percentage = 0.4
+    enemy = _unit(90, Point2((52.0, 50.0)))
+    ctx.mediator.get_units_in_range.return_value = [[enemy]]
+
+    def _units(unit_type):
+        if unit_type == UnitTypeId.ROACH:
+            return []
+        if unit_type == UnitTypeId.ROACHBURROWED:
+            return [healing]
         return []
 
     ctx.bot.units = MagicMock(side_effect=_units)
@@ -1630,12 +2030,17 @@ def test_regen_burrow_roaches_stays_burrowed_when_surrounded_at_full_hp() -> Non
 
 
 def test_regen_burrow_roaches_retreats_while_healing_with_claws() -> None:
+    """Sticky PathUnitToTarget home — no KeepUnitSafe (live burrow thrash)."""
+    from ares.behaviors.combat.individual import PathUnitToTarget
+
     ctx = _ctx()
     ctx.bot.state.upgrades = {UpgradeId.BURROW, UpgradeId.TUNNELINGCLAWS}
     ctx.bot.start_location = Point2((10.0, 10.0))
     ctx.mediator.is_position_safe.return_value = True
     healing = _unit(1, Point2((50.0, 50.0)))
-    healing.health_percentage = 0.5
+    healing.health_percentage = 0.4
+    healing.orders = []
+    healing.is_moving = False
     enemy = _unit(90, Point2((52.0, 50.0)))
     ctx.mediator.get_units_in_range.return_value = [[enemy]]
 
@@ -1651,22 +2056,24 @@ def test_regen_burrow_roaches_retreats_while_healing_with_claws() -> None:
     combat.regen_burrow_roaches()(ctx)
 
     registered = ctx.bot.register_behavior.call_args.args[0]
-    assert isinstance(registered, CombatManeuver)
-    kinds = [type(b) for b in registered.micros]
-    assert KeepUnitSafe in kinds
-    assert MoveToSafeTarget in kinds
-    assert UseAbility not in kinds
+    assert isinstance(registered, PathUnitToTarget)
+    assert registered.unit is healing
+    assert UseAbility not in [type(registered)]
 
 
-def test_regen_burrow_roaches_sits_when_safe_and_clear_with_claws() -> None:
-    """Once off the fight, do not repath home every frame."""
+def test_regen_burrow_roaches_paths_home_when_clear_with_claws() -> None:
+    """Damaged burrowed Roaches still tunnel home even with no army nearby."""
+    from ares.behaviors.combat.individual import PathUnitToTarget
+
     ctx = _ctx()
     ctx.bot.state.upgrades = {UpgradeId.BURROW, UpgradeId.TUNNELINGCLAWS}
     ctx.bot.start_location = Point2((10.0, 10.0))
     ctx.mediator.is_position_safe.return_value = True
     ctx.mediator.get_units_in_range.return_value = [[]]
     healing = _unit(1, Point2((50.0, 50.0)))
-    healing.health_percentage = 0.5
+    healing.health_percentage = 0.4
+    healing.orders = []
+    healing.is_moving = False
 
     def _units(unit_type):
         if unit_type == UnitTypeId.ROACH:
@@ -1679,6 +2086,41 @@ def test_regen_burrow_roaches_sits_when_safe_and_clear_with_claws() -> None:
 
     combat.regen_burrow_roaches()(ctx)
 
+    registered = ctx.bot.register_behavior.call_args.args[0]
+    assert isinstance(registered, PathUnitToTarget)
+    assert registered.unit is healing
+
+
+def test_regen_burrow_roaches_skips_repath_when_already_tunneling() -> None:
+    """Active burrowed MOVE must not be canceled every frame."""
+    from bot.core import context as context_mod
+
+    ctx = _ctx()
+    ctx.bot.state.upgrades = {UpgradeId.BURROW, UpgradeId.TUNNELINGCLAWS}
+    home = Point2((5.0, 5.0))
+    burrowed = _unit(1, Point2((50.0, 50.0)))
+    burrowed.health_percentage = 0.4
+    burrowed.is_moving = True
+    order = MagicMock()
+    order.ability = MagicMock()
+    order.ability.id = AbilityId.MOVE
+    burrowed.orders = [order]
+    burrowed.order_target = Point2((20.0, 20.0))
+
+    def _units(unit_type):
+        if unit_type == UnitTypeId.ROACH:
+            return []
+        if unit_type == UnitTypeId.ROACHBURROWED:
+            return [burrowed]
+        return []
+
+    ctx.bot.units = MagicMock(side_effect=_units)
+    original = context_mod.BotContext.production_location
+    context_mod.BotContext.production_location = property(lambda self: home)
+    try:
+        combat.regen_burrow_roaches()(ctx)
+    finally:
+        context_mod.BotContext.production_location = original
     ctx.bot.register_behavior.assert_not_called()
 
 
@@ -1686,7 +2128,7 @@ def test_regen_burrow_roaches_stays_put_without_claws_while_healing() -> None:
     ctx = _ctx()
     ctx.bot.state.upgrades = {UpgradeId.BURROW}
     healing = _unit(1)
-    healing.health_percentage = 0.5
+    healing.health_percentage = 0.4
 
     def _units(unit_type):
         if unit_type == UnitTypeId.ROACH:
@@ -1714,234 +2156,35 @@ def test_regen_burrow_roaches_noop_without_burrow_upgrade() -> None:
     ctx.bot.register_behavior.assert_not_called()
 
 
-
-def test_siege_with_swarm_hosts_groups_behind_attack_ball() -> None:
-    """Hosts share one anchor just behind the ATTACKING ball (toward home)."""
-    from cython_extensions import cy_towards
+def test_release_home_zerglings_after_early_promotes_to_defending() -> None:
+    from bot.consts import ZERGLING_DEFENDER_ROLE
 
     ctx = _ctx()
-    ctx.bot.state.upgrades = set()
-    home = Point2((10.0, 10.0))
-    ctx.bot.start_location = home
-    hosts = [
-        _unit(1, Point2((20.0, 20.0))),
-        _unit(2, Point2((25.0, 18.0))),
-    ]
-    for h in hosts:
-        h.type_id = UnitTypeId.SWARMHOSTMP
-        h.orders = []
-        h.order_target = None
-    ctx.mediator.get_units_from_role.return_value = hosts
-    ctx.bot.units = MagicMock(
-        side_effect=lambda typ: hosts if typ == UnitTypeId.SWARMHOSTMP else []
+    ctx.bot.time = 301.0
+    ctx.state.early_aggression = False
+    ling = _unit(9, Point2((20.0, 20.0)))
+    ling.type_id = UnitTypeId.ZERGLING
+    ctx.mediator.get_units_from_role.return_value = [ling]
+    ctx.state.zergling_defender_hold[9] = Point2((15.0, 15.0))
+
+    combat.release_home_zerglings_after_early()(ctx)
+
+    ctx.mediator.assign_role.assert_called_once_with(
+        tag=9, role=UnitRole.DEFENDING
     )
-    squad = _squad([_unit(50, Point2((100.0, 100.0)))])
-    ctx.mediator.get_squads.return_value = [squad]
-    ctx.bot.enemy_structures = []
-    expected = Point2(
-        cy_towards(squad.squad_position, home, combat.SWARM_HOST_BEHIND_OFFSET)
-    )
-
-    from bot.core import context as context_mod
-
-    original = context_mod.BotContext.production_location
-    context_mod.BotContext.production_location = property(lambda self: home)
-    try:
-        combat.siege_with_swarm_hosts()(ctx)
-    finally:
-        context_mod.BotContext.production_location = original
-
-    assert ctx.state.swarm_host_hold == {}
-    assert ctx.bot.register_behavior.call_count == 2
-    for call in ctx.bot.register_behavior.call_args_list:
-        maneuver = call.args[0]
-        assert isinstance(maneuver, CombatManeuver)
-        moves = [b for b in maneuver.micros if isinstance(b, MoveToSafeTarget)]
-        assert len(moves) == 1
-        assert cy_distance_to(moves[0].target, expected) < 0.01
+    assert 9 not in ctx.state.zergling_defender_hold
 
 
-def test_siege_with_swarm_hosts_surface_burrows_before_locust() -> None:
-    """Surface Hosts dig first — Locusts fire on later frames while burrowed."""
+def test_release_home_zerglings_after_early_noop_during_window() -> None:
     ctx = _ctx()
-    ctx.bot.state.upgrades = {UpgradeId.BURROW}
-    home = Point2((10.0, 10.0))
-    host = _unit(1, Point2((90.0, 90.0)))
-    host.type_id = UnitTypeId.SWARMHOSTMP
-    host.orders = []
-    host.order_target = None
-    cannon = _unit(201, Point2((97.0, 90.0)))
-    cannon.type_id = UnitTypeId.PHOTONCANNON
-    cannon.is_structure = True
-    ctx.mediator.get_units_from_role.return_value = [host]
-    ctx.bot.units = MagicMock(
-        side_effect=lambda t: [host] if t == UnitTypeId.SWARMHOSTMP else []
-    )
-    ctx.mediator.get_squads.return_value = [
-        _squad([_unit(50, Point2((100.0, 100.0)))])
-    ]
-    ctx.bot.enemy_structures = [cannon]
+    ctx.bot.time = 60.0
+    ctx.state.early_aggression = False
+    ling = _unit(9, Point2((20.0, 20.0)))
+    ctx.mediator.get_units_from_role.return_value = [ling]
 
-    from bot.core import context as context_mod
+    combat.release_home_zerglings_after_early()(ctx)
 
-    original = context_mod.BotContext.production_location
-    context_mod.BotContext.production_location = property(lambda self: home)
-    try:
-        combat.siege_with_swarm_hosts()(ctx)
-    finally:
-        context_mod.BotContext.production_location = original
-
-    maneuver = ctx.bot.register_behavior.call_args.args[0]
-    abilities = [b for b in maneuver.micros if isinstance(b, UseAbility)]
-    assert abilities and abilities[0].ability == AbilityId.BURROWDOWN_SWARMHOST
-    assert not any(
-        b.ability
-        in (
-            AbilityId.EFFECT_SPAWNLOCUSTS,
-            AbilityId.SWARMHOSTSPAWNLOCUSTS_LOCUSTMP,
-        )
-        for b in abilities
-    ), "surface Host must dig before Locusts so KeepUnitSafe cannot win"
-
-
-def test_siege_with_swarm_hosts_locusts_fortified_statics() -> None:
-    """Burrowed Hosts Spawn Locusts onto fortified statics (before peel)."""
-    ctx = _ctx()
-    ctx.bot.state.upgrades = {UpgradeId.BURROW}
-    home = Point2((10.0, 10.0))
-    host = _unit(1, Point2((90.0, 90.0)))
-    host.type_id = UnitTypeId.SWARMHOSTBURROWEDMP
-    host.orders = []
-    host.order_target = None
-    pf = _unit(200, Point2((95.0, 95.0)))
-    pf.type_id = UnitTypeId.PLANETARYFORTRESS
-    pf.is_structure = True
-    cannon = _unit(201, Point2((97.0, 90.0)))
-    cannon.type_id = UnitTypeId.PHOTONCANNON
-    cannon.is_structure = True
-    battery = _unit(202, Point2((92.0, 97.0)))
-    battery.type_id = UnitTypeId.SHIELDBATTERY
-    battery.is_structure = True
-    ctx.mediator.get_units_from_role.return_value = [host]
-    ctx.bot.units = MagicMock(
-        side_effect=lambda t: (
-            [host] if t == UnitTypeId.SWARMHOSTBURROWEDMP else []
-        )
-    )
-    ctx.mediator.get_squads.return_value = [
-        _squad([_unit(50, Point2((100.0, 100.0)))])
-    ]
-    ctx.bot.enemy_structures = [pf, cannon, battery]
-    # Influence near statics is unsafe — Locusts must still lead.
-    ctx.mediator.is_position_safe.return_value = False
-
-    from bot.core import context as context_mod
-
-    original = context_mod.BotContext.production_location
-    context_mod.BotContext.production_location = property(lambda self: home)
-    try:
-        combat.siege_with_swarm_hosts()(ctx)
-    finally:
-        context_mod.BotContext.production_location = original
-
-    maneuver = ctx.bot.register_behavior.call_args.args[0]
-    assert isinstance(maneuver, CombatManeuver)
-    assert not any(isinstance(b, KeepUnitSafe) for b in maneuver.micros), (
-        "KeepUnitSafe must not lead when Locusts should fire"
-    )
-    abilities = [b for b in maneuver.micros if isinstance(b, UseAbility)]
-    locusts = [
-        b
-        for b in abilities
-        if b.ability
-        in (
-            AbilityId.EFFECT_SPAWNLOCUSTS,
-            AbilityId.SWARMHOSTSPAWNLOCUSTS_LOCUSTMP,
-        )
-    ]
-    assert locusts, "expected Spawn Locusts on a fortified static"
-    # Closest fortified to Host (90,90): Photon Cannon at (97,90) dist 7.
-    assert all(b.target == cannon.position for b in locusts)
-
-
-
-
-def test_swarm_host_siege_target_score_prefers_pf_over_closer_bunker() -> None:
-    pf = combat.swarm_host_siege_target_score(
-        type_id=UnitTypeId.PLANETARYFORTRESS, distance=14.0
-    )
-    bunker = combat.swarm_host_siege_target_score(
-        type_id=UnitTypeId.BUNKER, distance=1.0
-    )
-    assert pf < bunker
-
-
-def test_pick_swarm_host_siege_target_prefers_pf_over_closer_bunker() -> None:
-    host = _unit(1, Point2((90.0, 90.0)))
-    bunker = _unit(200, Point2((91.0, 90.0)))
-    bunker.type_id = UnitTypeId.BUNKER
-    pf = _unit(201, Point2((97.0, 90.0)))
-    pf.type_id = UnitTypeId.PLANETARYFORTRESS
-    picked = combat.pick_swarm_host_siege_target(host, [bunker, pf])
-    assert picked is pf
-
-
-def test_pick_swarm_host_siege_target_prefers_cannon_over_closer_missile_turret() -> None:
-    host = _unit(1, Point2((90.0, 90.0)))
-    turret = _unit(200, Point2((91.0, 90.0)))
-    turret.type_id = UnitTypeId.MISSILETURRET
-    cannon = _unit(201, Point2((97.0, 90.0)))
-    cannon.type_id = UnitTypeId.PHOTONCANNON
-    picked = combat.pick_swarm_host_siege_target(host, [turret, cannon])
-    assert picked is cannon
-
-def test_siege_with_swarm_hosts_stages_home_without_attack_ball() -> None:
-    """No ATTACKING squad → stage at production_location, not per-base dig-in."""
-    ctx = _ctx()
-    ctx.bot.state.upgrades = set()
-    home = Point2((10.0, 10.0))
-    host = _unit(1, Point2((40.0, 40.0)))
-    host.type_id = UnitTypeId.SWARMHOSTMP
-    host.orders = []
-    host.order_target = None
-    ctx.mediator.get_units_from_role.return_value = [host]
-    ctx.bot.units = MagicMock(
-        side_effect=lambda typ: [host] if typ == UnitTypeId.SWARMHOSTMP else []
-    )
-    ctx.mediator.get_squads.return_value = []
-    ctx.bot.enemy_structures = []
-    # Pre-seed legacy dig-in holds — routine must clear them.
-    ctx.state.swarm_host_hold = {1: Point2((30.0, 30.0)), 99: Point2((1.0, 1.0))}
-
-    from bot.core import context as context_mod
-
-    original = context_mod.BotContext.production_location
-    context_mod.BotContext.production_location = property(lambda self: home)
-    try:
-        combat.siege_with_swarm_hosts()(ctx)
-    finally:
-        context_mod.BotContext.production_location = original
-
-    assert ctx.state.swarm_host_hold == {}
-    maneuver = ctx.bot.register_behavior.call_args.args[0]
-    moves = [b for b in maneuver.micros if isinstance(b, MoveToSafeTarget)]
-    assert len(moves) == 1
-    assert moves[0].target == home
-
-
-def test_macro_zerg_wires_siege_not_dig_in() -> None:
-    """Macro Zerg combat list uses siege_with_swarm_hosts, not dig-in."""
-    import inspect
-
-    from bot.builds.zerg import macro_zerg as mz
-
-    src = inspect.getsource(mz)
-    assert "siege_with_swarm_hosts()" in src
-    assert "dig_in_swarm_hosts" not in src
-    assert any(
-        getattr(r, "__name__", "") == "routine"
-        for r in mz.BUILD.combat.routines
-    )
+    ctx.mediator.assign_role.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ from ares.behaviors.combat.individual import (
     AttackTarget,
     KeepUnitSafe,
     MoveToSafeTarget,
+    PathUnitToTarget,
     ShootTargetInRange,
     UseAbility,
 )
@@ -36,12 +37,12 @@ from bot.builds.definition import _always
 from bot.consts import (
     CORRUPTOR_ROLE,
     IGNORED_ENEMY_TYPES,
-    SWARM_HOST_ROLE,
     WORKER_TYPES,
     ZERGLING_DEFENDER_ROLE,
 )
 from bot.core.types import CombatRoutine, Gate, PointLocator
 from bot.intel import chargelot_metrics, enemy_army
+from bot.intel.army import in_early_window
 from bot.routines import targeting
 from bot.routines.protoss_support import (
     CHARGELOT_KITE_WINDOW_S,
@@ -77,12 +78,19 @@ def _active_crew_tags(ctx: "BotContext") -> set[int]:
             busy.add(member.tag)
     return busy
 
-
 DEFENDER_ENGAGE_RANGE: float = 12.0
 DEFENDER_ENGAGE_RANGE_EARLY_AGGRO: float = 18.0
 """Wider collapse radius while Kuuro early_aggression latch is on."""
-DEFENDER_HOLD_ARRIVE: float = 3.0
+DEFENDER_HOLD_ARRIVE: float = 4.0
 """Within this of the hold point: issue no move (settled)."""
+DEFENDER_HOLD_SETTLED: float = 7.0
+"""Hysteresis band past ARRIVE: after a move finishes, stay put until the
+unit wanders this far — stacked home lings at ARRIVE flickered idle↔move
+every frame (live THRASH ling_defend)."""
+DEFENDER_SCOUT_LEASH: float = 18.0
+"""How far from an owned townhall / start / natural a scouting worker may
+stray before home Zerglings drop it and return to the natural hold. Wide
+enough to cover a main mineral line from the hatch, not a map chase."""
 SQUAD_ENGAGE_RANGE: float = 11.5
 STALKER_MIN_ENGAGE_RANGE: float = 4.0
 """Chargelot Stalkers hold at least this far back (weapon range ~6) so they
@@ -330,8 +338,15 @@ def _already_ordered_ability(unit: Unit, ability: AbilityId) -> bool:
     return ability_id == ability
 
 
-
-
+def _defender_settled_at_hold(unit: Unit, hold: Point2) -> bool:
+    """True when the defender should sit still at `hold` (no move re-issue)."""
+    dist = cy_distance_to(unit.position, hold)
+    if dist <= DEFENDER_HOLD_ARRIVE:
+        return True
+    # Move finished but still inside the hysteresis band — do not re-nudge.
+    if dist <= DEFENDER_HOLD_SETTLED and not unit.orders:
+        return True
+    return False
 
 
 def _combat_force_supply(ctx: "BotContext", units) -> float:
@@ -350,6 +365,26 @@ def _combat_force_supply(ctx: "BotContext", units) -> float:
 def _our_force_larger(ctx: "BotContext", ours, theirs) -> bool:
     """True when `theirs` is strictly smaller than `ours` by supply."""
     return _combat_force_supply(ctx, theirs) < _combat_force_supply(ctx, ours)
+
+# How close to the enemy main ramp bottom counts as "pushing the choke" —
+# stutter-step through the bottleneck instead of peeling/kiting in place.
+_CHOKE_STUTTER_RADIUS: float = 12.0
+
+
+def _pushing_through_choke(ctx: "BotContext", position) -> bool:
+    """True when the squad is at the enemy main-ramp choke (Marine idiom).
+
+    At a narrow ramp, kiting wastes the push — stutter-forward through it
+    the same way Four Rax walks `StutterGroupForward` into
+    `enemy_ramp_bottom`.
+    """
+    try:
+        ramp = targeting.enemy_ramp_bottom(ctx)
+    except Exception:  # noqa: BLE001 - mediator/ramp may be unset in tests
+        return False
+    if not isinstance(ramp, Point2):
+        return False
+    return cy_distance_to_squared(position, ramp) <= _CHOKE_STUTTER_RADIUS**2
 
 
 def _intel_army_near(ctx: "BotContext", point, distance: float) -> list:
@@ -449,8 +484,6 @@ def _squad_maneuver_commit(
     )
     return maneuver
 
-
-
 # Macro Zerg focus-fire bands (lower score sorts first). Pure helpers so
 # attack/kite can share one priority table without on_step if-trees.
 ZERGLING_FOCUS_TYPES: frozenset[UnitTypeId] = frozenset(
@@ -480,6 +513,24 @@ ZERGLING_AVOID_TYPES: frozenset[UnitTypeId] = frozenset(
 ROACH_POOR_TYPES: frozenset[UnitTypeId] = ZERGLING_FOCUS_TYPES
 """Roaches leave Immortal / Tank / Marauder to Zerglings when lings are present."""
 
+ROACH_FOCUS_TYPES: frozenset[UnitTypeId] = frozenset(
+    {
+        UnitTypeId.COLOSSUS,
+        UnitTypeId.HIGHTEMPLAR,
+        UnitTypeId.DISRUPTOR,
+        UnitTypeId.DISRUPTORPHASED,
+        UnitTypeId.GHOST,
+        UnitTypeId.ARCHON,
+        UnitTypeId.DARKTEMPLAR,
+        UnitTypeId.LURKERMP,
+        UnitTypeId.LURKERMPBURROWED,
+        UnitTypeId.INFESTOR,
+        UnitTypeId.INFESTORBURROWED,
+    }
+)
+"""Roach high-value *ground* targets — focus-fire these first. Air is
+omitted: Roaches cannot attack air."""
+
 
 def zergling_target_score(*, type_id: UnitTypeId, vital: float) -> tuple[int, float]:
     """Pure priority key for Zergling focus (lower sorts first).
@@ -501,30 +552,70 @@ def roach_target_score(
     vital: float,
     lings_present: bool,
 ) -> tuple[int, float]:
-    """Pure priority key for Roach kite shots (lower sorts first).
+    """Pure priority key for Roach shots (lower sorts first).
 
-    When Zerglings are in the same fight, Immortal/Tank/Marauder sort last
-    so Roaches shoot something else (or keep kiting) instead of primarying
-    bad matchups. Without lings those targets are fair game again.
+    Colossus / HT / Ghost / Archon / DT / Lurker / Infestor / Disruptor
+    first. When Zerglings share the fight, Immortal/Tank/Marauder sort last
+    so Roaches leave those to the lings. Air is never in the HVT band —
+    Roaches cannot shoot up.
     """
-    if lings_present and type_id in ROACH_POOR_TYPES:
-        band = 2
-    elif type_id in ROACH_POOR_TYPES:
-        band = 1
-    else:
+    if type_id in ROACH_FOCUS_TYPES:
         band = 0
+    elif lings_present and type_id in ROACH_POOR_TYPES:
+        band = 3
+    elif type_id in ROACH_POOR_TYPES:
+        band = 2
+    else:
+        band = 1
     return (band, vital)
 
 
 def pick_zergling_focus_target(unit: Unit, enemies) -> Unit | None:
-    """Best in-weapon-range target for a Zergling under Macro Zerg focus."""
-    in_range = list(cy_in_attack_range(unit, enemies))
-    if not in_range:
+    """Best target for a Zergling under Macro Zerg focus.
+
+    Immortal/Tank/Marauder are chased even when not yet in melee range
+    (otherwise Stalkers in weapon range steal the AttackTarget every frame).
+    Splash threats only when nothing better is nearby.
+    """
+    enemies = list(enemies)
+    if not enemies:
         return None
-    return min(
-        in_range,
-        key=lambda e: zergling_target_score(
+
+    def _score(e: Unit) -> tuple[int, float]:
+        return zergling_target_score(
             type_id=e.type_id, vital=e.health + e.shield
+        )
+
+    in_range = list(cy_in_attack_range(unit, enemies))
+    focus = [e for e in enemies if e.type_id in ZERGLING_FOCUS_TYPES]
+    if focus:
+        focus_in_range = [e for e in in_range if e.type_id in ZERGLING_FOCUS_TYPES]
+        pool = focus_in_range or focus
+        return min(pool, key=_score)
+    if in_range:
+        return min(in_range, key=_score)
+    return None
+
+
+def pick_roach_hvt_target(unit: Unit, enemies) -> Unit | None:
+    """Ground HVTs (Colossus / Ghost / Archon / …) for a committing Roach.
+
+    Returns `None` when no HVT is in the local fight so the Roach stays in
+    the stutter/AMove group. In-weapon-range HVTs win over chasing farther.
+    """
+    enemies = list(enemies)
+    focus = [e for e in enemies if e.type_id in ROACH_FOCUS_TYPES]
+    if not focus:
+        return None
+    in_range = list(cy_in_attack_range(unit, enemies))
+    focus_in_range = [e for e in in_range if e.type_id in ROACH_FOCUS_TYPES]
+    pool = focus_in_range or focus
+    return min(
+        pool,
+        key=lambda e: roach_target_score(
+            type_id=e.type_id,
+            vital=e.health + e.shield,
+            lings_present=False,
         ),
     )
 
@@ -619,6 +710,13 @@ def _kite_maneuver(
             maneuver.add(AMove(unit=unit, target=target))
     return maneuver
 
+_HOLD_STICKY_RADIUS: float = 15.0
+"""How far a remembered hold may drift before `_sticky_hold_point`
+rebalances. Behind-mineral points (`get_behind_mineral_positions`) can
+jitter several tiles when the mineral-field set flickers; the old 2.5
+threshold reassigned + logged every frame (`ZERGLING_DEFEND` / `DEFEND`
+hold spam)."""
+
 
 def _sticky_hold_point(
     ctx: "BotContext",
@@ -631,11 +729,15 @@ def _sticky_hold_point(
     `defend_home` (`ctx.state.defender_hold`) and `defend_with_zerglings`
     (`ctx.state.zergling_defender_hold`) — same load-balancing problem either
     way: match an existing assignment first, else pick whichever point
-    currently has the fewest occupants."""
+    currently has the fewest occupants.
+
+    Logs only on first assignment or a real rebalance (point moved beyond
+    `_HOLD_STICKY_RADIUS`), not every frame the hold list jitters.
+    """
     assigned = hold_map.get(unit.tag)
     if assigned is not None:
         nearest = min(holds, key=lambda h: cy_distance_to_squared(assigned, h))
-        if cy_distance_to(assigned, nearest) <= 2.5:
+        if cy_distance_to(assigned, nearest) <= _HOLD_STICKY_RADIUS:
             hold_map[unit.tag] = nearest
             return nearest
     loads = [0] * len(holds)
@@ -646,15 +748,38 @@ def _sticky_hold_point(
             range(len(holds)),
             key=lambda i: cy_distance_to_squared(other_pt, holds[i]),
         )
-        if cy_distance_to(other_pt, holds[nearest_i]) <= 2.5:
+        if cy_distance_to(other_pt, holds[nearest_i]) <= _HOLD_STICKY_RADIUS:
             loads[nearest_i] += 1
     best = min(range(len(holds)), key=lambda i: loads[i])
-    hold_map[unit.tag] = holds[best]
-    ctx.log(
-        f"{log_label} hold slot={best}/{len(holds)} "
-        f"tag={unit.tag} type={unit.type_id.name}"
+    new_hold = holds[best]
+    prev = hold_map.get(unit.tag)
+    hold_map[unit.tag] = new_hold
+    if prev is None or cy_distance_to(prev, new_hold) > _HOLD_STICKY_RADIUS:
+        ctx.log(
+            f"{log_label} hold slot={best}/{len(holds)} "
+            f"tag={unit.tag} type={unit.type_id.name}"
+        )
+    return new_hold
+
+
+def _near_our_bases(ctx: "BotContext", position: Point2) -> bool:
+    """True when `position` sits inside the home scout leash of any owned base."""
+    radius_sq = DEFENDER_SCOUT_LEASH * DEFENDER_SCOUT_LEASH
+    anchors: list[Point2] = [ctx.bot.start_location, ctx.own_nat]
+    for th in ctx.bot.townhalls:
+        anchors.append(th.position)
+    return any(
+        cy_distance_to_squared(position, anchor) <= radius_sq for anchor in anchors
     )
-    return holds[best]
+
+
+def _scout_workers_in_our_bases(ctx: "BotContext") -> list[Unit]:
+    """Enemy workers currently poking around our bases (not across the map)."""
+    return [
+        u
+        for u in ctx.bot.enemy_units
+        if u.type_id in WORKER_TYPES and _near_our_bases(ctx, u.position)
+    ]
 
 
 def _defender_maneuver(
@@ -664,10 +789,18 @@ def _defender_maneuver(
     hold,
     *,
     engage_range: float = DEFENDER_ENGAGE_RANGE,
+    chase_workers: bool = False,
 ) -> CombatManeuver | None:
-    """Orders for one defender. Returns None when settled - no order spam."""
-    # Lone scouting SCVs/Probes in 12 range made the whole ball Attack/Move
-    # thrash at the ramp once warps stacked (debug: 461/461 engages were SCV).
+    """Orders for one defender. Returns None when settled - no order spam.
+
+    Non-worker army in `engage_range` always wins. `chase_workers` (home
+    Zerglings) also peels onto scouting workers that are still inside
+    `DEFENDER_SCOUT_LEASH` of our bases — contest the scout at home, then
+    drop it the moment it leaves rather than chasing across the map.
+    """
+    # Lone scouting SCVs/Probes in 12 range made the whole Zealot/Stalker ball
+    # Attack/Move thrash at the ramp once warps stacked (debug: 461/461
+    # engages were SCV) — so non-Zergling defenders still ignore workers.
     near = [
         e
         for e in _enemies_near(ctx, unit.position, engage_range)
@@ -684,6 +817,17 @@ def _defender_maneuver(
             if not weapon_targets:
                 maneuver.add(AttackTarget(unit=unit, target=closest))
         return maneuver
+
+    if chase_workers:
+        scouts = _scout_workers_in_our_bases(ctx)
+        if scouts:
+            target = cy_closest_to(position=unit.position, units=scouts)
+            if _already_attacking(unit, target):
+                return None
+            maneuver = CombatManeuver()
+            maneuver.add(AttackTarget(unit=unit, target=target))
+            return maneuver
+
     if home_threats:
         threat = cy_closest_to(position=unit.position, units=home_threats)
         if threat.type_id not in WORKER_TYPES:
@@ -694,7 +838,7 @@ def _defender_maneuver(
             return maneuver
 
     dist = cy_distance_to(unit.position, hold)
-    if dist <= DEFENDER_HOLD_ARRIVE:
+    if _defender_settled_at_hold(unit, hold):
         return None
     if _already_ordered_to_point(unit, hold):
         return None
@@ -702,7 +846,6 @@ def _defender_maneuver(
     # Plain move — AMove attack-moves and re-issues every frame past 7 range.
     maneuver.add(_Move(unit=unit, target=hold))
     return maneuver
-
 
 
 def reinforce_home_vs_early_aggression() -> CombatRoutine:
@@ -747,7 +890,8 @@ def reinforce_home_vs_early_aggression() -> CombatRoutine:
 
 
 def defend_home() -> CombatRoutine:
-    """Units still in DEFENDING hold the natural and collapse on anything near."""
+    """Units still in DEFENDING gather in front of the natural and collapse
+    on nearby army (workers ignored — see `defend_with_zerglings`)."""
 
     def routine(ctx: "BotContext") -> None:
         defenders = ctx.units_in_role(UnitRole.DEFENDING)
@@ -796,9 +940,9 @@ def defend_with_zerglings() -> CombatRoutine:
 
     Macro Zerg peels the first `HOME_ZERGLING_CAP` Zerglings onto this role
     (`builds.zerg.macro_zerg._macro_zerg_on_unit_created`); extras stay in
-    `army.types` / DEFENDING and join attack waves. Mirrors `defend_home()`'s
-    hold/engage logic, reading the defender role directly and keeping its
-    own hold map (`ctx.state.zergling_defender_hold`).
+    `army.types` / DEFENDING and join attack waves. Holds with everyone else
+    at the natural front (`hold_positions`), and unlike `defend_home` also
+    peels onto scouting workers that are still inside our base leash.
     """
 
     def routine(ctx: "BotContext") -> None:
@@ -833,7 +977,12 @@ def defend_with_zerglings() -> CombatRoutine:
                 log_label="ZERGLING_DEFEND",
             )
             maneuver = _defender_maneuver(
-                ctx, unit, home_threats, hold, engage_range=engage
+                ctx,
+                unit,
+                home_threats,
+                hold,
+                engage_range=engage,
+                chase_workers=True,
             )
             if maneuver is not None:
                 ctx.bot.register_behavior(maneuver)
@@ -902,11 +1051,14 @@ def attack_squads(
     (`SQUAD_ENGAGE_RANGE`) engages. Close army comes from
     `bot.intel.enemy_army` (workers stripped); if that list is empty nearby,
     `_enemies_near` still supplies structures to shoot. `kite_types` splits
-    the squad first - anything of one of those types always kites via `_
-    kite_maneuver` at `min_engage_range`, unconditionally (not just when
-    outnumbered), and deliberately *without* the influence grid (see below
-    for why). Everything else in the squad falls through to the existing
-    force-size-based dispatch:
+    those unit types into per-unit distance micro *when outnumbered* (and
+    not pushing a choke) — same stutter-vs-kite force check as Marines'
+    `min_engage_range` path. When our local supply is larger, or the squad
+    is on the enemy main-ramp choke (`_pushing_through_choke`), those units
+    stay in the group and `StutterGroupForward` with everyone else.
+    `kite_types` deliberately omits the influence grid (see below).
+    Everything else in the squad falls through to the existing force-size-
+    based dispatch:
 
     - `never_retreat=True`: skip influence-retreat entirely - see `_squad_
       maneuver_commit`'s own docstring for exactly why a comp would want
@@ -982,10 +1134,17 @@ def attack_squads(
 
             # Zerglings: breach workers first, else focus Immortal/Tank/
             # Marauder (splash last) via AttackTarget so they are not lost
-            # in never_retreat AMoveGroup.
+            # in never_retreat AMoveGroup. Roaches peel onto Colossus/HT/
+            # Disruptor HVTs the same way so stutter/AMove does not spray.
             group_units = []
             group_tags = set()
             for unit in squad.squad_units:
+                # Burrowed regen dig-ins stay on ATTACKING role but must not
+                # get AMove/kite — `regen_burrow_roaches` owns them. Live
+                # THRASH: ROACHBURROWED order_target flipped 6+/3s when both
+                # routines ordered the same unit.
+                if unit.type_id == UnitTypeId.ROACHBURROWED:
+                    continue
                 if unit.type_id == UnitTypeId.ZERGLING and not mustering:
                     worker = _breach_worker_target(ctx, unit)
                     if worker is not None:
@@ -999,6 +1158,19 @@ def attack_squads(
                         if not _already_attacking(unit, focus):
                             maneuver = CombatManeuver()
                             maneuver.add(AttackTarget(unit=unit, target=focus))
+                            ctx.bot.register_behavior(maneuver)
+                        continue
+                if (
+                    unit.type_id == UnitTypeId.ROACH
+                    and not mustering
+                    and close_army
+                    and not _roach_wants_regen_burrow(ctx, unit)
+                ):
+                    hvt = pick_roach_hvt_target(unit, close_enemy)
+                    if hvt is not None:
+                        if not _already_attacking(unit, hvt):
+                            maneuver = CombatManeuver()
+                            maneuver.add(AttackTarget(unit=unit, target=hvt))
                             ctx.bot.register_behavior(maneuver)
                         continue
                 group_units.append(unit)
@@ -1020,6 +1192,29 @@ def attack_squads(
                 if not group_units:
                     continue
 
+            # No enemy army in engage range: do not AMoveGroup onto one
+            # building — each unit walks to its own nearest remnant (or the
+            # build's attack objective / nearest hunt target) so the ball
+            # fans out and cleans structures efficiently.
+            if not mustering and not close_army:
+                for unit in group_units:
+                    if close_enemy:
+                        nearest = min(
+                            close_enemy,
+                            key=lambda e: cy_distance_to_squared(
+                                unit.position, e.position
+                            ),
+                        )
+                        dest = nearest.position
+                    else:
+                        dest = targeting.squad_destination(ctx, unit.position)
+                    if _already_ordered_to_point(unit, dest):
+                        continue
+                    maneuver = CombatManeuver()
+                    maneuver.add(AMove(unit=unit, target=dest))
+                    ctx.bot.register_behavior(maneuver)
+                continue
+
             if kite_types and not mustering:
                 kiters = [
                     u
@@ -1027,7 +1222,15 @@ def attack_squads(
                     if u.type_id in kite_types
                     and not _roach_wants_regen_burrow(ctx, u)
                 ]
-                if kiters:
+                # Same force check as Marines' min_engage_range path: only
+                # kite when outnumbered. Advantage or choke → leave kiters
+                # in the group for StutterGroupForward.
+                should_kite = bool(close_army) and not _our_force_larger(
+                    ctx, group_units, close_army
+                )
+                if should_kite and _pushing_through_choke(ctx, position):
+                    should_kite = False
+                if kiters and should_kite:
                     def _roach_pick(u, enemies, _lings=lings_present):
                         return pick_roach_kite_target(
                             u, enemies, lings_present=_lings
@@ -1051,6 +1254,16 @@ def attack_squads(
                         for u in group_units
                         if u.type_id not in kite_types
                         and not _roach_wants_regen_burrow(ctx, u)
+                    ]
+                    group_tags = {u.tag for u in group_units}
+                    if not group_units:
+                        continue
+                elif kiters and not should_kite:
+                    # Still peel regen dig-ins out of the stutter group.
+                    group_units = [
+                        u
+                        for u in group_units
+                        if not _roach_wants_regen_burrow(ctx, u)
                     ]
                     group_tags = {u.tag for u in group_units}
                     if not group_units:
@@ -1592,107 +1805,24 @@ def escort_overseers() -> CombatRoutine:
 
     return routine
 
-
-SWARM_HOST_BEHIND_OFFSET: float = 6.0
-"""How far behind the ATTACKING ball (toward home) the Swarm Host siege
-squad anchors — close enough for Locusts to reach fortified statics the
-frontline is pressing, far enough that Hosts stay out of the melee."""
-SWARM_HOST_LOCUST_CAST_RANGE: float = 15.0
-"""Max distance from a Host to a fortified static at which we try Spawn
-Locusts (ability range is generous; this keeps casts on the fight)."""
-SWARM_HOST_SIEGE_ARRIVE: float = 3.0
-"""Within this of the shared siege anchor, Hosts stop pathing and cast."""
-
-FORTIFIED_STATIC_TYPES: frozenset[UnitTypeId] = frozenset(
-    {
-        UnitTypeId.PLANETARYFORTRESS,
-        UnitTypeId.PHOTONCANNON,
-        UnitTypeId.SHIELDBATTERY,
-        UnitTypeId.BUNKER,
-        UnitTypeId.MISSILETURRET,
-        UnitTypeId.SPINECRAWLER,
-        UnitTypeId.SPORECRAWLER,
-    }
-)
-"""Static defense Locusts may cast on — preferred subset below."""
-
-SWARM_HOST_SIEGE_FOCUS_TYPES: frozenset[UnitTypeId] = frozenset(
-    {
-        UnitTypeId.PLANETARYFORTRESS,
-        UnitTypeId.PHOTONCANNON,
-        UnitTypeId.SHIELDBATTERY,
-    }
-)
-"""Top-band fortified statics Hosts should primary over bunker/turret/spine/spore."""
-
-
-def swarm_host_siege_target_score(
-    *, type_id: UnitTypeId, distance: float
-) -> tuple[int, float]:
-    """Pure priority for Swarm Host Locust focus (lower sorts first).
-
-    Prefer PF / Photon Cannon / Shield Battery → remaining fortified statics
-    (Bunker / Missile Turret / Spine / Spore). Autoturret is not a cast target.
-    """
-    if type_id in SWARM_HOST_SIEGE_FOCUS_TYPES:
-        band = 0
-    else:
-        band = 1
-    return (band, distance)
-
-
-def pick_swarm_host_siege_target(host: Unit, cast_targets: list[Unit]) -> Unit:
-    """Best fortified static in cast range for this Host."""
-    return min(
-        cast_targets,
-        key=lambda s: swarm_host_siege_target_score(
-            type_id=s.type_id,
-            distance=cy_distance_to(host.position, s.position),
-        ),
-    )
-
-
-def _swarm_host_siege_anchor(ctx: "BotContext") -> Point2 | None:
-    """Shared rally just behind the biggest ATTACKING ball, else home.
-
-    Hosts group on one point (no per-base dig-in). When an attack ball
-    exists, sit `SWARM_HOST_BEHIND_OFFSET` toward home from its center so
-    Locusts land on the statics the frontline is hitting. With no ball yet,
-    stage at `production_location` and wait for the push.
-    """
-    home = ctx.production_location
-    squads = ctx.mediator.get_squads(
-        role=UnitRole.ATTACKING, squad_radius=SQUAD_RADIUS
-    )
-    if not squads:
-        return home
-    biggest = max(squads, key=lambda squad: len(squad.squad_units))
-    ball = biggest.squad_position
-    if home is None:
-        return Point2(ball)
-    return Point2(cy_towards(ball, home, SWARM_HOST_BEHIND_OFFSET))
-
-
-def _fortified_statics_near(
-    ctx: "BotContext", position: Point2, radius: float
-) -> list[Unit]:
-    """Enemy fortified statics within `radius` of `position`."""
-    return [
-        s
-        for s in ctx.bot.enemy_structures
-        if s.type_id in FORTIFIED_STATIC_TYPES
-        and cy_distance_to(position, s.position) <= radius
-    ]
-
-
-_ROACH_REGEN_BURROW_BELOW: float = 0.25
-"""Burrow to regenerate once health drops strictly below this fraction."""
+_ROACH_REGEN_BURROW_BELOW: float = 1.0
+"""Burrow to regenerate once health is strictly below full (100%)."""
 _ROACH_REGEN_UNBURROW_AT: float = 1.0
-"""Unburrow only once health is fully restored *and* the area is clear."""
-_ROACH_REGEN_SAFE_ENEMY_RANGE: float = 12.0
-"""With Claws, keep peeling home while any enemy is inside this radius;
-once clear (and the tile is safe) sit still so MoveToSafeTarget does not
-repath every frame. Also the surround check before unburrow."""
+"""Unburrow only at full health — stay dug while tunneling home to regen."""
+_ROACH_REGEN_SAFE_ENEMY_RANGE: float = 36.0
+"""How far from army we still want to be tunneling home (informational /
+logging). Peel itself is a single sticky PathUnitToTarget — not KeepUnitSafe."""
+_ROACH_REGEN_HOME_ARRIVE: float = 4.0
+"""Sit and heal once within this of production_location."""
+
+
+def _combat_enemies_near(ctx: "BotContext", point, distance: float) -> list:
+    """Enemy army within `distance` — structures never count.
+
+    `_enemies_near` falls back to buildings when no units are in range;
+    that fallback must not block Claws peel decisions.
+    """
+    return [u for u in _enemies_near(ctx, point, distance) if not u.is_structure]
 
 
 def _roach_wants_regen_burrow(ctx: "BotContext", unit: Unit) -> bool:
@@ -1704,17 +1834,32 @@ def _roach_wants_regen_burrow(ctx: "BotContext", unit: Unit) -> bool:
     return unit.health_percentage < _ROACH_REGEN_BURROW_BELOW
 
 
-def regen_burrow_roaches() -> CombatRoutine:
-    """Burrow hurt Roaches to regenerate; unburrow only when clear.
+def _roach_burrowed_already_pathing(unit: Unit) -> bool:
+    """True when a burrowed Roach already has an active move — do not re-issue.
 
-    Requires Burrow researched. Surface Roaches under 25% HP burrow;
-    `ROACHBURROWED` stay down until health is 100% *and* no enemy is inside
-    `_ROACH_REGEN_SAFE_ENEMY_RANGE` (and the tile is safe when Claws gives
-    us a grid) — otherwise keep healing underground instead of surfacing
-    into the same fight. With Tunneling Claws, burrowed Roaches peel toward
-    home on the influence grid while enemies are close or the tile is
-    unsafe; once clear they sit and heal (no order spam). Without Claws
-    they stay put (cannot move while burrowed).
+    Confirmed live THRASH on ROACHBURROWED: KeepUnitSafe/MoveToSafeTarget
+    re-issued every frame (order_target point flipped 6+/3s). Burrowed move
+    often does not set `is_moving` the same way surface MOVE does, so the
+    plain `_already_ordered_to_point(home)` skip alone was not enough once
+    KeepUnitSafe kept canceling the path.
+    """
+    if not unit.orders:
+        return False
+    if bool(getattr(unit, "is_moving", False)):
+        return True
+    ability_id = getattr(getattr(unit.orders[0], "ability", None), "id", None)
+    # Tunneling Claws move reports as MOVE (or MOVE with a waypoint target).
+    return ability_id == AbilityId.MOVE and isinstance(unit.order_target, Point2)
+
+
+def regen_burrow_roaches() -> CombatRoutine:
+    """Burrow damaged Roaches and tunnel home until full HP.
+
+    Requires Burrow researched. Any surface Roach below 100% HP digs in;
+    `ROACHBURROWED` surfaces only at full health. With Tunneling Claws,
+    burrowed Roaches issue a *single* sticky path toward home (no
+    KeepUnitSafe — that re-picked a safe tile every frame and thrashed
+    live). Without Claws they sit until full then unburrow.
 
     Prefer registering this *before* `attack_squads` so dig-in wins the
     frame; `attack_squads` also skips kiters that `_roach_wants_regen_burrow`
@@ -1741,179 +1886,68 @@ def regen_burrow_roaches() -> CombatRoutine:
         home = ctx.production_location if claws else None
 
         for roach in ctx.bot.units(UnitTypeId.ROACHBURROWED):
-            enemies_close = _enemies_near(
-                ctx, roach.position, _ROACH_REGEN_SAFE_ENEMY_RANGE
-            )
-            unsafe = bool(
-                claws
-                and not ctx.mediator.is_position_safe(
-                    grid=grid, position=roach.position
-                )
-            )
-            full = roach.health_percentage >= _ROACH_REGEN_UNBURROW_AT
-            if full and not enemies_close and not unsafe:
+            ready = roach.health_percentage >= _ROACH_REGEN_UNBURROW_AT
+            if ready:
                 if not _already_ordered_ability(roach, AbilityId.BURROWUP_ROACH):
                     ctx.bot.register_behavior(
                         UseAbility(AbilityId.BURROWUP_ROACH, roach)
                     )
                 continue
-            if not claws:
+            if not claws or home is None:
                 continue
-            if not enemies_close and not unsafe:
+            # Arrived — sit and heal; do not re-path.
+            if cy_distance_to(roach.position, home) <= _ROACH_REGEN_HOME_ARRIVE:
                 continue
-            # Heal while relocating off the front - Claws allow burrowed move.
-            # Skip re-issue when already pathing home.
-            if home is not None and _already_ordered_to_point(roach, home):
+            # Already tunneling — never cancel/re-issue (live burrow thrash).
+            if _roach_burrowed_already_pathing(roach):
                 continue
-            maneuver = CombatManeuver()
-            maneuver.add(KeepUnitSafe(unit=roach, grid=grid))
-            maneuver.add(MoveToSafeTarget(unit=roach, grid=grid, target=home))
-            ctx.bot.register_behavior(maneuver)
+            if _already_ordered_to_point(roach, home):
+                continue
+            # Sticky path only — KeepUnitSafe / MoveToSafeTarget thrashed
+            # burrowed Roaches by re-picking tiles every frame (live logs).
+            ctx.bot.register_behavior(
+                PathUnitToTarget(
+                    unit=roach,
+                    grid=grid,
+                    target=home,
+                    success_at_distance=_ROACH_REGEN_HOME_ARRIVE,
+                )
+            )
 
     return routine
 
 
+def release_home_zerglings_after_early() -> CombatRoutine:
+    """After the early window, promote home-garrison lings into the army.
 
-def _siege_swarm_hosts(ctx: "BotContext") -> list[Unit]:
-    """Surface + burrowed Hosts on `SWARM_HOST_ROLE` (re-claim strays).
-
-    Burrow morph keeps the unit tag, but a Host that digs before role
-    assignment — or whose type flips without a role refresh — can drop out
-    of `get_units_from_role`. Re-assign and return fresh Unit objects so
-    Locust casts still reach burrowed Hosts.
-    """
-    by_tag: dict[int, Unit] = {
-        u.tag: u for u in ctx.mediator.get_units_from_role(role=SWARM_HOST_ROLE)
-    }
-    for unit_type in (UnitTypeId.SWARMHOSTMP, UnitTypeId.SWARMHOSTBURROWEDMP):
-        for host in ctx.bot.units(unit_type):
-            if host.tag not in by_tag:
-                ctx.mediator.assign_role(tag=host.tag, role=SWARM_HOST_ROLE)
-            by_tag[host.tag] = host
-    return list(by_tag.values())
-
-
-def siege_with_swarm_hosts() -> CombatRoutine:
-    """Offensive Swarm Host siege squad — group behind the attack ball and
-    wither fortified statics with Locusts.
-
-    Hosts stay on `SWARM_HOST_ROLE` (see `core.roles.SUPPORT_ROLES`) so
-    `release_waves` never sweeps them into muster padding; they still
-    contribute by advancing with / just behind the ATTACKING ball and
-    casting Spawn Locusts onto Planetary Fortress, Photon Cannons, Shield
-    Batteries (preferred over bunker/turret/spine/spore). No per-base dig-in /
-    `_swarm_host_points` parking.
-
-    Locust cast must win the `CombatManeuver` before `KeepUnitSafe`: near
-    fortified statics the influence grid is almost always unsafe, so a
-    leading KeepUnitSafe peels the Host every frame and Spawn Locusts never
-    fires. Swarm Hosts also need to be burrowed to cast — dig first when
-    surface, then Locust on subsequent frames while burrowed. Burrowed
-    Hosts are re-claimed via `_siege_swarm_hosts`.
+    Confirmed live: early-window end dumped scouts onto
+    `ZERGLING_DEFENDER_ROLE`, and `HOME_ZERGLING_CAP` keepers sat idle at
+    the natural while Roaches attacked. Once the early window is over and
+    early_aggression is clear, move them to `DEFENDING` so
+    `release_first_wave_then_stream` / streaming can put them on ATTACKING.
     """
 
     def routine(ctx: "BotContext") -> None:
-        hosts = _siege_swarm_hosts(ctx)
-        # Clear legacy per-base hold map so stale dig-in assignments die.
-        ctx.state.swarm_host_hold = {}
-        if not hosts:
-            return
+        from bot.intel import early_aggression as _early_aggro
 
-        anchor = _swarm_host_siege_anchor(ctx)
-        if anchor is None:
+        if _early_aggro(ctx) or in_early_window(ctx):
             return
-
-        grid = ctx.mediator.get_ground_grid
-        burrow_done = UpgradeId.BURROW in ctx.bot.state.upgrades
-        # Prefer statics near the shared anchor (the fight); fall back to
-        # anything in cast range of a Host so a lone Host still chips.
-        statics = _fortified_statics_near(
-            ctx, anchor, SWARM_HOST_LOCUST_CAST_RANGE + SWARM_HOST_BEHIND_OFFSET
+        home = list(
+            ctx.mediator.get_units_from_role(
+                role=ZERGLING_DEFENDER_ROLE, unit_type=UnitTypeId.ZERGLING
+            )
         )
-
-        for host in hosts:
-            maneuver = CombatManeuver()
-            burrowed = host.type_id == UnitTypeId.SWARMHOSTBURROWEDMP
-
-            cast_targets = [
-                s
-                for s in statics
-                if cy_distance_to(host.position, s.position)
-                <= SWARM_HOST_LOCUST_CAST_RANGE
-            ]
-            if not cast_targets:
-                cast_targets = _fortified_statics_near(
-                    ctx, host.position, SWARM_HOST_LOCUST_CAST_RANGE
-                )
-
-            if cast_targets:
-                focus = pick_swarm_host_siege_target(host, cast_targets)
-                locust_target = focus.position
-                ctx.log_once(
-                    f"swarm_host_siege_{host.tag}",
-                    f"SWARM_HOST sieging {focus.type_id.name} at "
-                    f"{locust_target} (anchor {anchor})",
-                )
-                # Locusts first while burrowed — KeepUnitSafe must NOT lead
-                # or influence near statics blocks the cast forever.
-                if burrowed:
-                    maneuver.add(
-                        UseAbility(
-                            AbilityId.EFFECT_SPAWNLOCUSTS,
-                            host,
-                            target=locust_target,
-                        )
-                    )
-                    maneuver.add(
-                        UseAbility(
-                            AbilityId.SWARMHOSTSPAWNLOCUSTS_LOCUSTMP,
-                            host,
-                            target=locust_target,
-                        )
-                    )
-                elif burrow_done:
-                    # Surface Hosts dig so the next frames can Locust.
-                    maneuver.add(
-                        UseAbility(AbilityId.BURROWDOWN_SWARMHOST, host)
-                    )
-                else:
-                    # No Burrow yet — still try Locust abilities in case the
-                    # API exposes them while surface.
-                    maneuver.add(
-                        UseAbility(
-                            AbilityId.EFFECT_SPAWNLOCUSTS,
-                            host,
-                            target=locust_target,
-                        )
-                    )
-                    maneuver.add(
-                        UseAbility(
-                            AbilityId.SWARMHOSTSPAWNLOCUSTS_LOCUSTMP,
-                            host,
-                            target=locust_target,
-                        )
-                    )
-            elif cy_distance_to(host.position, anchor) > SWARM_HOST_SIEGE_ARRIVE:
-                maneuver.add(KeepUnitSafe(unit=host, grid=grid))
-                if not _already_ordered_to_point(host, anchor):
-                    maneuver.add(
-                        MoveToSafeTarget(unit=host, grid=grid, target=anchor)
-                    )
-            else:
-                # Grouped behind the ball, no static in range yet — dig in
-                # for survivability and wait for the frontline to open one.
-                if burrow_done and not burrowed:
-                    maneuver.add(
-                        UseAbility(AbilityId.BURROWDOWN_SWARMHOST, host)
-                    )
-                else:
-                    maneuver.add(KeepUnitSafe(unit=host, grid=grid))
-
-            if maneuver.micros:
-                ctx.bot.register_behavior(maneuver)
+        if not home:
+            return
+        for unit in home:
+            ctx.mediator.assign_role(tag=unit.tag, role=UnitRole.DEFENDING)
+            ctx.state.zergling_defender_hold.pop(unit.tag, None)
+            ctx.log_once(
+                f"ling_home_to_army_{unit.tag}",
+                f"ZERGLING_DEFEND {unit.tag} -> DEFENDING (early window over)",
+            )
 
     return routine
-
 
 
 def escort_corruptors() -> CombatRoutine:
@@ -1921,9 +1955,8 @@ def escort_corruptors() -> CombatRoutine:
     but actually fight - Corruptor is anti-air only, so it engages air
     targets in range directly rather than joining `attack_squads`'s
     ground-target-seeking AMove/kite maneuvers, which would waste it on
-    objectives it cannot damage at all. Kept out of `army.types` and its
-    own `CORRUPTOR_ROLE` for the same reason Swarm Host is (see
-    `core.roles.SUPPORT_ROLES`)."""
+    objectives it cannot damage at all. Kept out of `army.types` on its
+    own `CORRUPTOR_ROLE` (see `core.roles.SUPPORT_ROLES`)."""
 
     def routine(ctx: "BotContext") -> None:
         corruptors = list(ctx.mediator.get_units_from_role(role=CORRUPTOR_ROLE))

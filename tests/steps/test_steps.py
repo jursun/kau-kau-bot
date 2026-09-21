@@ -1,9 +1,10 @@
 """Regression tests for the composed macro steps that are hard to eyeball:
-`common.split_production`, `zerg.spore_crawlers`, `zerg.train_queens` and
-`zerg.overseers`. The `spore_crawlers`/`split_production` cases lean on
-`MacroPlan.execute()`'s "stop at the first behavior that acts" semantics
-(see `macro_engine.py`), so what matters is the *order* and *shape* of the
-behaviors each step hands back, not just that it returns something.
+`common.split_production`, `zerg.spore_crawlers`, `zerg.spine_crawlers`,
+`zerg.train_queens` and `zerg.overseers`. The crawler/`split_production`
+cases lean on `MacroPlan.execute()`'s "stop at the first behavior that acts"
+semantics (see `macro_engine.py`), so what matters is the *order* and
+*shape* of the behaviors each step hands back, not just that it returns
+something.
 
 Runs under pytest, or standalone with no test dependency:
 
@@ -356,6 +357,181 @@ def test_spore_crawlers_check_interval_runs_when_due() -> None:
     assert ctx.state.last_spore_check_at == 275.0
 
 
+def test_spine_crawlers_places_one_per_expansion_skipping_main_and_nat() -> None:
+    ctx = _ctx()
+    main = Point2((10.0, 10.0))
+    natural = Point2((50.0, 50.0))
+    third = Point2((200.0, 200.0))
+    fourth = Point2((300.0, 300.0))
+    ctx.bot.start_location = main
+    ctx.mediator.get_own_expansions = [natural]
+    ctx.mediator.get_own_nat = natural
+    ctx.bot.owned_expansions = {
+        main: MagicMock(),
+        natural: MagicMock(),
+        third: MagicMock(),
+        fourth: MagicMock(),
+    }
+
+    plan = z.spine_crawlers(per_base=1, gate=lambda _ctx: True)(ctx)
+
+    assert isinstance(plan, MacroPlan)
+    assert len(plan.macros) == 2
+    for behavior, location in zip(plan.macros, (third, fourth)):
+        assert isinstance(behavior, BuildSporeCrawler)
+        assert behavior.base_location == location
+        assert behavior.structure_type == UnitTypeId.SPINECRAWLER
+
+
+def test_spine_crawlers_noop_with_only_main_and_natural() -> None:
+    ctx = _ctx()
+    main = Point2((10.0, 10.0))
+    natural = Point2((50.0, 50.0))
+    ctx.bot.start_location = main
+    ctx.mediator.get_own_expansions = [natural]
+    ctx.mediator.get_own_nat = natural
+    ctx.bot.owned_expansions = {main: MagicMock(), natural: MagicMock()}
+
+    assert z.spine_crawlers(per_base=1, gate=lambda _ctx: True)(ctx) is None
+
+
+def test_spine_crawlers_skips_bases_that_already_have_enough() -> None:
+    ctx = _ctx()
+    main = Point2((10.0, 10.0))
+    natural = Point2((50.0, 50.0))
+    covered = Point2((200.0, 200.0))
+    uncovered = Point2((300.0, 300.0))
+    ctx.bot.start_location = main
+    ctx.mediator.get_own_expansions = [natural]
+    ctx.mediator.get_own_nat = natural
+    ctx.bot.owned_expansions = {
+        main: MagicMock(),
+        natural: MagicMock(),
+        covered: MagicMock(),
+        uncovered: MagicMock(),
+    }
+    ctx.bot.structures.return_value.closer_than.side_effect = (
+        lambda _radius, location: ([MagicMock()] if location == covered else [])
+    )
+
+    plan = z.spine_crawlers(per_base=1, gate=lambda _ctx: True)(ctx)
+
+    assert len(plan.macros) == 1
+    assert plan.macros[0].base_location == uncovered
+    assert plan.macros[0].structure_type == UnitTypeId.SPINECRAWLER
+
+
+def test_spine_crawlers_ignores_early_aggression_spines_at_natural() -> None:
+    """Nat spines from early_aggression_spines must not satisfy the 3rd+
+    quota — otherwise two nat spines would block every expansion Spine."""
+    ctx = _ctx()
+    main = Point2((10.0, 10.0))
+    natural = Point2((50.0, 50.0))
+    third = Point2((200.0, 200.0))
+    ctx.bot.start_location = main
+    ctx.mediator.get_own_expansions = [natural]
+    ctx.mediator.get_own_nat = natural
+    ctx.bot.owned_expansions = {
+        main: MagicMock(),
+        natural: MagicMock(),
+        third: MagicMock(),
+    }
+    # Two spines already exist somewhere (e.g. natural) — bot-wide amount
+    # must not short-circuit expansion placement.
+    ctx.bot.structures.return_value.amount = 2
+    ctx.bot.structures.return_value.closer_than.side_effect = (
+        lambda _radius, location: (
+            [MagicMock(), MagicMock()] if location == natural else []
+        )
+    )
+
+    plan = z.spine_crawlers(per_base=1, gate=lambda _ctx: True)(ctx)
+
+    assert isinstance(plan, MacroPlan)
+    assert len(plan.macros) == 1
+    assert plan.macros[0].base_location == third
+
+
+def test_spine_crawlers_waits_on_en_route_worker() -> None:
+    ctx = _ctx()
+    main = Point2((10.0, 10.0))
+    natural = Point2((50.0, 50.0))
+    third = Point2((200.0, 200.0))
+    ctx.bot.start_location = main
+    ctx.mediator.get_own_expansions = [natural]
+    ctx.mediator.get_own_nat = natural
+    ctx.bot.owned_expansions = {
+        main: MagicMock(),
+        natural: MagicMock(),
+        third: MagicMock(),
+    }
+    ctx.bot.mediator.get_building_tracker_dict = {
+        999: {ID: UnitTypeId.SPINECRAWLER, TARGET: third}
+    }
+
+    assert z.spine_crawlers(per_base=1, gate=lambda _ctx: True)(ctx) is None
+
+
+def test_spine_crawlers_check_interval_skips_until_due() -> None:
+    ctx = _ctx()
+    main = Point2((10.0, 10.0))
+    natural = Point2((50.0, 50.0))
+    third = Point2((200.0, 200.0))
+    ctx.bot.start_location = main
+    ctx.mediator.get_own_expansions = [natural]
+    ctx.mediator.get_own_nat = natural
+    ctx.bot.owned_expansions = {
+        main: MagicMock(),
+        natural: MagicMock(),
+        third: MagicMock(),
+    }
+    ctx.bot.time = 270.0
+    ctx.state.last_spine_check_at = 260.0
+
+    assert (
+        z.spine_crawlers(per_base=1, gate=lambda _ctx: True, check_interval=15.0)(ctx)
+        is None
+    )
+    assert ctx.state.last_spine_check_at == 260.0
+
+
+def test_spine_crawlers_returns_none_before_gate() -> None:
+    ctx = _ctx()
+    assert z.spine_crawlers(per_base=1, gate=lambda _ctx: False)(ctx) is None
+
+
+def test_early_aggression_spines_place_at_natural() -> None:
+    ctx = _ctx()
+    main = Point2((10.0, 10.0))
+    natural = Point2((50.0, 50.0))
+    ctx.bot.start_location = main
+    ctx.mediator.get_own_expansions = [natural]
+    ctx.mediator.get_own_nat = natural
+    ctx.bot.structures.return_value.closer_than.return_value = []
+
+    plan = z.early_aggression_spines(2, gate=lambda _ctx: True)(ctx)
+
+    assert isinstance(plan, MacroPlan)
+    assert len(plan.macros) == 2
+    for macro in plan.macros:
+        assert isinstance(macro, BuildSporeCrawler)
+        assert macro.base_location == natural
+        assert macro.structure_type == UnitTypeId.SPINECRAWLER
+
+
+def test_early_aggression_spines_skip_when_natural_already_has_count() -> None:
+    ctx = _ctx()
+    natural = Point2((50.0, 50.0))
+    ctx.mediator.get_own_expansions = [natural]
+    ctx.mediator.get_own_nat = natural
+    ctx.bot.structures.return_value.closer_than.return_value = [
+        MagicMock(),
+        MagicMock(),
+    ]
+
+    assert z.early_aggression_spines(2, gate=lambda _ctx: True)(ctx) is None
+
+
 def test_train_queens_extra_is_not_clipped_by_max_per_townhall() -> None:
     """Regression test: `max_per_townhall` feeds `TrainQueens`'s own
     `min(to_count, len(townhalls) * max_per_townhall)` formula, so passing
@@ -364,20 +540,20 @@ def test_train_queens_extra_is_not_clipped_by_max_per_townhall() -> None:
     ctx = _ctx()
     ctx.bot.townhalls.ready = [MagicMock(), MagicMock(), MagicMock()]  # 3 bases
 
-    behavior = z.train_queens(per_base=1, maximum=6, extra=1)(ctx)
+    behavior = z.train_queens(per_base=1, maximum=8, extra=2)(ctx)
 
     assert isinstance(behavior, TrainQueens)
-    assert behavior.to_count == 4  # 3 bases + 1 extra
-    assert behavior.max_per_townhall == 2  # per_base + extra
+    assert behavior.to_count == 5  # 3 bases + 2 extras
+    assert behavior.max_per_townhall == 3  # per_base + extra
 
 
 def test_train_queens_extra_still_respects_maximum() -> None:
     ctx = _ctx()
     ctx.bot.townhalls.ready = [MagicMock() for _ in range(5)]
 
-    behavior = z.train_queens(per_base=1, maximum=4, extra=1)(ctx)
+    behavior = z.train_queens(per_base=1, maximum=4, extra=2)(ctx)
 
-    assert behavior.to_count == 4  # capped, not 5 bases + 1
+    assert behavior.to_count == 4  # capped, not 5 bases + 2
 
 
 def test_overseers_targets_one_per_wave_released() -> None:
@@ -473,10 +649,8 @@ def test_spawn_macro_army_prefers_lings_when_gas_starved() -> None:
 
 
 
-def test_spawn_macro_army_strips_hosts_at_siege_cap() -> None:
-    """At SWARM_HOST_SIEGE_CAP, stop training Hosts — Roach/ling only."""
-    from bot.consts import SWARM_HOST_SIEGE_CAP
-
+def test_spawn_macro_army_default_is_roach_ling() -> None:
+    """Baseline army is Roach + Zergling."""
     ctx = _ctx()
     ctx.bot.minerals = 400
     ctx.bot.vespene = 400
@@ -486,23 +660,11 @@ def test_spawn_macro_army_strips_hosts_at_siege_cap() -> None:
     ctx.bot.structures = MagicMock(
         return_value=MagicMock(ready=ready, amount=0)
     )
-    hosts = [MagicMock() for _ in range(SWARM_HOST_SIEGE_CAP)]
-
-    def _units(unit_type):
-        if unit_type == UnitTypeId.SWARMHOSTMP:
-            out = MagicMock()
-            out.amount = len(hosts)
-            out.__iter__ = lambda self: iter(hosts)
-            return out
-        out = MagicMock()
-        out.amount = 0
-        out.__iter__ = lambda self: iter([])
-        return out
-
-    ctx.bot.units = MagicMock(side_effect=_units)
     behavior = z.spawn_macro_army(gate=lambda _c: True)(ctx)
     assert isinstance(behavior, SpawnController)
     assert UnitTypeId.SWARMHOSTMP not in behavior.army_composition_dict
+    assert UnitTypeId.ROACH in behavior.army_composition_dict
+    assert UnitTypeId.ZERGLING in behavior.army_composition_dict
     total = sum(
         float(v["proportion"]) for v in behavior.army_composition_dict.values()
     )

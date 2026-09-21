@@ -104,10 +104,10 @@ class Combat:
     """Overrides where a wave musters and where defenders hold, for a build
     whose army does not spawn at home. A proxy build's Marines pop out on the
     far side of the map, so the default "in front of our own natural" rally
-    would walk every new Marine all the way home before it attacked. Setting
-    this also collapses `targeting.hold_positions` to just this point: a
-    build that pins its rally somewhere specific means it, and should not
-    also be sending half its defenders back to guard mineral lines."""
+    would walk every new Marine all the way home before it attacked.
+    `targeting.hold_positions` is always this single gather point (pinned
+    rally or the natural front) — defenders no longer split across mineral
+    lines."""
     attack_objective: PointLocator | None = None
     """Overrides where ATTACKING squads (and proxy workers / escorts that
     follow them) advance when not mustering. `None` keeps the default

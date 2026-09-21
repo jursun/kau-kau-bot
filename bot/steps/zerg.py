@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING
 
 from ares.behaviors.macro import ExpansionController, MacroPlan, SpawnController, TechUp
 from ares.consts import ID, TARGET
-from sc2.ids.ability_id import AbilityId
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 from sc2.position import Point2
@@ -29,10 +28,8 @@ from bot.consts import (
     GAS_STARVED_MINERAL_RATIO,
     LING_HEAVY_CORRUPTOR_COMP,
     LING_HEAVY_ROACH_COMP,
-    LING_HEAVY_SWARM_COMP,
-    ROACH_SWARM_HOST_COMP,
-    SWARM_HOST_SIEGE_CAP,
-    ROACH_SWARM_HOST_CORRUPTOR_COMP,
+    ROACH_LING_COMP,
+    ROACH_LING_CORRUPTOR_COMP,
 )
 from bot.core.types import Gate, MacroStep
 from bot.intel.army import early_aggression, enemy_has_air_units
@@ -44,10 +41,18 @@ if TYPE_CHECKING:
 
 
 def inject_larva(min_energy: int = 25) -> MacroStep:
-    """Belongs in `always` — injects must keep running during the opening."""
+    """Belongs in `always` — injects must keep running during the opening.
+
+    Each inject queen only targets her home townhall
+    (`ctx.state.queen_home_townhall`), so she never walks across the map to
+    inject another base.
+    """
 
     def step(ctx: "BotContext"):
-        return InjectLarva(min_energy=min_energy)
+        return InjectLarva(
+            min_energy=min_energy,
+            home_townhall=ctx.state.queen_home_townhall,
+        )
 
     return step
 
@@ -55,8 +60,8 @@ def inject_larva(min_energy: int = 25) -> MacroStep:
 def train_queens(
     per_base: int = 1, maximum: int = 4, extra: int = 0, gate: Gate = _always
 ) -> MacroStep:
-    """Keep one queen per base (for injects), plus `extra` more for other
-    duties (see `routines.creep.spread_creep`), capped at `maximum` total.
+    """Keep one queen per base (for injects), plus `extra` more for defense
+    and creep (see `routines.creep.spread_creep`), capped at `maximum` total.
 
     `TrainQueens.max_per_townhall` only feeds the internal
     `min(to_count, len(townhalls) * max_per_townhall)` target formula — it
@@ -184,29 +189,15 @@ def evolution_chambers() -> MacroStep:
     return step
 
 
-def _spore_crawlers_en_route_near(ctx: "BotContext", location: Point2, radius: float) -> int:
-    """How many Spore Crawler workers are currently dispatched (order
-    issued, not yet arrived/placed) toward a point within `radius` of
-    `location` - the per-base version of `ai.structure_pending`, which
-    counts bot-wide and would gate every *other* base's turn behind
-    whichever one already has a worker walking, for that worker's entire
-    ~20s+ walk-and-build time.
-
-    Confirmed live as the actual cause of the "3 Spore Crawlers" deadline
-    consistently missing across maps: gated bot-wide, 3 crawlers built
-    strictly one after another took ~88s from the gate opening (each ~23-
-    25s to complete, no overlap at all) against a 60s window - not a
-    minerals problem (440+ banked the moment the gate opened both times).
-
-    Reads `ManagerMediator.get_building_tracker_dict` directly rather than
-    `ai.already_pending`/`ai.structure_pending` (both bot-wide, by design,
-    for exactly the counting problem their own docstrings describe) - each
-    entry there is one dispatched worker, keyed by its own tag, with the
-    structure type (`ID`) and target position (`TARGET`) it's walking to.
+def _crawlers_en_route_near(
+    ctx: "BotContext", location: Point2, radius: float, structure_type: UnitTypeId
+) -> int:
+    """How many crawler workers are dispatched toward `location` (see
+    `_spore_crawlers_en_route_near` history — must be per-base, not bot-wide).
     """
     count = 0
     for info in ctx.mediator.get_building_tracker_dict.values():
-        if info.get(ID) != UnitTypeId.SPORECRAWLER:
+        if info.get(ID) != structure_type:
             continue
         target = info.get(TARGET)
         if target is None:
@@ -215,6 +206,28 @@ def _spore_crawlers_en_route_near(ctx: "BotContext", location: Point2, radius: f
         if pos.distance_to(location) < radius:
             count += 1
     return count
+
+
+def _spore_crawlers_en_route_near(ctx: "BotContext", location: Point2, radius: float) -> int:
+    """Spore-specific wrapper — kept for existing call sites / tests."""
+    return _crawlers_en_route_near(ctx, location, radius, UnitTypeId.SPORECRAWLER)
+
+
+def _expansion_bases_for_spines(ctx: "BotContext") -> list[Point2]:
+    """Owned expansions excluding main and natural (3rd base and up)."""
+    radius = ctx.bot.EXPANSION_GAP_THRESHOLD
+    skip: list[Point2] = [ctx.bot.start_location]
+    try:
+        nat = ctx.own_nat
+    except Exception:  # noqa: BLE001 - mediator may not be ready
+        nat = None
+    if nat is not None:
+        skip.append(nat)
+    return [
+        loc
+        for loc in ctx.bot.owned_expansions
+        if all(loc.distance_to(anchor) >= radius for anchor in skip)
+    ]
 
 
 def spore_crawlers(
@@ -315,8 +328,110 @@ def spore_crawlers(
     return step
 
 
-def spine_crawlers(count: int, gate: Gate = _always) -> MacroStep:
-    return common.structure(UnitTypeId.SPINECRAWLER, count, gate)
+def spine_crawlers(
+    per_base: int = 1,
+    gate: Gate = _always,
+    check_interval: float = 0.0,
+) -> MacroStep:
+    """One Spine Crawler per expansion (3rd base and up), once `gate` passes.
+
+    Same maintenance shape as `spore_crawlers` / `BuildSporeCrawler`, but
+    skips main and natural — those stay covered by the early-aggression
+    overlay (`early_aggression_spines`) and army, not a permanent mineral-
+    line Spine. Optional `check_interval` throttles the missing-base scan
+    the same way spores do.
+
+    Early-aggression Spines at the natural are intentionally *not* counted
+    toward the bot-wide cap here (unlike spores): a pair at the nat would
+    otherwise look like the expansion quota was already filled and block
+    every 3rd+ base.
+    """
+
+    def step(ctx: "BotContext"):
+        if not gate(ctx):
+            return None
+
+        if check_interval > 0:
+            last = ctx.state.last_spine_check_at
+            if last is not None and ctx.bot.time - last < check_interval:
+                return None
+            ctx.state.last_spine_check_at = ctx.bot.time
+
+        bases = _expansion_bases_for_spines(ctx)
+        if not bases:
+            return None
+
+        existing = ctx.bot.structures(UnitTypeId.SPINECRAWLER)
+        radius = ctx.bot.EXPANSION_GAP_THRESHOLD
+        plan = MacroPlan()
+        for location in bases:
+            have = len(existing.closer_than(radius, location))
+            have += _crawlers_en_route_near(
+                ctx, location, radius, UnitTypeId.SPINECRAWLER
+            )
+            if have >= per_base:
+                continue
+            plan.add(
+                BuildSporeCrawler(
+                    base_location=location,
+                    structure_type=UnitTypeId.SPINECRAWLER,
+                )
+            )
+        if plan.macros:
+            from bot.common.log import log_event
+
+            log_event(
+                ctx.bot,
+                f"SPINE maintain: {len(plan.macros)} expansion(s) missing "
+                f"(3rd+ bases={len(bases)})",
+            )
+            return plan
+        return None
+
+    return step
+
+
+def early_aggression_spines(count: int, gate: Gate = _always) -> MacroStep:
+    """Fixed-count Spines at the natural while early-aggression is on.
+
+    Uses `BuildSporeCrawler` (spine placement toward the front of the base)
+    at `ctx.own_nat`, not `common.structure` — that path places at the main
+    production location and left the nat undefended (confirmed: comment in
+    Macro Zerg already said natural; implementation did not).
+    """
+
+    def step(ctx: "BotContext"):
+        if not gate(ctx):
+            return None
+        natural = ctx.own_nat
+        radius = ctx.bot.EXPANSION_GAP_THRESHOLD
+        existing = ctx.bot.structures(UnitTypeId.SPINECRAWLER)
+        have = len(existing.closer_than(radius, natural))
+        have += _crawlers_en_route_near(
+            ctx, natural, radius, UnitTypeId.SPINECRAWLER
+        )
+        if have >= count:
+            return None
+        # One at a time — queuing `count - have` in one plan made both
+        # BuildSporeCrawler calls pick the same pad before the tracker
+        # registered the first (confirmed live: 2nd spine on 1st's tile).
+        plan = MacroPlan()
+        plan.add(
+            BuildSporeCrawler(
+                base_location=natural,
+                structure_type=UnitTypeId.SPINECRAWLER,
+            )
+        )
+        from bot.common.log import log_event
+
+        log_event(
+            ctx.bot,
+            f"SPINE early-aggression: {count - have} at natural "
+            f"(have {have}/{count})",
+        )
+        return plan
+
+    return step
 
 
 _FORWARD_CRAWLER_MINERALS: int = 5000
@@ -438,92 +553,19 @@ def tech_up(desired_tech: UnitTypeId, gate: Gate = _always) -> MacroStep:
 
 
 
-def _unit_amount(group) -> int:
-    """Own-unit count that tolerates test MagicMocks without `.amount`."""
-    amount = getattr(group, "amount", None)
-    if isinstance(amount, int):
-        return amount
-    try:
-        return len(list(group))
-    except TypeError:
-        return 0
-
-
-def _swarm_host_owned_count(ctx: "BotContext") -> int:
-    """Living + burrowed + larva eggs morphing into Swarm Hosts."""
-    bot = ctx.bot
-    n = _unit_amount(bot.units(UnitTypeId.SWARMHOSTMP))
-    n += _unit_amount(bot.units(UnitTypeId.SWARMHOSTBURROWEDMP))
-    eggs = bot.units(UnitTypeId.EGG)
-    try:
-        egg_iter = list(eggs)
-    except TypeError:
-        egg_iter = []
-    for egg in egg_iter:
-        orders = getattr(egg, "orders", ()) or ()
-        if any(
-            getattr(getattr(o, "ability", None), "id", None)
-            == AbilityId.TRAIN_SWARMHOST
-            for o in orders
-        ):
-            n += 1
-    return n
-
-
-def _comp_without_swarm_hosts(
-    comp: dict[UnitTypeId, dict[str, float | int]],
-) -> dict[UnitTypeId, dict[str, float | int]]:
-    """Drop Swarm Host from a SpawnController comp and renormalize."""
-    trimmed = {
-        unit: dict(info)
-        for unit, info in comp.items()
-        if unit != UnitTypeId.SWARMHOSTMP
-    }
-    total = sum(float(info["proportion"]) for info in trimmed.values())
-    if total <= 0:
-        return {
-            UnitTypeId.ROACH: {"proportion": 1.0, "priority": 0},
-        }
-    return {
-        unit: {
-            "proportion": float(info["proportion"]) / total,
-            "priority": info["priority"],
-        }
-        for unit, info in trimmed.items()
-    }
-
-
 def spawn_macro_army(gate: Gate = _always) -> MacroStep:
-    """Roach/Swarm Host by default (see `bot.consts.ROACH_SWARM_HOST_COMP`).
+    """Roach/Zergling by default (see `bot.consts.ROACH_LING_COMP`).
 
-    While Roach Warren is done but Infestation Pit isn't, `SpawnController`'s
-    single-tech-type overproduce escape hatch no longer applies (both
-    Zergling and Roach are tech-ready at that point), so the raw 65/25/10
-    comp would stall Roach production once its slice of the *reachable*
-    two-member population is met - fall back to a renormalized 2-member
-    comp for that window instead. Once Spire is up and the enemy has shown
-    air (`intel.army.enemy_has_air_units`), fold Corruptor in.
-
-    When mineral:gas > `GAS_STARVED_MINERAL_RATIO` (5:1), flip to the
-    ling-heavy comps so larva spends on Zerglings instead of Roaches.
+    Once Spire is up and the enemy has shown air (`intel.army.enemy_has_air_units`),
+    fold Corruptor in. When mineral:gas > `GAS_STARVED_MINERAL_RATIO` (5:1),
+    flip to the ling-heavy comps so larva spends on Zerglings instead of Roaches.
 
     TODO: scout-based counter composition (see intel.army composition).
-    For now: Roach + Swarm Host; Corruptor only if enemy air. Roaches will
-    use Burrow + Tunneling Claws to leave the front and heal; Swarm Hosts
-    siege fortified positions (`combat.siege_with_swarm_hosts`).
     """
-
-    _roach_only_comp: dict[UnitTypeId, dict[str, float | int]] = {
-        UnitTypeId.ROACH: {"proportion": 0.87, "priority": 0},
-        UnitTypeId.ZERGLING: {"proportion": 0.13, "priority": 2},
-    }
 
     def step(ctx: "BotContext"):
         if not gate(ctx):
             return None
-        # TODO: pick counter comp from scouted enemy army composition.
-        # Early-aggression overlay: flood home defense (lings, Roaches once
-        # Warren tech is ready) — do not wait on gas-starved / Host ratios.
         if early_aggression(ctx):
             roach_ready = (
                 ctx.bot.tech_requirement_progress(UnitTypeId.ROACH) >= 1.0
@@ -535,29 +577,16 @@ def spawn_macro_army(gate: Gate = _always) -> MacroStep:
                 spawn_target=None,
             )
         gas_starved = _gas_starved(ctx)
-        roach_ready = ctx.bot.tech_requirement_progress(UnitTypeId.ROACH) >= 1.0
-        swarm_host_ready = (
-            ctx.bot.tech_requirement_progress(UnitTypeId.SWARMHOSTMP) >= 1.0
-        )
         air = (
             ctx.bot.structures(UnitTypeId.SPIRE).ready
             and enemy_has_air_units(ctx)
         )
         if gas_starved:
-            if air:
-                comp = LING_HEAVY_CORRUPTOR_COMP
-            elif roach_ready and not swarm_host_ready:
-                comp = LING_HEAVY_ROACH_COMP
-            else:
-                comp = LING_HEAVY_SWARM_COMP
-        elif roach_ready and not swarm_host_ready:
-            comp = _roach_only_comp
+            comp = LING_HEAVY_CORRUPTOR_COMP if air else LING_HEAVY_ROACH_COMP
         elif air:
-            comp = ROACH_SWARM_HOST_CORRUPTOR_COMP
+            comp = ROACH_LING_CORRUPTOR_COMP
         else:
-            comp = ROACH_SWARM_HOST_COMP
-        if _swarm_host_owned_count(ctx) >= SWARM_HOST_SIEGE_CAP:
-            comp = _comp_without_swarm_hosts(comp)
+            comp = ROACH_LING_COMP
         return SpawnController(dict(comp), spawn_target=None)
 
     return step

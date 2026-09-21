@@ -24,6 +24,15 @@ from bot.core import BotContext, CombatEngine, MacroEngine, RunState, roles
 from bot.core.registry import UnknownBuild, default_build, get_build
 from bot.intel import observe_early_aggression, observe_leave_intel
 
+
+def _maybe_observe_thrash(ctx) -> None:
+    """Live thrash probe — only when config Debug is on."""
+    if not bool((ctx.bot.config or {}).get("Debug")):
+        return
+    from bot.debug.thrash import observe_thrash
+
+    observe_thrash(ctx)
+
 # Harness default leave (`scripts/harness/harness_common.DEFAULT_LEAVE_SECONDS`):
 # 7:00 via `run_game(..., game_time_limit=...)`. `run.py` itself has no
 # default leave — pass `--leave N` there explicitly. Ladder never passes a
@@ -141,6 +150,7 @@ class KauKauBot(AresBot):
         self.combat.execute(self.ctx)
         if self.ctx.build.on_step is not None:
             self.ctx.build.on_step(self.ctx)
+        _maybe_observe_thrash(self.ctx)
 
     async def on_end(self, game_result: Result) -> None:
         await super(KauKauBot, self).on_end(game_result)

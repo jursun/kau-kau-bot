@@ -309,7 +309,8 @@ def test_hold_positions_collapses_to_the_pinned_rally() -> None:
     ], "a pinned rally must not also hand out mineral-line positions"
 
 
-def test_hold_positions_still_covers_mineral_lines_without_an_override() -> None:
+def test_hold_positions_is_natural_front_only() -> None:
+    """Defenders gather as one ball at the natural — not split per base."""
     ctx = _ctx(rally=None)
     townhall = MagicMock()
     townhall.position = HOME
@@ -317,7 +318,9 @@ def test_hold_positions_still_covers_mineral_lines_without_an_override() -> None
     ctx.mediator.get_own_nat = Point2((30.0, 30.0))
     ctx.mediator.get_behind_mineral_positions.return_value = [Point2((18.0, 18.0))]
 
-    assert len(targeting.hold_positions(ctx)) == 2
+    holds = targeting.hold_positions(ctx)
+    assert holds == [targeting.rally_point(ctx)]
+    ctx.mediator.get_behind_mineral_positions.assert_not_called()
 
 
 # --- gates.training_started -----------------------------------------------

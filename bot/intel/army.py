@@ -147,6 +147,8 @@ _MID_CENTER_RADIUS: float = 22.0
 _PROXY_MARGIN: float = 20.0
 # Sudden worker deaths between frames.
 _WORKER_DEATH_SPIKE: int = 3
+# Opening ling scout sees early-pressure types this close → latch.
+_SCOUT_CONTACT_RADIUS: float = 12.0
 # Past opening + army OK clear floor (commit-able DEFENDING supply).
 _CLEAR_ARMY_SUPPLY: float = 14.0
 
@@ -216,6 +218,10 @@ def _in_early_window(ctx: BotContext) -> bool:
     except Exception:  # noqa: BLE001
         return True
     return True
+
+
+# Public alias for combat/scouting routines that need the same window.
+in_early_window = _in_early_window
 
 
 def _combat_near_home(ctx: BotContext) -> bool:
@@ -302,11 +308,50 @@ def _worker_death_spike(ctx: BotContext) -> bool:
     return spike
 
 
+def _scout_ling_contact(ctx: BotContext) -> bool:
+    """Opening ling scouts spotted early-pressure units nearby."""
+    from bot.consts import ZERGLING_SCOUT_ROLE
+
+    mediator = getattr(ctx, "mediator", None)
+    if mediator is None:
+        return False
+    try:
+        scouts = mediator.get_units_from_role(
+            role=ZERGLING_SCOUT_ROLE, unit_type=UnitTypeId.ZERGLING
+        )
+    except Exception:  # noqa: BLE001
+        return False
+    if not scouts:
+        return False
+    for unit in enemy_army(ctx):
+        if getattr(unit, "type_id", None) not in _EARLY_PRESSURE_TYPES:
+            continue
+        pos = getattr(unit, "position", None)
+        if pos is None:
+            continue
+        for scout in scouts:
+            scout_pos = getattr(scout, "position", None)
+            if scout_pos is None:
+                continue
+            try:
+                if pos.distance_to(scout_pos) <= _SCOUT_CONTACT_RADIUS:
+                    return True
+            except Exception:  # noqa: BLE001
+                continue
+    return False
+
+
 def _pressure_signal(ctx: BotContext) -> bool:
     """Seen early-aggression signal this frame — never invent units in fog."""
     # Worker spike always updates the counter; evaluate others independently.
     spike = _worker_death_spike(ctx)
-    return spike or _combat_near_home(ctx) or _proxy_production(ctx) or _mid_ball(ctx)
+    return (
+        spike
+        or _combat_near_home(ctx)
+        or _proxy_production(ctx)
+        or _mid_ball(ctx)
+        or _scout_ling_contact(ctx)
+    )
 
 
 def _army_ok_to_clear(ctx: BotContext) -> bool:

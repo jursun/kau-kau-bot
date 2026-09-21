@@ -56,7 +56,7 @@ WARPGATE = UpgradeId.WARPGATERESEARCH
 
 
 def _chargelot_home_rally(ctx):
-    """Nat-front rally — pinning `combat.rally` collapses mineral-line holds."""
+    """Nat-front rally — same single gather point `hold_positions` always uses."""
     nat = ctx.own_nat
     return nat.towards(
         ctx.bot.enemy_start_locations[0], ctx.build.combat.rally_offset
@@ -107,9 +107,7 @@ BUILD = BuildDefinition(
         wave1_min=FIRST_WAVE,
         wave_growth=1.0,  # unused once streaming; kept for validator math
         focus=(FOCUS_NATURAL, FOCUS_MAIN),
-        # Pin rally so hold_positions is a single nat-front point — mineral
-        # line extras remapped every frame (unstable townhall order) and
-        # sent warping Zealots thrashing across the ramp.
+        # Explicit nat-front rally (same point hold_positions uses by default).
         rally=_chargelot_home_rally,
         wave_stage_label="Chargelot All-In",
     ),

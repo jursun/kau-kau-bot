@@ -11,7 +11,7 @@ StarCraft II bot for [AI Arena](https://aiarena.net/), built on
 | Opening | Intent | State |
 |---------|--------|-------|
 | Four Rax Proxy | Proxy Barracks Marine all-in at the enemy fourth | Ladder Ready |
-| Macro Zerg | 15 Hatch / 17 Pool into Roach -> Swarm Host, Corruptor if the enemy shows air | Ready (set `MyBotRace: Zerg`) |
+| Macro Zerg | 15 Hatch / 17 Pool into Roach / Zergling, Corruptor if the enemy shows air | Ready (set `MyBotRace: Zerg`) |
 | 2base Chargelot All-In | Blink-looking 2-base opener into 8-Gate Charge Zealots + Warp Prism | Ready (set `MyBotRace: Protoss`) |
 
 ## Getting started

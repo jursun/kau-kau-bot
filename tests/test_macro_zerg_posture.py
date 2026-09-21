@@ -390,6 +390,182 @@ def test_macro_zerg_uses_intel_scaled_leave_gate() -> None:
     assert mz.BUILD.combat.wave_gate(ctx) is False
 
 
+def test_first_natural_queen_designated_as_extra() -> None:
+    """First Queen whose home is the natural stays on QUEEN_CREEP."""
+    ctx = _ctx()
+    ctx.bot.start_location = Point2((10.0, 10.0))
+    ctx.bot.mediator = MagicMock()
+    main = MagicMock()
+    main.tag = 100
+    main.position = Point2((10.0, 10.0))
+    main.distance_to = lambda p: Point2((10.0, 10.0)).distance_to(p)
+    natural = MagicMock()
+    natural.tag = 200
+    natural.position = Point2((40.0, 10.0))
+    natural.distance_to = lambda p: Point2((40.0, 10.0)).distance_to(p)
+    ctx.bot.townhalls.ready = _ReadyTH([main, natural])
+
+    queen = MagicMock()
+    queen.type_id = UnitTypeId.QUEEN
+    queen.tag = 7
+    queen.position = Point2((40.0, 10.0))
+
+    mz._macro_zerg_on_unit_created(ctx, queen)
+
+    assert ctx.state.queen_home_townhall[7] == 200
+    assert ctx.state.natural_extra_queen_tag == 7
+    ctx.mediator.assign_role.assert_called_with(tag=7, role=UnitRole.QUEEN_CREEP)
+
+
+class _ReadyTH(list):
+    def closest_to(self, pos):
+        return min(self, key=lambda th: th.position.distance_to(pos))
+
+
+def test_main_queen_not_designated_natural_extra() -> None:
+    ctx = _ctx()
+    ctx.bot.start_location = Point2((10.0, 10.0))
+    ctx.bot.mediator = MagicMock()
+    main = MagicMock()
+    main.tag = 100
+    main.position = Point2((10.0, 10.0))
+    main.distance_to = lambda p: Point2((10.0, 10.0)).distance_to(p)
+    natural = MagicMock()
+    natural.tag = 200
+    natural.position = Point2((40.0, 10.0))
+    natural.distance_to = lambda p: Point2((40.0, 10.0)).distance_to(p)
+    ctx.bot.townhalls.ready = _ReadyTH([main, natural])
+    # One injector already (main) — this new main queen is still needed.
+    ctx.mediator.get_units_from_role.side_effect = (
+        lambda *, role, unit_type: (
+            []
+            if role == UnitRole.QUEEN_CREEP
+            else [MagicMock(tag=3)]  # this unit, just assigned INJECT
+        )
+    )
+
+    queen = MagicMock()
+    queen.type_id = UnitTypeId.QUEEN
+    queen.tag = 3
+    queen.position = Point2((10.0, 10.0))
+
+    mz._macro_zerg_on_unit_created(ctx, queen)
+
+    assert ctx.state.queen_home_townhall[3] == 100
+    assert ctx.state.natural_extra_queen_tag is None
+    ctx.mediator.assign_role.assert_not_called()
+
+
+def test_fourth_queen_designated_creep_extra_on_two_bases() -> None:
+    """2 bases + natural CREEP already → 4th queen (spare injector) → CREEP."""
+    ctx = _ctx()
+    ctx.bot.start_location = Point2((10.0, 10.0))
+    ctx.bot.mediator = MagicMock()
+    main = MagicMock()
+    main.tag = 100
+    main.position = Point2((10.0, 10.0))
+    main.distance_to = lambda p: Point2((10.0, 10.0)).distance_to(p)
+    natural = MagicMock()
+    natural.tag = 200
+    natural.position = Point2((40.0, 10.0))
+    natural.distance_to = lambda p: Point2((40.0, 10.0)).distance_to(p)
+    ctx.bot.townhalls.ready = _ReadyTH([main, natural])
+    ctx.state.natural_extra_queen_tag = 2  # already designated
+    # 1 creep + 3 injectors (including this new tag=4) on 2 bases.
+    ctx.mediator.get_units_from_role.side_effect = (
+        lambda *, role, unit_type: (
+            [MagicMock(tag=2)]
+            if role == UnitRole.QUEEN_CREEP
+            else [MagicMock(tag=t) for t in (1, 3, 4)]
+        )
+    )
+
+    queen = MagicMock()
+    queen.type_id = UnitTypeId.QUEEN
+    queen.tag = 4
+    queen.position = Point2((10.0, 10.0))
+
+    mz._macro_zerg_on_unit_created(ctx, queen)
+
+    assert ctx.state.queen_home_townhall[4] == 100
+    ctx.mediator.assign_role.assert_called_with(tag=4, role=UnitRole.QUEEN_CREEP)
+
+
+def test_first_zerglings_assigned_as_scouts_up_to_tower_count() -> None:
+    from bot.consts import ZERGLING_SCOUT_ROLE
+
+    ctx = _ctx()
+    ctx.bot.watchtowers = [
+        MagicMock(position=Point2((30.0, 30.0))),
+        MagicMock(position=Point2((40.0, 40.0))),
+    ]
+    ctx.bot.mediator = MagicMock()
+    assigned: list[int] = []
+
+    def get_units_from_role(*, role, unit_type):
+        if role == ZERGLING_SCOUT_ROLE:
+            return [MagicMock(tag=t) for t in assigned]
+        return []
+
+    ctx.mediator.get_units_from_role.side_effect = get_units_from_role
+
+    for tag in range(1, 3):
+        ling = MagicMock()
+        ling.type_id = UnitTypeId.ZERGLING
+        ling.tag = tag
+        mz._macro_zerg_on_unit_created(ctx, ling)
+        assigned.append(tag)
+        ctx.mediator.assign_role.assert_called_with(
+            tag=tag, role=ZERGLING_SCOUT_ROLE
+        )
+
+
+def test_zergling_after_four_scouts_goes_home_defender() -> None:
+    from bot.consts import ZERGLING_DEFENDER_ROLE, ZERGLING_SCOUT_ROLE
+
+    ctx = _ctx()
+    ctx.bot.time = 60.0  # still in early window
+    ctx.bot.mediator = MagicMock()
+    scouts = [1, 2, 3, 4]
+    defenders: list[int] = []
+
+    def get_units_from_role(*, role, unit_type):
+        if role == ZERGLING_SCOUT_ROLE:
+            return [MagicMock(tag=t) for t in scouts]
+        if role == ZERGLING_DEFENDER_ROLE:
+            return [MagicMock(tag=t) for t in defenders]
+        return []
+
+    ctx.mediator.get_units_from_role.side_effect = get_units_from_role
+
+    ling = MagicMock()
+    ling.type_id = UnitTypeId.ZERGLING
+    ling.tag = 99
+    mz._macro_zerg_on_unit_created(ctx, ling)
+
+    ctx.mediator.assign_role.assert_called_with(
+        tag=99, role=ZERGLING_DEFENDER_ROLE
+    )
+
+
+def test_zergling_still_scouts_under_early_aggression() -> None:
+    """Opening scouts fill first even when early_aggression is already on."""
+    from bot.consts import ZERGLING_SCOUT_ROLE
+
+    ctx = _ctx()
+    ctx.state.early_aggression = True
+    ctx.bot.mediator = MagicMock()
+    ctx.mediator.get_units_from_role.return_value = []
+
+    ling = MagicMock()
+    ling.type_id = UnitTypeId.ZERGLING
+    ling.tag = 1
+    mz._macro_zerg_on_unit_created(ctx, ling)
+
+    ctx.mediator.assign_role.assert_called_with(
+        tag=1, role=ZERGLING_SCOUT_ROLE
+    )
+
 
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

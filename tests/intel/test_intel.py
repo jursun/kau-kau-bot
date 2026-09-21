@@ -284,6 +284,28 @@ def test_observe_early_aggression_worker_spike() -> None:
     assert early_aggression(ctx)
 
 
+def test_observe_early_aggression_scout_ling_contact() -> None:
+    """Opening ling scouts seeing pressure nearby latches defense mode."""
+    from bot.consts import ZERGLING_SCOUT_ROLE
+
+    ctx = _early_ctx([], time=90.0)
+    scout = MagicMock()
+    scout.tag = 9
+    scout.position = _point(50, 50)
+    enemy = _combat_unit(1, UnitTypeId.ZEALOT, 55, 50)
+    ctx.bot.mediator.get_cached_enemy_army = [enemy]
+
+    def get_units_from_role(*, role, unit_type):
+        if role == ZERGLING_SCOUT_ROLE and unit_type == UnitTypeId.ZERGLING:
+            return [scout]
+        return []
+
+    ctx.bot.mediator.get_units_from_role = get_units_from_role
+
+    assert observe_early_aggression(ctx) is True
+    assert early_aggression(ctx)
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failures = 0

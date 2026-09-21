@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from cython_extensions import cy_distance_to_squared
 from sc2.ids.unit_typeid import UnitTypeId
+from sc2.position import Point2
 from sc2.unit import Unit
 
 from ares.behaviors.macro.macro_behavior import MacroBehavior
@@ -121,7 +122,25 @@ class TrainQueens(MacroBehavior):
             )
             counts[nearest.tag] += 1
 
-        for th in sorted(townhalls, key=lambda th: counts[th.tag]):
+        # Tie-break among equal counts:
+        # - First queen (everyone at 0): prefer main.
+        # - Once every base has ≥1: prefer natural so the natural inject
+        #   lands as the 3rd queen (natural's first is the CREEP extra —
+        #   see `natural_extra_queen_tag`). Preferring main here put the
+        #   3rd at main and left natural without an injector.
+        min_count = min(counts.values()) if counts else 0
+        own_nat = getattr(mediator, "get_own_nat", None)
+        if min_count > 0 and isinstance(own_nat, Point2):
+            prefer = own_nat
+        else:
+            prefer = ai.start_location
+        for th in sorted(
+            townhalls,
+            key=lambda th: (
+                counts[th.tag],
+                cy_distance_to_squared(th.position, prefer),
+            ),
+        ):
             if counts[th.tag] >= self.max_per_townhall or not th.is_idle:
                 continue
             th.train(UnitTypeId.QUEEN)
