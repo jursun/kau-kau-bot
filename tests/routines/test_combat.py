@@ -2188,7 +2188,7 @@ def test_release_home_zerglings_after_early_noop_during_window() -> None:
     ctx.mediator.assign_role.assert_not_called()
 
 
-# --- cast_fungal_growth ----------------------------------------------------
+# --- micro_infestors ----------------------------------------------------
 
 
 def _enemy(tag: int, position: Point2) -> MagicMock:
@@ -2201,8 +2201,10 @@ def _infestor(tag: int, position: Point2, energy: float) -> MagicMock:
     unit = _unit(tag, position)
     unit.energy = energy
     # Real `Unit.is_using_ability` returns bool; a bare MagicMock() would
-    # be truthy by default and make every test look "already mid-cast".
+    # be truthy by default and make every test look "already mid-cast"
+    # (and every test look "already burrowed" for is_burrowed below).
     unit.is_using_ability = MagicMock(return_value=False)
+    unit.is_burrowed = False
     return unit
 
 
@@ -2237,16 +2239,16 @@ def test_best_fungal_clumps_reports_two_distinct_far_apart_balls() -> None:
     assert len(clumps) == 2
 
 
-def test_cast_fungal_growth_does_nothing_without_an_infestor() -> None:
+def test_micro_infestors_does_nothing_without_an_infestor() -> None:
     ctx = _ctx()
     ctx.mediator.get_units_from_role.return_value = []
 
-    combat.cast_fungal_growth()(ctx)
+    combat.micro_infestors()(ctx)
 
     ctx.bot.register_behavior.assert_not_called()
 
 
-def test_cast_fungal_growth_casts_on_a_clump_in_range() -> None:
+def test_micro_infestors_casts_fungal_on_a_clump_in_range() -> None:
     from bot.consts import INFESTOR_ROLE
 
     ctx = _ctx()
@@ -2263,12 +2265,19 @@ def test_cast_fungal_growth_casts_on_a_clump_in_range() -> None:
         _enemy(i, Point2((5.0 + i * 0.1, 0.0))) for i in range(4)
     ]
 
-    combat.cast_fungal_growth()(ctx)
+    combat.micro_infestors()(ctx)
 
     registered = ctx.bot.register_behavior.call_args.args[0]
-    casts = [b for b in registered.micros if isinstance(b, UseAbility)]
+    # Also gets a BURROWDOWN_INFESTOR order (enemies are within the wider
+    # burrow radius too) - that's expected, see test_micro_infestors_
+    # burrows_down_when_enemies_are_near; this test only cares about the
+    # Fungal decision.
+    casts = [
+        b
+        for b in registered.micros
+        if isinstance(b, UseAbility) and b.ability == AbilityId.FUNGALGROWTH_FUNGALGROWTH
+    ]
     assert len(casts) == 1
-    assert casts[0].ability == AbilityId.FUNGALGROWTH_FUNGALGROWTH
     assert casts[0].unit is infestor
     assert cy_distance_to(casts[0].target, clump_center) < 1.0
 
@@ -2276,7 +2285,7 @@ def test_cast_fungal_growth_casts_on_a_clump_in_range() -> None:
     assert isinstance(registered.micros[0], KeepUnitSafe)
 
 
-def test_cast_fungal_growth_paths_toward_an_out_of_range_clump() -> None:
+def test_micro_infestors_paths_toward_an_out_of_range_clump() -> None:
     from bot.consts import INFESTOR_ROLE
 
     ctx = _ctx()
@@ -2292,7 +2301,7 @@ def test_cast_fungal_growth_paths_toward_an_out_of_range_clump() -> None:
         _enemy(i, Point2((50.0 + i * 0.1, 0.0))) for i in range(4)
     ]
 
-    combat.cast_fungal_growth()(ctx)
+    combat.micro_infestors()(ctx)
 
     registered = ctx.bot.register_behavior.call_args.args[0]
     assert not [b for b in registered.micros if isinstance(b, UseAbility)]
@@ -2301,7 +2310,7 @@ def test_cast_fungal_growth_paths_toward_an_out_of_range_clump() -> None:
     assert paths[0].unit is infestor
 
 
-def test_cast_fungal_growth_skips_casting_below_energy_threshold() -> None:
+def test_micro_infestors_skips_fungal_below_energy_threshold() -> None:
     from bot.consts import INFESTOR_ROLE
 
     ctx = _ctx()
@@ -2316,13 +2325,19 @@ def test_cast_fungal_growth_skips_casting_below_energy_threshold() -> None:
         _enemy(i, Point2((5.0 + i * 0.1, 0.0))) for i in range(4)
     ]
 
-    combat.cast_fungal_growth()(ctx)
+    combat.micro_infestors()(ctx)
 
     registered = ctx.bot.register_behavior.call_args.args[0]
-    assert not [b for b in registered.micros if isinstance(b, UseAbility)]
+    # Burrowing down is unaffected by energy, so a BURROWDOWN_INFESTOR
+    # order is still expected here - only the Fungal cast itself is gated.
+    assert not [
+        b
+        for b in registered.micros
+        if isinstance(b, UseAbility) and b.ability == AbilityId.FUNGALGROWTH_FUNGALGROWTH
+    ]
 
 
-def test_cast_fungal_growth_two_infestors_split_across_two_clumps() -> None:
+def test_micro_infestors_two_infestors_split_across_two_clumps() -> None:
     """Regression test: without per-frame claiming, two in-range Infestors
     both dump Fungal on the biggest clump while a second real clump goes
     untouched."""
@@ -2342,14 +2357,14 @@ def test_cast_fungal_growth_two_infestors_split_across_two_clumps() -> None:
     clump_near_b = [_enemy(10 + i, Point2((-5.0 + i * 0.1, 0.0))) for i in range(4)]
     ctx.mediator.get_cached_enemy_army = clump_near_a + clump_near_b
 
-    combat.cast_fungal_growth()(ctx)
+    combat.micro_infestors()(ctx)
 
     calls = ctx.bot.register_behavior.call_args_list
     casts = [
         b
         for call in calls
         for b in call.args[0].micros
-        if isinstance(b, UseAbility)
+        if isinstance(b, UseAbility) and b.ability == AbilityId.FUNGALGROWTH_FUNGALGROWTH
     ]
     assert len(casts) == 2
     cast_units = {c.unit.tag for c in casts}
@@ -2358,7 +2373,7 @@ def test_cast_fungal_growth_two_infestors_split_across_two_clumps() -> None:
     assert cy_distance_to(targets[0], targets[1]) > 5.0
 
 
-def test_cast_fungal_growth_follows_squad_without_a_clump() -> None:
+def test_micro_infestors_follows_squad_without_a_clump() -> None:
     from bot.consts import INFESTOR_ROLE
 
     ctx = _ctx()
@@ -2377,7 +2392,7 @@ def test_cast_fungal_growth_follows_squad_without_a_clump() -> None:
     original = (targeting.rally_point, targeting.attack_target)
     targeting.attack_target = lambda _ctx, _pos: destination
     try:
-        combat.cast_fungal_growth()(ctx)
+        combat.micro_infestors()(ctx)
     finally:
         _restore_targeting(original)
 
@@ -2388,7 +2403,7 @@ def test_cast_fungal_growth_follows_squad_without_a_clump() -> None:
     assert moves[0].target == destination
 
 
-def test_cast_fungal_growth_does_not_reissue_an_in_progress_cast() -> None:
+def test_micro_infestors_does_not_reissue_an_in_progress_cast() -> None:
     """Regression test: confirmed live via a forced-clump debug scenario -
     without this guard, the routine recomputes the best clump every frame
     and reissues Fungal at a freshly-picked target before the local
@@ -2410,14 +2425,254 @@ def test_cast_fungal_growth_does_not_reissue_an_in_progress_cast() -> None:
         _enemy(i, Point2((5.0 + i * 0.1, 0.0))) for i in range(4)
     ]
 
-    combat.cast_fungal_growth()(ctx)
+    combat.micro_infestors()(ctx)
 
-    infestor.is_using_ability.assert_called_with(AbilityId.FUNGALGROWTH_FUNGALGROWTH)
+    infestor.is_using_ability.assert_called_with(
+        {AbilityId.FUNGALGROWTH_FUNGALGROWTH, AbilityId.NEURALPARASITE_NEURALPARASITE}
+    )
     registered = ctx.bot.register_behavior.call_args.args[0]
     assert not [b for b in registered.micros if isinstance(b, UseAbility)]
     assert not [b for b in registered.micros if isinstance(b, PathUnitToTarget)]
     # KeepUnitSafe is still the one thing that must always run.
     assert isinstance(registered.micros[0], KeepUnitSafe)
+
+
+# --- micro_infestors: burrow ------------------------------------------------
+
+
+def test_micro_infestors_burrows_down_when_enemies_are_near() -> None:
+    from bot.consts import INFESTOR_ROLE
+
+    ctx = _ctx()
+    ctx.mediator.get_ground_grid = "ground-grid"
+    ctx.mediator.get_squads.return_value = []
+
+    infestor = _infestor(9, Point2((0.0, 0.0)), energy=0)
+    ctx.mediator.get_units_from_role.side_effect = (
+        lambda role: [infestor] if role == INFESTOR_ROLE else []
+    )
+    # Outside Fungal range (10) and Neural range (9), inside the wider
+    # burrow radius (15) - isolates the burrow decision from casting.
+    ctx.mediator.get_cached_enemy_army = [_enemy(1, Point2((12.0, 0.0)))]
+
+    combat.micro_infestors()(ctx)
+
+    registered = ctx.bot.register_behavior.call_args.args[0]
+    burrows = [
+        b
+        for b in registered.micros
+        if isinstance(b, UseAbility) and b.ability == AbilityId.BURROWDOWN_INFESTOR
+    ]
+    assert len(burrows) == 1
+    assert burrows[0].unit is infestor
+    # KeepUnitSafe still runs first - not yet burrowed this frame.
+    assert isinstance(registered.micros[0], KeepUnitSafe)
+
+
+def test_micro_infestors_does_not_burrow_without_nearby_enemies() -> None:
+    from bot.consts import INFESTOR_ROLE
+
+    ctx = _ctx()
+    ctx.mediator.get_ground_grid = "ground-grid"
+    ctx.mediator.get_squads.return_value = []
+
+    infestor = _infestor(9, Point2((0.0, 0.0)), energy=0)
+    ctx.mediator.get_units_from_role.side_effect = (
+        lambda role: [infestor] if role == INFESTOR_ROLE else []
+    )
+    ctx.mediator.get_cached_enemy_army = [_enemy(1, Point2((100.0, 0.0)))]
+
+    combat.micro_infestors()(ctx)
+
+    registered = ctx.bot.register_behavior.call_args.args[0]
+    assert not [b for b in registered.micros if isinstance(b, UseAbility)]
+
+
+def test_micro_infestors_does_not_reissue_burrow_once_already_burrowed() -> None:
+    """Regression test for the same class of thrash `_does_not_reissue_an_
+    in_progress_cast` covers: once burrowed, `KeepUnitSafe` is skipped
+    (trusting burrow as the defense - see `micro_infestors`'s own
+    docstring) and burrow-down must not be reissued on an already-burrowed
+    unit."""
+    from bot.consts import INFESTOR_ROLE
+
+    ctx = _ctx()
+    ctx.mediator.get_ground_grid = "ground-grid"
+    ctx.mediator.get_squads.return_value = []
+
+    infestor = _infestor(9, Point2((0.0, 0.0)), energy=0)
+    infestor.is_burrowed = True
+    ctx.mediator.get_units_from_role.side_effect = (
+        lambda role: [infestor] if role == INFESTOR_ROLE else []
+    )
+    ctx.mediator.get_cached_enemy_army = [_enemy(1, Point2((12.0, 0.0)))]
+
+    combat.micro_infestors()(ctx)
+
+    registered = ctx.bot.register_behavior.call_args.args[0]
+    assert not registered.micros  # nothing to do: safe, burrowed, no energy
+
+
+# --- micro_infestors: Neural Parasite ---------------------------------------
+
+
+def _high_value_enemy(tag: int, position: Point2) -> MagicMock:
+    unit = _unit(tag, position)
+    unit.type_id = UnitTypeId.COLOSSUS  # any NEURAL_PARASITE_TARGET_TYPES member
+    return unit
+
+
+def test_micro_infestors_casts_neural_parasite_on_a_high_value_target() -> None:
+    from bot.consts import INFESTOR_ROLE
+
+    ctx = _ctx()
+    ctx.mediator.get_ground_grid = "ground-grid"
+    ctx.mediator.get_squads.return_value = []
+
+    infestor = _infestor(9, Point2((0.0, 0.0)), energy=100)
+    infestor.is_burrowed = True  # isolate from the burrow-down decision
+    ctx.mediator.get_units_from_role.side_effect = (
+        lambda role: [infestor] if role == INFESTOR_ROLE else []
+    )
+    target = _high_value_enemy(1, Point2((5.0, 0.0)))  # within range (9)
+    ctx.mediator.get_cached_enemy_army = [target]
+
+    combat.micro_infestors()(ctx)
+
+    registered = ctx.bot.register_behavior.call_args.args[0]
+    casts = [
+        b
+        for b in registered.micros
+        if isinstance(b, UseAbility)
+        and b.ability == AbilityId.NEURALPARASITE_NEURALPARASITE
+    ]
+    assert len(casts) == 1
+    assert casts[0].unit is infestor
+    assert casts[0].target is target
+    # No Fungal cast - a lone unit never clears FUNGAL_GROWTH_MIN_CLUMP.
+    assert not [
+        b
+        for b in registered.micros
+        if isinstance(b, UseAbility) and b.ability == AbilityId.FUNGALGROWTH_FUNGALGROWTH
+    ]
+
+
+def test_micro_infestors_ignores_low_value_enemies_for_neural_parasite() -> None:
+    from bot.consts import INFESTOR_ROLE
+
+    ctx = _ctx()
+    ctx.mediator.get_ground_grid = "ground-grid"
+    ctx.mediator.get_squads.return_value = []
+
+    infestor = _infestor(9, Point2((0.0, 0.0)), energy=100)
+    infestor.is_burrowed = True
+    ctx.mediator.get_units_from_role.side_effect = (
+        lambda role: [infestor] if role == INFESTOR_ROLE else []
+    )
+    # A Marine (not in NEURAL_PARASITE_TARGET_TYPES) well within range.
+    ctx.mediator.get_cached_enemy_army = [_enemy(1, Point2((5.0, 0.0)))]
+
+    combat.micro_infestors()(ctx)
+
+    registered = ctx.bot.register_behavior.call_args.args[0]
+    assert not [
+        b
+        for b in registered.micros
+        if isinstance(b, UseAbility)
+        and b.ability == AbilityId.NEURALPARASITE_NEURALPARASITE
+    ]
+
+
+def test_micro_infestors_prioritizes_neural_parasite_over_fungal_growth() -> None:
+    """When both a high-value target and a clump are in range, Neural
+    Parasite - the rarer, higher-impact opportunity - wins; Fungal is not
+    also cast the same frame."""
+    from bot.consts import INFESTOR_ROLE
+
+    ctx = _ctx()
+    ctx.mediator.get_ground_grid = "ground-grid"
+    ctx.mediator.get_squads.return_value = []
+
+    infestor = _infestor(9, Point2((0.0, 0.0)), energy=100)
+    infestor.is_burrowed = True
+    ctx.mediator.get_units_from_role.side_effect = (
+        lambda role: [infestor] if role == INFESTOR_ROLE else []
+    )
+    target = _high_value_enemy(1, Point2((5.0, 0.0)))
+    clump = [_enemy(10 + i, Point2((5.0 + i * 0.1, 0.0))) for i in range(4)]
+    ctx.mediator.get_cached_enemy_army = [target] + clump
+
+    combat.micro_infestors()(ctx)
+
+    registered = ctx.bot.register_behavior.call_args.args[0]
+    abilities_cast = {
+        b.ability for b in registered.micros if isinstance(b, UseAbility)
+    }
+    assert AbilityId.NEURALPARASITE_NEURALPARASITE in abilities_cast
+    assert AbilityId.FUNGALGROWTH_FUNGALGROWTH not in abilities_cast
+
+
+def test_micro_infestors_two_infestors_split_neural_targets() -> None:
+    """Regression test for the same claiming bug class as the Fungal clump
+    test: two in-range Infestors must not both Neural the same unit while
+    a second high-value target goes untouched. Infestors sit close
+    together, both targets within range of both, so range alone can't
+    account for a split - only per-frame claiming can."""
+    from bot.consts import INFESTOR_ROLE
+
+    ctx = _ctx()
+    ctx.mediator.get_ground_grid = "ground-grid"
+    ctx.mediator.get_squads.return_value = []
+
+    infestor_a = _infestor(9, Point2((0.0, 0.0)), energy=100)
+    infestor_a.is_burrowed = True
+    infestor_b = _infestor(10, Point2((0.0, 1.0)), energy=100)
+    infestor_b.is_burrowed = True
+    ctx.mediator.get_units_from_role.side_effect = (
+        lambda role: [infestor_a, infestor_b] if role == INFESTOR_ROLE else []
+    )
+    target_a = _high_value_enemy(1, Point2((5.0, 0.0)))
+    target_b = _high_value_enemy(2, Point2((-5.0, 0.0)))
+    ctx.mediator.get_cached_enemy_army = [target_a, target_b]
+
+    combat.micro_infestors()(ctx)
+
+    calls = ctx.bot.register_behavior.call_args_list
+    casts = [
+        b
+        for call in calls
+        for b in call.args[0].micros
+        if isinstance(b, UseAbility)
+        and b.ability == AbilityId.NEURALPARASITE_NEURALPARASITE
+    ]
+    assert len(casts) == 2
+    assert {c.target.tag for c in casts} == {1, 2}
+
+
+def test_micro_infestors_paths_toward_an_out_of_range_neural_target() -> None:
+    from bot.consts import INFESTOR_ROLE
+
+    ctx = _ctx()
+    ctx.mediator.get_ground_grid = "ground-grid"
+    ctx.mediator.get_squads.return_value = []
+
+    infestor = _infestor(9, Point2((0.0, 0.0)), energy=100)
+    infestor.is_burrowed = True
+    ctx.mediator.get_units_from_role.side_effect = (
+        lambda role: [infestor] if role == INFESTOR_ROLE else []
+    )
+    # Well past NEURAL_PARASITE_RANGE (9) and FUNGAL_GROWTH_RANGE (10).
+    target = _high_value_enemy(1, Point2((50.0, 0.0)))
+    ctx.mediator.get_cached_enemy_army = [target]
+
+    combat.micro_infestors()(ctx)
+
+    registered = ctx.bot.register_behavior.call_args.args[0]
+    assert not [b for b in registered.micros if isinstance(b, UseAbility)]
+    paths = [b for b in registered.micros if isinstance(b, PathUnitToTarget)]
+    assert len(paths) == 1
+    assert paths[0].unit is infestor
+    assert paths[0].target == target.position
 
 
 if __name__ == "__main__":

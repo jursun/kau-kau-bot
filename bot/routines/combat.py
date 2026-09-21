@@ -2033,19 +2033,84 @@ def _best_fungal_clumps(enemies: list[Unit]) -> list[Point2]:
     return clumps
 
 
-def cast_fungal_growth() -> CombatRoutine:
-    """Infestor: root/damage the biggest enemy clumps with Fungal Growth,
-    otherwise follow the biggest ATTACKING squad like `escort_corruptors`.
-    Kept out of `army.types` on its own `INFESTOR_ROLE` (see
+# Burrow once enemies are this close - comfortably outside Fungal's own 10
+# cast range so an Infestor is already stealthed by the time a fight
+# starts, not just once it's in casting distance. One-way: never forces
+# burrow-up. Unlike Roach (Tunneling Claws-gated), Infestor moves at near-
+# full speed while burrowed natively (confirmed via the unit's own data:
+# 3.15 unburrowed vs 2.8 burrowed), and both spells below can be cast
+# burrowed too - so there is no real cost to staying down once triggered,
+# and a bidirectional toggle would just thrash at the radius edge.
+INFESTOR_BURROW_NEAR_RADIUS: float = 15.0
+
+# Neural Parasite: 100 energy, 9 cast range (ladder values, confirmed via
+# web research alongside the target-type list below). Castable burrowed,
+# same as Fungal Growth.
+NEURAL_PARASITE_ENERGY_COST: float = 100.0
+NEURAL_PARASITE_RANGE: float = 9.0
+
+NEURAL_PARASITE_TARGET_TYPES: frozenset[UnitTypeId] = frozenset(
+    {
+        # Protoss
+        UnitTypeId.COLOSSUS,
+        UnitTypeId.DISRUPTOR,
+        UnitTypeId.IMMORTAL,
+        UnitTypeId.CARRIER,
+        UnitTypeId.TEMPEST,
+        UnitTypeId.HIGHTEMPLAR,
+        UnitTypeId.ARCHON,
+        UnitTypeId.VOIDRAY,
+        # Terran
+        UnitTypeId.SIEGETANK,
+        UnitTypeId.SIEGETANKSIEGED,
+        UnitTypeId.THOR,
+        UnitTypeId.THORAP,
+        UnitTypeId.BATTLECRUISER,
+        UnitTypeId.LIBERATOR,
+        UnitTypeId.LIBERATORAG,
+        UnitTypeId.GHOST,
+        UnitTypeId.RAVEN,
+        # Zerg
+        UnitTypeId.ULTRALISK,
+        UnitTypeId.BROODLORD,
+        UnitTypeId.VIPER,
+        UnitTypeId.LURKERMP,
+        UnitTypeId.LURKERMPBURROWED,
+        UnitTypeId.INFESTOR,
+    }
+)
+"""High-value enemy units worth mind-controlling for ~28s - casters and
+heavy hitters, not trash. `UnitTypeId.MOTHERSHIP` is deliberately excluded:
+confirmed via web research that Neural Parasite currently can't target
+Heroic units - that's the *only* current immunity. An older "no Massive
+units" restriction (which would have also excluded half this list -
+Colossus/Battlecruiser/Ultralisk/Carrier/Tempest are all Massive) was
+removed in a later balance patch, so those are valid targets again."""
+
+
+def micro_infestors() -> CombatRoutine:
+    """Infestor: burrow for safety once enemies are near, then spend
+    energy on the best opportunity - Neural Parasite on a high-value
+    target first (see `NEURAL_PARASITE_TARGET_TYPES`), Fungal Growth on
+    the biggest enemy clump otherwise - falling back to following the
+    biggest ATTACKING squad like `escort_corruptors` when nothing's in
+    range. Kept out of `army.types` on its own `INFESTOR_ROLE` (see
     `core.roles.SUPPORT_ROLES`) - a caster has no place in a muster/attack
     wave headcount.
 
-    Each frame, ready Infestors (enough energy, in range) claim the biggest
-    unclaimed clump within range, largest first via `_best_fungal_clumps`'s
-    own ordering, so two Infestors don't both dump Fungal on the same spot
-    while a second real clump sits untouched. An Infestor with energy but no
-    clump in range yet walks toward the biggest one instead of just
-    following the squad, so it's in position by the time it recharges.
+    `KeepUnitSafe` only runs while *not* burrowed - once burrowed near the
+    enemy, this trusts the burrow itself as the defense rather than
+    fleeing, which would just expose it again. See
+    `INFESTOR_BURROW_NEAR_RADIUS`'s own comment for why burrowing is
+    one-way. Burrowing is checked ahead of casting so a freshly-arrived
+    Infestor gets to safety before it starts spending energy, not after.
+
+    Each frame, ready Infestors claim the best unclaimed opportunity in
+    range - a Neural target first, then a Fungal clump, both largest/
+    highest-value first - so multiple Infestors spread across distinct
+    targets instead of piling onto the same one. An Infestor with energy
+    but nothing in range walks toward its best opportunity instead of
+    idling, so it's in position by the time it recharges.
     """
 
     def routine(ctx: "BotContext") -> None:
@@ -2061,42 +2126,91 @@ def cast_fungal_growth() -> CombatRoutine:
             biggest = max(squads, key=lambda squad: len(squad.squad_units))
             follow_target = targeting.squad_destination(ctx, biggest.squad_position)
 
-        clumps = _best_fungal_clumps(enemy_army(ctx))
+        enemies = enemy_army(ctx)
+        clumps = _best_fungal_clumps(enemies)
+        neural_candidates = [
+            e for e in enemies if e.type_id in NEURAL_PARASITE_TARGET_TYPES
+        ]
         grid = ctx.mediator.get_ground_grid
-        claimed: set[int] = set()
+        claimed_clumps: set[int] = set()
+        claimed_neural: set[int] = set()  # enemy tags
         for infestor in infestors:
             maneuver = CombatManeuver()
-            maneuver.add(KeepUnitSafe(unit=infestor, grid=grid))
 
-            # Already mid-cast: leave it be. Local `energy`/target-clump
-            # state only updates on the next observation, so re-evaluating
-            # every frame while a cast is resolving keeps re-issuing Fungal
-            # at a freshly-recomputed target and cancels the one already in
-            # flight - confirmed live via a forced-clump scenario (16
+            # Already mid-cast: leave it be. Local `energy`/target state
+            # only updates on the next observation, so re-evaluating every
+            # frame while a cast is resolving keeps re-issuing the spell
+            # at a freshly-recomputed target and cancels the one already
+            # in flight - confirmed live via a forced-clump scenario (16
             # redundant re-casts logged across ~1.6s before the energy
-            # drop was even visible).
-            if infestor.is_using_ability(AbilityId.FUNGALGROWTH_FUNGALGROWTH):
+            # drop was even visible). KeepUnitSafe is added first and
+            # checked regardless - a mid-cast Infestor should still be
+            # able to flee mortal danger even if that costs the cast.
+            burrowed = infestor.is_burrowed
+            if not burrowed:
+                maneuver.add(KeepUnitSafe(unit=infestor, grid=grid))
+
+            if infestor.is_using_ability(
+                {AbilityId.FUNGALGROWTH_FUNGALGROWTH, AbilityId.NEURALPARASITE_NEURALPARASITE}
+            ):
                 ctx.bot.register_behavior(maneuver)
                 continue
 
-            has_energy = infestor.energy >= FUNGAL_GROWTH_ENERGY_COST
-            cast_target = None
-            if has_energy:
+            near_enemies = any(
+                cy_distance_to(infestor.position, e.position)
+                <= INFESTOR_BURROW_NEAR_RADIUS
+                for e in enemies
+            )
+            if near_enemies and not burrowed:
+                maneuver.add(UseAbility(AbilityId.BURROWDOWN_INFESTOR, infestor))
+
+            has_neural_energy = infestor.energy >= NEURAL_PARASITE_ENERGY_COST
+            neural_target = None
+            if has_neural_energy:
+                in_range = [
+                    e
+                    for e in neural_candidates
+                    if e.tag not in claimed_neural
+                    and cy_distance_to(infestor.position, e.position)
+                    <= NEURAL_PARASITE_RANGE
+                ]
+                if in_range:
+                    neural_target = cy_closest_to(
+                        position=infestor.position, units=in_range
+                    )
+                    claimed_neural.add(neural_target.tag)
+
+            has_fungal_energy = infestor.energy >= FUNGAL_GROWTH_ENERGY_COST
+            fungal_target = None
+            if neural_target is None and has_fungal_energy:
                 for index, clump in enumerate(clumps):
-                    if index in claimed:
+                    if index in claimed_clumps:
                         continue
                     if cy_distance_to(infestor.position, clump) <= FUNGAL_GROWTH_RANGE:
-                        cast_target = clump
-                        claimed.add(index)
+                        fungal_target = clump
+                        claimed_clumps.add(index)
                         break
 
-            if cast_target is not None:
+            if neural_target is not None:
                 maneuver.add(
                     UseAbility(
-                        AbilityId.FUNGALGROWTH_FUNGALGROWTH, infestor, cast_target
+                        AbilityId.NEURALPARASITE_NEURALPARASITE, infestor, neural_target
                     )
                 )
-            elif has_energy and clumps:
+            elif fungal_target is not None:
+                maneuver.add(
+                    UseAbility(
+                        AbilityId.FUNGALGROWTH_FUNGALGROWTH, infestor, fungal_target
+                    )
+                )
+            elif has_neural_energy and neural_candidates:
+                closest = cy_closest_to(
+                    position=infestor.position, units=neural_candidates
+                )
+                maneuver.add(
+                    PathUnitToTarget(unit=infestor, grid=grid, target=closest.position)
+                )
+            elif has_fungal_energy and clumps:
                 maneuver.add(PathUnitToTarget(unit=infestor, grid=grid, target=clumps[0]))
             elif follow_target is not None:
                 maneuver.add(

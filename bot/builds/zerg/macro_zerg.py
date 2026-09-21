@@ -1214,6 +1214,13 @@ BUILD = BuildDefinition(
             UpgradeId.ZERGGROUNDARMORSLEVEL2,
             UpgradeId.ZERGMISSILEWEAPONSLEVEL3,
             UpgradeId.ZERGGROUNDARMORSLEVEL3,
+            # Last, deliberately: situational Infestor utility, not a
+            # force-wide stat upgrade - only worth its slot once everything
+            # above is already done/in progress. Researches from Infestation
+            # Pit (`UpgradeController` auto-techs there like any other entry
+            # here, though in practice it's already up by this point in the
+            # list - see the dedicated `z.tech_up(INFESTATIONPIT, ...)` step).
+            UpgradeId.NEURALPARASITE,
         ),
         # Second Evo from 5:00 so ground +1/+1 can research in parallel.
         evolution_chambers=2,
@@ -1256,7 +1263,7 @@ BUILD = BuildDefinition(
                 min_engage_range=_ROACH_MIN_ENGAGE_RANGE,
             ),
             combat.escort_corruptors(),
-            combat.cast_fungal_growth(),
+            combat.micro_infestors(),
             overseer_routines.manage_overseers(),
             creep.spread_creep(),
             creep.spread_tumors(),
