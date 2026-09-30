@@ -786,6 +786,199 @@ def test_streamed_reinforcements_go_straight_to_the_front_otherwise() -> None:
     assert not ctx.state.mustering_tags
 
 
+# ── Ground squads ignore air they cannot shoot; idle attackers re-engage ───
+
+
+def _ground_unit(tag: int, position: Point2) -> MagicMock:
+    unit = _unit(tag, position)
+    unit.can_attack_air = False  # Roach / Zergling
+    unit.is_flying = False
+    return unit
+
+
+def _flyer(tag: int, position: Point2) -> MagicMock:
+    unit = _unit(tag, position)
+    unit.is_flying = True
+    return unit
+
+
+def test_attackable_drops_air_when_the_squad_cannot_hit_it() -> None:
+    ours = [_ground_unit(1, Point2((0.0, 0.0)))]
+    ground = _unit(90, Point2((1.0, 1.0)))
+    ground.is_flying = False
+    air = _flyer(91, Point2((2.0, 2.0)))
+
+    assert combat._attackable([ground, air], ours) == [ground]
+
+
+def test_attackable_keeps_air_when_something_in_the_squad_hits_air() -> None:
+    queen = _ground_unit(1, Point2((0.0, 0.0)))
+    queen.can_attack_air = True
+    air = _flyer(91, Point2((2.0, 2.0)))
+
+    assert combat._attackable([air], [queen]) == [air]
+
+
+def test_a_hovering_flyer_does_not_switch_off_the_structure_fan_out() -> None:
+    """Regression test: live, Roaches stood idle inside the enemy main with
+    buildings all around. An Observer / Warp Prism / Stargate unit within
+    range counted as "enemy army nearby", which skipped the per-unit
+    walk-to-nearest-structure branch and aimed the group attack-move at
+    units Roaches can never hit."""
+    rally = Point2((50.0, 50.0))
+    attack = Point2((999.0, 999.0))
+    original = _patch_targeting(rally, attack)
+    try:
+        ctx = _ctx()
+        units = [_ground_unit(1, Point2((200.0, 200.0)))]
+        observer = _flyer(90, Point2((203.0, 200.0)))
+        structure = _unit(91, Point2((206.0, 200.0)))
+        structure.is_structure = True
+        structure.is_flying = False
+        ctx.mediator.get_units_from_role.return_value = units
+        ctx.mediator.get_cached_enemy_army = [observer]
+        ctx.mediator.get_units_in_range.return_value = [[structure]]
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+
+        combat.attack_squads(fall_back_ratio=0.55)(ctx)
+
+        micros = [
+            m
+            for c in ctx.bot.register_behavior.call_args_list
+            for m in c.args[0].micros
+        ]
+        assert not any(isinstance(m, StutterGroupForward) for m in micros)
+        amoves = [m for m in micros if isinstance(m, AMove)]
+        assert len(amoves) == 1
+        assert amoves[0].target == structure.position
+    finally:
+        _restore_targeting(original)
+
+
+def test_air_still_counts_as_a_threat_for_fall_back() -> None:
+    """We cannot shoot it, but it shoots us - air supply near an outmatched
+    squad still triggers the fall-back."""
+    original = _patch_targeting(Point2((50.0, 50.0)), Point2((999.0, 999.0)))
+    try:
+        ctx = _ctx()
+        ctx.bot.time = 100.0
+        ctx.bot.townhalls = []
+        units = [_ground_unit(1, Point2((200.0, 200.0)))]
+        flyers = [_flyer(90 + i, Point2((203.0, 200.0 + i))) for i in range(4)]
+        ctx.mediator.get_units_from_role.return_value = units
+        ctx.mediator.get_cached_enemy_army = flyers
+        ctx.mediator.get_units_in_range.return_value = [[]]
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+
+        combat.attack_squads(fall_back_ratio=0.55)(ctx)
+
+        assert ctx.state.falling_back_tags == {1}
+    finally:
+        _restore_targeting(original)
+
+
+def _idle_attacker(tag: int, position: Point2) -> MagicMock:
+    unit = _unit(tag, position)
+    unit.type_id = UnitTypeId.ROACH
+    unit.is_idle = True
+    unit.orders = []
+    unit.health_percentage = 1.0
+    return unit
+
+
+def _idle_ctx(units, structures=()):
+    ctx = _ctx()
+    ctx.bot.time = 400.0
+    ctx.bot.state.upgrades = set()
+    ctx.units_in_role = MagicMock(return_value=list(units))
+    ctx.bot.enemy_structures = list(structures)
+    return ctx
+
+
+def test_engage_idle_attackers_hits_the_nearest_visible_ground_enemy() -> None:
+    idle = _idle_attacker(1, Point2((50.0, 50.0)))
+    near = _unit(90, Point2((55.0, 50.0)))
+    far = _unit(91, Point2((70.0, 50.0)))
+    ctx = _idle_ctx([idle])
+    ctx.mediator.get_units_in_range.return_value = [[far, near]]
+
+    combat.engage_idle_attackers()(ctx)
+
+    idle.attack.assert_called_once_with(near)
+
+
+def test_engage_idle_attackers_falls_back_to_the_nearest_known_structure() -> None:
+    idle = _idle_attacker(1, Point2((50.0, 50.0)))
+    near = _unit(90, Point2((80.0, 50.0)))
+    far = _unit(91, Point2((150.0, 50.0)))
+    ctx = _idle_ctx([idle], structures=[far, near])
+    ctx.mediator.get_units_in_range.return_value = [[]]
+
+    combat.engage_idle_attackers()(ctx)
+
+    idle.attack.assert_called_once_with(near)
+
+
+def test_engage_idle_attackers_uses_the_squad_destination_as_a_last_resort() -> None:
+    idle = _idle_attacker(1, Point2((50.0, 50.0)))
+    ctx = _idle_ctx([idle])
+    ctx.mediator.get_units_in_range.return_value = [[]]
+    dest = Point2((200.0, 200.0))
+
+    with patch.object(combat.targeting, "squad_destination", return_value=dest):
+        combat.engage_idle_attackers()(ctx)
+
+    idle.attack.assert_called_once_with(dest)
+
+
+def test_engage_idle_attackers_leaves_busy_and_held_units_alone() -> None:
+    busy = _idle_attacker(1, Point2((50.0, 50.0)))
+    busy.is_idle = False
+    busy.orders = [MagicMock()]
+    mustering = _idle_attacker(2, Point2((50.0, 50.0)))
+    falling_back = _idle_attacker(3, Point2((50.0, 50.0)))
+    burrowed = _idle_attacker(4, Point2((50.0, 50.0)))
+    burrowed.type_id = UnitTypeId.ROACHBURROWED
+    ctx = _idle_ctx([busy, mustering, falling_back, burrowed])
+    ctx.state.mustering_tags = {2}
+    ctx.state.falling_back_tags = {3}
+    ctx.mediator.get_units_in_range.return_value = [[_unit(90, Point2((55.0, 50.0)))]]
+
+    combat.engage_idle_attackers()(ctx)
+
+    for unit in (busy, mustering, falling_back, burrowed):
+        unit.attack.assert_not_called()
+
+
+def test_engage_idle_attackers_skips_roaches_about_to_regen_burrow() -> None:
+    hurt = _idle_attacker(1, Point2((50.0, 50.0)))
+    hurt.health_percentage = 0.1
+    ctx = _idle_ctx([hurt])
+    ctx.bot.state.upgrades = {UpgradeId.BURROW}
+    ctx.mediator.get_units_in_range.return_value = [[_unit(90, Point2((55.0, 50.0)))]]
+
+    combat.engage_idle_attackers()(ctx)
+
+    hurt.attack.assert_not_called()
+
+
+def test_engage_idle_attackers_respects_its_interval() -> None:
+    idle = _idle_attacker(1, Point2((50.0, 50.0)))
+    ctx = _idle_ctx([idle])
+    ctx.mediator.get_units_in_range.return_value = [[_unit(90, Point2((55.0, 50.0)))]]
+    routine = combat.engage_idle_attackers(interval_s=3.0)
+
+    routine(ctx)
+    idle.attack.reset_mock()
+    ctx.bot.time = 401.0
+    routine(ctx)
+    idle.attack.assert_not_called()
+
+    ctx.bot.time = 404.0
+    routine(ctx)
+    idle.attack.assert_called_once()
+
+
 # ── kite_types: Roach kites, Zergling still commits (never_retreat) ────────
 
 

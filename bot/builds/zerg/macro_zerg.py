@@ -1272,6 +1272,7 @@ BUILD = BuildDefinition(
                 kite_types=frozenset({UnitTypeId.ROACH}),
                 min_engage_range=_ROACH_MIN_ENGAGE_RANGE,
             ),
+            combat.engage_idle_attackers(),
             combat.escort_corruptors(),
             combat.micro_infestors(),
             overseer_routines.manage_overseers(),

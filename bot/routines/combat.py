@@ -372,6 +372,22 @@ def _our_force_larger(ctx: "BotContext", ours, theirs) -> bool:
     return _combat_force_supply(ctx, theirs) < _combat_force_supply(ctx, ours)
 
 
+def _attackable(units, our_units) -> list:
+    """`units` that `our_units` can actually shoot: flying enemies are dropped
+    unless something in the squad hits air (Roach and Zergling do not).
+
+    `bot.intel.enemy_army` includes air, and treating an Observer / Warp
+    Prism / Stargate unit hovering nearby as "enemy army in range" both
+    switched off `attack_squads`' per-unit structure fan-out and pointed the
+    group attack-move at the centre of units the squad cannot touch - Roaches
+    then stood idle in the enemy main with buildings all around. Still fine
+    to count air in *threat* comparisons (fall-back); it kills us either way.
+    """
+    if any(getattr(u, "can_attack_air", False) for u in our_units):
+        return list(units)
+    return [u for u in units if not u.is_flying]
+
+
 # ── Squad fall-back (`attack_squads(fall_back_ratio=...)`) ─────────────────
 #
 # For a build with the economy to remax (Macro Zerg): trade army
@@ -1250,11 +1266,13 @@ def attack_squads(
                 ctx.state.mustering_tags -= mustering
                 mustering = set()
 
-            close_army = _intel_army_near(ctx, position, SQUAD_ENGAGE_RANGE)
+            close_army_all = _intel_army_near(ctx, position, SQUAD_ENGAGE_RANGE)
             if fall_back_ratio is not None and _handle_fall_back(
-                ctx, squad, close_army, mustering, rally, fall_back_ratio
+                ctx, squad, close_army_all, mustering, rally, fall_back_ratio
             ):
                 continue
+            # Everything below is about what this squad can shoot.
+            close_army = _attackable(close_army_all, squad.squad_units)
             close_enemy = close_army or _enemies_near(
                 ctx, position, SQUAD_ENGAGE_RANGE
             )
@@ -1874,6 +1892,59 @@ def nudge_idle_army(
         for unit in idle:
             unit.attack(dest)
         ctx.log(f"ARMY_IDLE nudged {len(idle)} -> ({dest.x:.0f},{dest.y:.0f})")
+
+    return routine
+
+
+IDLE_ENGAGE_RADIUS: float = 30.0
+"""How far an idle attacker looks for something to shoot."""
+
+
+def engage_idle_attackers(
+    interval_s: float = ARMY_IDLE_CHECK_INTERVAL_S,
+) -> CombatRoutine:
+    """Safety net for ground armies: an ATTACKING unit with no orders goes
+    and attacks something, instead of standing there.
+
+    Unlike `nudge_idle_army` (Chargelot staging; re-sends the army
+    destination), this retargets: the nearest visible ground enemy within
+    `IDLE_ENGAGE_RADIUS`, else the nearest known enemy structure anywhere,
+    else the squad destination. An idle unit that is already *at* the
+    destination point would just be told to attack-move where it stands.
+
+    Leaves alone anything mustering / falling back (their hold is
+    deliberate) and Roaches digging in to regen (`regen_burrow_roaches`).
+    """
+
+    def routine(ctx: "BotContext") -> None:
+        last = ctx.state.army_idle_check_at
+        if last is not None and ctx.bot.time - last < interval_s:
+            return
+        ctx.state.army_idle_check_at = ctx.bot.time
+
+        protected = ctx.state.mustering_tags | ctx.state.falling_back_tags
+        idle = [
+            u
+            for u in ctx.units_in_role(UnitRole.ATTACKING)
+            if u.tag not in protected
+            and u.type_id != UnitTypeId.ROACHBURROWED
+            and _attacker_needs_work(u)
+            and not _roach_wants_regen_burrow(ctx, u)
+        ]
+        if not idle:
+            return
+
+        structures = ctx.bot.enemy_structures
+        for unit in idle:
+            nearby = _enemies_near(ctx, unit.position, IDLE_ENGAGE_RADIUS)
+            if nearby:
+                target = cy_closest_to(position=unit.position, units=nearby)
+            elif structures:
+                target = cy_closest_to(position=unit.position, units=structures)
+            else:
+                target = targeting.squad_destination(ctx, unit.position)
+            unit.attack(target)
+        ctx.log(f"ARMY_IDLE engaged {len(idle)} idle attackers")
 
     return routine
 
