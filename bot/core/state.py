@@ -162,6 +162,17 @@ class RunState:
     """Unit tags currently backing off under `_kite_maneuver` hysteresis
     (enter peel below `min_engage_range`, stay peeled until past
     `resume_range`) - stops oscillate at the engage boundary."""
+    falling_back_tags: set[int] = field(default_factory=set)
+    """ATTACKING units running back to the rally point because their squad
+    was outmatched (`attack_squads(fall_back_ratio=...)`). Cleared on
+    arrival, when they hand over to `mustering_tags`."""
+    regroup_enemy_supply: float | None = None
+    """Enemy supply that forced the last fall-back; None when no regroup is
+    pending. While set, squads holding at the rally wait until they are big
+    enough to re-push (or `REGROUP_MAX_HOLD_S` passes), and streamed
+    reinforcements muster there instead of trickling to the front."""
+    regroup_since: float = 0.0
+    """Game time the pending regroup started."""
     defender_hold: dict[int, Point2] = field(default_factory=dict)
     """DEFENDING unit tag → sticky hold Point2 (matched to live holds by
     nearest, not list index — townhall iteration order is unstable)."""

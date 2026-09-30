@@ -130,7 +130,7 @@ class Combat:
     influence (`KeepGroupSafe`/`KeepUnitSafe`, the default `attack_squads()`
     path), since a unit stuck there anyway means the retreat itself failed.
     It doesn't apply to a build whose combat routines pass `attack_squads(
-    never_retreat=True)`/`kite_types=...` deliberately (Macro Zerg's Roach/
+    never_retreat=True)`/`fall_back_ratio=...`/`kite_types=...` deliberately (Macro Zerg's Roach/
     Zergling - see that call site's own comment): those units are *supposed*
     to stand on bad ground and keep fighting rather than flee it, so every
     frame of a real, sustained engagement reads as a "parking" violation -

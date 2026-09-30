@@ -540,6 +540,252 @@ def test_never_retreat_falls_back_to_amove_with_no_close_enemy() -> None:
         _restore_targeting(original)
 
 
+# ── Attack squads: fall_back_ratio (fight inefficiently, don't feed) ───────
+
+FAR_FROM_HOME = Point2((200.0, 200.0))  # well outside FALL_BACK_HOME_RADIUS
+
+
+def _fall_back_setup(
+    our_count: int, enemy_count: int, at: Point2 = FAR_FROM_HOME
+):
+    """A squad of `our_count` 1-supply units at `at`, `enemy_count` enemies
+    right next to it (1 supply each in the fake), rally at (50, 50)."""
+    ctx = _ctx()
+    ctx.bot.time = 100.0
+    ctx.bot.townhalls = []
+    units = [_unit(i, Point2((at.x + i, at.y))) for i in range(1, our_count + 1)]
+    enemies = [
+        _unit(90 + i, Point2((at.x + 4.0, at.y + i))) for i in range(enemy_count)
+    ]
+    ctx.mediator.get_units_from_role.return_value = units
+    ctx.mediator.get_cached_enemy_army = enemies
+    ctx.mediator.get_units_in_range.return_value = [enemies]
+    ctx.mediator.get_squads.return_value = [_squad(units)]
+    return ctx, units
+
+
+def _all_micros(ctx) -> list:
+    return [
+        m
+        for c in ctx.bot.register_behavior.call_args_list
+        for m in c.args[0].micros
+    ]
+
+
+def test_outmatched_is_a_strict_ratio_of_supply() -> None:
+    assert combat._outmatched(10.0, 20.0, 0.55)  # 10 < 11
+    assert not combat._outmatched(11.0, 20.0, 0.55)  # exactly at the line
+    assert not combat._outmatched(5.0, 0.0, 0.55)  # no enemy, nothing to fear
+
+
+def test_fall_back_moves_the_whole_squad_to_the_rally_when_outmatched() -> None:
+    rally = Point2((50.0, 50.0))
+    original = _patch_targeting(rally, Point2((999.0, 999.0)))
+    try:
+        ctx, units = _fall_back_setup(our_count=2, enemy_count=5)
+
+        combat.attack_squads(fall_back_ratio=0.55)(ctx)
+
+        micros = _all_micros(ctx)
+        moves = [m for m in micros if isinstance(m, combat._Move)]
+        assert {m.unit.tag for m in moves} == {1, 2}
+        assert all(m.target == rally for m in moves)
+        assert not any(isinstance(m, StutterGroupForward) for m in micros)
+        assert not any(isinstance(m, AMoveGroup) for m in micros)
+        assert ctx.state.falling_back_tags == {1, 2}
+        assert ctx.state.regroup_enemy_supply == 5.0
+        assert ctx.state.regroup_since == 100.0
+    finally:
+        _restore_targeting(original)
+
+
+def test_fall_back_does_not_trigger_above_the_ratio() -> None:
+    """Zerg trades inefficiently: 3 vs 5 supply (0.6) is above 0.55 - fight."""
+    original = _patch_targeting(Point2((50.0, 50.0)), Point2((999.0, 999.0)))
+    try:
+        ctx, _ = _fall_back_setup(our_count=3, enemy_count=5)
+
+        combat.attack_squads(fall_back_ratio=0.55)(ctx)
+
+        micros = _all_micros(ctx)
+        assert any(isinstance(m, StutterGroupForward) for m in micros)
+        assert not any(isinstance(m, combat._Move) for m in micros)
+        assert not ctx.state.falling_back_tags
+        assert ctx.state.regroup_enemy_supply is None
+    finally:
+        _restore_targeting(original)
+
+
+def test_fall_back_never_uses_influence_retreat() -> None:
+    """The reason `never_retreat` existed: KeepGroupSafe/KeepUnitSafe let one
+    mid-cooldown unit peel the whole squad off the fight. `fall_back_ratio`
+    replaces the flag for Macro Zerg, so it must not bring that back."""
+    original = _patch_targeting(Point2((50.0, 50.0)), Point2((999.0, 999.0)))
+    try:
+        ctx, _ = _fall_back_setup(our_count=3, enemy_count=5)
+
+        combat.attack_squads(fall_back_ratio=0.55, min_engage_range=3.0)(ctx)
+
+        micros = _all_micros(ctx)
+        assert not any(isinstance(m, KeepGroupSafe) for m in micros)
+        assert not any(isinstance(m, KeepUnitSafe) for m in micros)
+    finally:
+        _restore_targeting(original)
+
+
+def test_fall_back_fights_when_already_near_home() -> None:
+    """Outmatched, but within FALL_BACK_HOME_RADIUS of the rally - Queens,
+    Spines and reinforcements are here, so there is nowhere better to be."""
+    rally = Point2((50.0, 50.0))
+    original = _patch_targeting(rally, Point2((999.0, 999.0)))
+    try:
+        ctx, _ = _fall_back_setup(
+            our_count=2, enemy_count=5, at=Point2((60.0, 60.0))
+        )
+
+        combat.attack_squads(fall_back_ratio=0.55)(ctx)
+
+        micros = _all_micros(ctx)
+        assert not any(isinstance(m, combat._Move) for m in micros)
+        assert any(isinstance(m, StutterGroupForward) for m in micros)
+        assert not ctx.state.falling_back_tags
+    finally:
+        _restore_targeting(original)
+
+
+def test_fall_back_counts_neighbouring_attackers_not_just_the_squad() -> None:
+    """A ball split into two clusters is one force: the half in contact must
+    not run just because it is the smaller half."""
+    original = _patch_targeting(Point2((50.0, 50.0)), Point2((999.0, 999.0)))
+    try:
+        ctx, units = _fall_back_setup(our_count=2, enemy_count=5)
+        neighbours = [
+            _unit(50 + i, Point2((FAR_FROM_HOME.x - 12.0, FAR_FROM_HOME.y)))
+            for i in range(3)
+        ]
+        ctx.mediator.get_units_from_role.return_value = units + neighbours
+
+        combat.attack_squads(fall_back_ratio=0.55)(ctx)  # 5 vs 5, not 2 vs 5
+
+        assert not any(isinstance(m, combat._Move) for m in _all_micros(ctx))
+    finally:
+        _restore_targeting(original)
+
+
+def test_fall_back_keeps_running_until_home_even_after_losing_contact() -> None:
+    rally = Point2((50.0, 50.0))
+    original = _patch_targeting(rally, Point2((999.0, 999.0)))
+    try:
+        ctx, units = _fall_back_setup(our_count=2, enemy_count=0)
+        ctx.state.falling_back_tags = {1, 2}
+        ctx.state.regroup_enemy_supply = 5.0
+
+        combat.attack_squads(fall_back_ratio=0.55)(ctx)
+
+        moves = [m for m in _all_micros(ctx) if isinstance(m, combat._Move)]
+        assert {m.unit.tag for m in moves} == {1, 2}
+        assert all(m.target == rally for m in moves)
+    finally:
+        _restore_targeting(original)
+
+
+def test_fall_back_hands_over_to_the_muster_hold_on_arrival() -> None:
+    rally = Point2((50.0, 50.0))
+    original = _patch_targeting(rally, Point2((999.0, 999.0)))
+    try:
+        ctx, units = _fall_back_setup(our_count=2, enemy_count=0, at=rally)
+        ctx.state.falling_back_tags = {1, 2}
+        ctx.state.regroup_enemy_supply = 5.0
+
+        combat.attack_squads(fall_back_ratio=0.55)(ctx)
+
+        assert not ctx.state.falling_back_tags
+        assert ctx.state.mustering_tags == {1, 2}
+        # Handover frame issues nothing - no one-frame AMove back to the front.
+        ctx.bot.register_behavior.assert_not_called()
+    finally:
+        _restore_targeting(original)
+
+
+def test_regroup_holds_at_the_rally_until_big_enough() -> None:
+    """Squad of 2 at the rally; the army that beat it was 10 supply, so it
+    needs 8.5 before re-pushing. It stays mustering."""
+    rally = Point2((50.0, 50.0))
+    original = _patch_targeting(rally, Point2((999.0, 999.0)))
+    try:
+        ctx, units = _fall_back_setup(our_count=2, enemy_count=0, at=rally)
+        ctx.state.mustering_tags = {1, 2}
+        ctx.state.regroup_enemy_supply = 10.0
+        ctx.state.regroup_since = 90.0
+
+        combat.attack_squads(fall_back_ratio=0.55)(ctx)
+
+        assert ctx.state.mustering_tags == {1, 2}
+        assert ctx.state.regroup_enemy_supply == 10.0
+    finally:
+        _restore_targeting(original)
+
+
+def test_regroup_releases_once_big_enough() -> None:
+    rally = Point2((50.0, 50.0))
+    original = _patch_targeting(rally, Point2((999.0, 999.0)))
+    try:
+        # x = 46..54, so the squad centroid sits on the rally point.
+        ctx, units = _fall_back_setup(
+            our_count=9, enemy_count=0, at=Point2((45.0, 50.0))
+        )
+        ctx.state.mustering_tags = {u.tag for u in units}
+        ctx.state.regroup_enemy_supply = 10.0  # needs 8.5; we have 9
+        ctx.state.regroup_since = 90.0
+
+        combat.attack_squads(fall_back_ratio=0.55)(ctx)
+
+        assert not ctx.state.mustering_tags
+        assert ctx.state.regroup_enemy_supply is None
+    finally:
+        _restore_targeting(original)
+
+
+def test_regroup_releases_after_the_max_hold_even_if_small() -> None:
+    rally = Point2((50.0, 50.0))
+    original = _patch_targeting(rally, Point2((999.0, 999.0)))
+    try:
+        ctx, units = _fall_back_setup(our_count=2, enemy_count=0, at=rally)
+        ctx.state.mustering_tags = {1, 2}
+        ctx.state.regroup_enemy_supply = 40.0
+        ctx.state.regroup_since = 100.0 - combat.REGROUP_MAX_HOLD_S
+
+        combat.attack_squads(fall_back_ratio=0.55)(ctx)
+
+        assert not ctx.state.mustering_tags
+        assert ctx.state.regroup_enemy_supply is None
+    finally:
+        _restore_targeting(original)
+
+
+def test_streamed_reinforcements_muster_while_a_regroup_is_pending() -> None:
+    ctx = _ctx()
+    ctx.state.wave_number = 1
+    ctx.state.regroup_enemy_supply = 10.0
+    fresh = [_unit(7), _unit(8)]
+    ctx.mediator.get_units_from_role.return_value = fresh
+
+    combat.release_first_wave_then_stream()(ctx)
+
+    assert ctx.state.mustering_tags == {7, 8}
+
+
+def test_streamed_reinforcements_go_straight_to_the_front_otherwise() -> None:
+    ctx = _ctx()
+    ctx.state.wave_number = 1
+    fresh = [_unit(7), _unit(8)]
+    ctx.mediator.get_units_from_role.return_value = fresh
+
+    combat.release_first_wave_then_stream()(ctx)
+
+    assert not ctx.state.mustering_tags
+
+
 # ── kite_types: Roach kites, Zergling still commits (never_retreat) ────────
 
 

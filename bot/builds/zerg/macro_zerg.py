@@ -1153,12 +1153,20 @@ def _macro_zerg_on_step(ctx) -> None:
 # but deliberately passed via `attack_squads`' `kite_types` (no influence
 # grid) rather than its `min_engage_range` alone - see that parameter's own
 # comment for why handing Roach the grid here would reintroduce the exact
-# "never engaged" bug `never_retreat` was added to fix. Peel hysteresis in
+# "never engaged" bug the commit-style maneuver was added to fix. Peel hysteresis in
 # `_kite_maneuver` (resume at 4) stops the one-squad Move↔Shoot thrash at
 # the 3-range boundary. `kite_types` now only kites when outnumbered —
 # when ahead (or pushing the enemy main-ramp choke) Roaches stutter-step
 # with the group, matching Four Rax Marines.
 _ROACH_MIN_ENGAGE_RANGE: float = 3.0
+
+# Fight until outmatched ~1.8:1 by supply, then fall back to the rally and
+# regroup (see `attack_squads(fall_back_ratio=...)`). Zerg can remax off a
+# bigger economy, so trading inefficiently is fine - `never_retreat` (an
+# all-in stance: never leave a fight) was the wrong tool, and the per-unit
+# influence retreat the default path uses is what caused the "never
+# engaged" bug. This decides once per squad, from total supply.
+_FALL_BACK_RATIO: float = 0.55
 
 
 def attack_objective(ctx) -> Point2:
@@ -1247,18 +1255,20 @@ BUILD = BuildDefinition(
             # Dig-in before attack_squads so damaged Roaches burrow and
             # tunnel home to full HP; attack_squads also skips those tags.
             combat.regen_burrow_roaches(),
-            # never_retreat=True: Zergling (melee, still in this squad for
-            # the breach-worker micro above) gains nothing from kiting off
-            # a weapon cooldown - see `_squad_maneuver_commit`'s own
-            # docstring for the live-confirmed bug this fixes (KeepGroupSafe
+            # fall_back_ratio: commit-and-grind (no per-unit influence
+            # retreat - Zergling, melee and still in this squad for the
+            # breach-worker micro above, gains nothing from kiting off a
+            # weapon cooldown; see `_squad_maneuver_commit`'s own docstring
+            # for the live-confirmed bug that fixes: KeepGroupSafe
             # short-circuiting the whole squad's advance the instant any one
-            # member was mid-cooldown on enemy-influenced ground, which a
-            # close-range brawl makes true almost constantly). Roach is
-            # split out via kite_types: range-4 kite when outnumbered
-            # (no influence grid), stutter-step when ahead or on the enemy
-            # main-ramp choke — same force/choke idiom as Four Rax Marines.
+            # member was mid-cooldown on enemy-influenced ground) but the
+            # whole squad falls back and regroups once badly outmatched -
+            # see `_FALL_BACK_RATIO`. Roach is split out via kite_types:
+            # range-4 kite when outnumbered (no influence grid), stutter-step
+            # when ahead or on the enemy main-ramp choke — same force/choke
+            # idiom as Four Rax Marines.
             combat.attack_squads(
-                never_retreat=True,
+                fall_back_ratio=_FALL_BACK_RATIO,
                 kite_types=frozenset({UnitTypeId.ROACH}),
                 min_engage_range=_ROACH_MIN_ENGAGE_RANGE,
             ),

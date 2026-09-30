@@ -221,8 +221,12 @@ def release_first_wave_then_stream(muster: bool = True) -> CombatRoutine:
             return
 
         if ctx.state.wave_number >= 1:
-            # Streaming: no size floor, no mustering - straight to the front.
+            # Streaming: no size floor, no mustering - straight to the front,
+            # except while a fall-back is regrouping: join the ball at the
+            # rally instead of trickling into the army that just beat it.
             ctx.mediator.batch_assign_role(tags=tags, role=UnitRole.ATTACKING)
+            if ctx.state.regroup_enemy_supply is not None:
+                ctx.state.mustering_tags.update(tags)
             return
 
         plan = ctx.build.combat
@@ -367,6 +371,111 @@ def _our_force_larger(ctx: "BotContext", ours, theirs) -> bool:
     """True when `theirs` is strictly smaller than `ours` by supply."""
     return _combat_force_supply(ctx, theirs) < _combat_force_supply(ctx, ours)
 
+
+# ── Squad fall-back (`attack_squads(fall_back_ratio=...)`) ─────────────────
+#
+# For a build with the economy to remax (Macro Zerg): trade army
+# inefficiently rather than run at the first sign of a bigger enemy, but
+# don't feed the whole ball into a hopeless fight either. The decision is
+# made once per squad from total supply - never per unit, which is what
+# `KeepGroupSafe`'s influence retreat did (it let one mid-cooldown unit peel
+# the whole squad off the fight - see `_squad_maneuver_commit`).
+
+FALL_BACK_HOME_RADIUS: float = 30.0
+"""Inside this of the rally point or any own townhall, an outmatched squad
+fights rather than falls back - there is nowhere better to be (Queens,
+Spines and reinforcements are right there)."""
+REGROUP_RESUME_RATIO: float = 0.85
+"""A squad holding at the rally after a fall-back re-pushes once its supply
+reaches this fraction of the enemy supply that beat it - not parity (we are
+happy to trade), but enough that we don't immediately fall back again."""
+REGROUP_MAX_HOLD_S: float = 45.0
+"""Re-push regardless after this long at the rally - never sit forever."""
+
+
+def _outmatched(our_supply: float, enemy_supply: float, ratio: float) -> bool:
+    """True when `our_supply` is below `ratio` x `enemy_supply`."""
+    return enemy_supply > 0.0 and our_supply < ratio * enemy_supply
+
+
+def _near_home(ctx: "BotContext", position, rally) -> bool:
+    radius_sq = FALL_BACK_HOME_RADIUS**2
+    if cy_distance_to_squared(position, rally) <= radius_sq:
+        return True
+    return any(
+        cy_distance_to_squared(position, th.position) <= radius_sq
+        for th in ctx.bot.townhalls
+    )
+
+
+def _allied_attack_supply(ctx: "BotContext", position) -> float:
+    """Supply of ATTACKING units around `position` - neighbouring squads
+    count, so a ball that got split into two clusters is judged as one
+    force rather than each half deciding to run alone."""
+    radius_sq = (SQUAD_ENGAGE_RANGE + SQUAD_RADIUS) ** 2
+    return sum(
+        ctx.bot.calculate_supply_cost(u.type_id)
+        for u in ctx.units_in_role(UnitRole.ATTACKING)
+        if u.type_id != UnitTypeId.ROACHBURROWED
+        and cy_distance_to_squared(u.position, position) <= radius_sq
+    )
+
+
+def _regroup_ready(ctx: "BotContext", squad) -> bool:
+    """Whether a squad holding at the rally may re-push. Always true when
+    no fall-back is pending (an ordinary first-wave muster). Consuming the
+    regroup (returning True) clears it for every squad."""
+    need = ctx.state.regroup_enemy_supply
+    if need is None:
+        return True
+    ours = _combat_force_supply(ctx, squad.squad_units)
+    held = ctx.bot.time - ctx.state.regroup_since
+    if ours >= REGROUP_RESUME_RATIO * need or held >= REGROUP_MAX_HOLD_S:
+        ctx.state.regroup_enemy_supply = None
+        return True
+    return False
+
+
+def _handle_fall_back(
+    ctx: "BotContext", squad, close_army, mustering, rally, ratio: float
+) -> bool:
+    """Start or continue a squad-level fall-back to `rally`. True when this
+    squad's orders for the frame are handled here (caller skips it)."""
+    state = ctx.state
+    position = squad.squad_position
+    units = [u for u in squad.squad_units if u.type_id != UnitTypeId.ROACHBURROWED]
+
+    if squad.tags & state.falling_back_tags:
+        if cy_distance_to_squared(position, rally) <= (MUSTER_RADIUS * 1.5) ** 2:
+            # Home: hand over to the muster hold (`_regroup_ready` releases it).
+            state.falling_back_tags -= squad.tags
+            state.mustering_tags |= squad.tags
+            return True
+    else:
+        if mustering or not close_army or _near_home(ctx, position, rally):
+            return False
+        enemy = _combat_force_supply(ctx, close_army)
+        ours = max(
+            _allied_attack_supply(ctx, position),
+            _combat_force_supply(ctx, squad.squad_units),
+        )
+        if not _outmatched(ours, enemy, ratio):
+            return False
+        state.falling_back_tags |= squad.tags
+        if state.regroup_enemy_supply is None:
+            state.regroup_since = ctx.bot.time
+        state.regroup_enemy_supply = max(state.regroup_enemy_supply or 0.0, enemy)
+        ctx.log(
+            f"FALL BACK {len(units)} units ({ours:.0f} supply) vs {enemy:.0f} "
+            "enemy supply - regroup at rally"
+        )
+
+    for unit in units:
+        maneuver = CombatManeuver()
+        maneuver.add(_Move(unit=unit, target=rally))
+        ctx.bot.register_behavior(maneuver)
+    return True
+
 # How close to the enemy main ramp bottom counts as "pushing the choke" —
 # stutter-step through the bottleneck instead of peeling/kiting in place.
 _CHOKE_STUTTER_RADIUS: float = 12.0
@@ -467,7 +576,8 @@ def _squad_maneuver_commit(
     idiom as `chargelot_attack`'s Zealots ("never KeepUnitSafe — overwhelm"),
     generalized as an `attack_squads` flag instead of a whole separate
     routine, since Macro Zerg still wants `attack_squads`'s existing
-    muster/breach-worker logic.
+    muster/breach-worker logic. Used by both `never_retreat` and
+    `fall_back_ratio` - the latter adds a squad-level fall-back on top.
     """
     maneuver = CombatManeuver()
     if close_enemy:
@@ -1033,6 +1143,7 @@ def attack_squads(
     min_engage_range: float | None = None,
     never_retreat: bool = False,
     kite_types: frozenset = frozenset(),
+    fall_back_ratio: float | None = None,
 ) -> CombatRoutine:
     """Drive each ATTACKING squad at its nearest worthwhile target.
 
@@ -1065,7 +1176,18 @@ def attack_squads(
       maneuver_commit`'s own docstring for exactly why a comp would want
       this (in short: melee/short-range units that gain nothing from
       kiting get stuck peeling backward one at a time instead of ever
-      landing damage together).
+      landing damage together). For all-in builds that never want to
+      leave a fight.
+    - `fall_back_ratio=R`: the same commit-and-grind maneuver (no
+      influence retreat), but the whole squad falls back to the rally
+      point once its supply - counting neighbouring ATTACKING units -
+      drops below `R` x the enemy army near it, unless it is already
+      within `FALL_BACK_HOME_RADIUS` of home. It then holds there
+      (`RunState.regroup_enemy_supply`) until it reaches
+      `REGROUP_RESUME_RATIO` of the army that beat it or
+      `REGROUP_MAX_HOLD_S` passes, and re-pushes as a ball. For a build
+      with the economy to remax: trade inefficiently, but don't feed a
+      hopeless fight. Decided per squad from total supply, never per unit.
     - Otherwise, unsafe ground influence: `KeepGroupSafe` / `KeepUnitSafe`
       run first so the ball leaves bad tiles instead of parking.
     - Enemy force strictly smaller than ours: `StutterGroupForward` trades
@@ -1107,7 +1229,9 @@ def attack_squads(
         alive_attackers = {u.tag for u in ctx.units_in_role(UnitRole.ATTACKING)}
         ctx.state.mustering_tags &= alive_attackers
         ctx.state.kite_peeling_tags &= alive_attackers
+        ctx.state.falling_back_tags &= alive_attackers
         peeling = ctx.state.kite_peeling_tags
+        commit = never_retreat or fall_back_ratio is not None
 
         squads = ctx.mediator.get_squads(
             role=UnitRole.ATTACKING, squad_radius=squad_radius
@@ -1121,11 +1245,16 @@ def attack_squads(
             if (
                 mustering
                 and cy_distance_to_squared(position, rally) <= MUSTER_RADIUS**2
+                and _regroup_ready(ctx, squad)
             ):
                 ctx.state.mustering_tags -= mustering
                 mustering = set()
 
             close_army = _intel_army_near(ctx, position, SQUAD_ENGAGE_RANGE)
+            if fall_back_ratio is not None and _handle_fall_back(
+                ctx, squad, close_army, mustering, rally, fall_back_ratio
+            ):
+                continue
             close_enemy = close_army or _enemies_near(
                 ctx, position, SQUAD_ENGAGE_RANGE
             )
@@ -1271,7 +1400,7 @@ def attack_squads(
                         continue
 
             if (
-                not never_retreat
+                not commit
                 and close_army
                 and min_engage_range is not None
                 and not _our_force_larger(ctx, group_units, close_army)
@@ -1289,7 +1418,7 @@ def attack_squads(
                     )
                 continue
 
-            if never_retreat:
+            if commit:
                 ctx.bot.register_behavior(
                     _squad_maneuver_commit(
                         group=group_units,
