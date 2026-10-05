@@ -102,3 +102,83 @@ def attach_worker_loss_scenario(bot: Any, events: tuple[WorkerLossEvent, ...]) -
         await original_on_step(iteration)
 
     bot.on_step = on_step_with_worker_loss  # type: ignore[method-assign]
+
+
+MAIN_RADIUS: float = 25.0
+"""How far from `bot.start_location` the "main" pseudo-target reaches."""
+
+
+@dataclass(frozen=True)
+class StructureLossEvent:
+    at_time: float
+    names: tuple[str, ...]
+    """`UnitTypeId` names (e.g. "SPAWNINGPOOL") and/or the pseudo-target
+    "main" (every structure within `MAIN_RADIUS` of `bot.start_location`,
+    townhall included - what a lost base trade leaves behind)."""
+
+
+def parse_structure_loss_spec(spec: str) -> tuple[StructureLossEvent, ...]:
+    """Parse "TIME:NAME[+NAME...][,TIME:NAME...]" - e.g.
+    "420:SPAWNINGPOOL+ROACHWARREN,600:main". Events come back sorted by time.
+    """
+    events = []
+    for chunk in spec.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parts = chunk.split(":")
+        if len(parts) != 2 or not parts[1].strip():
+            raise ValueError(
+                f"Bad structure-loss event {chunk!r}, expected TIME:NAME[+NAME...]"
+            )
+        names = tuple(n.strip().upper() if n.strip().lower() != "main" else "main"
+                      for n in parts[1].split("+") if n.strip())
+        events.append(StructureLossEvent(at_time=float(parts[0]), names=names))
+    return tuple(sorted(events, key=lambda e: e.at_time))
+
+
+def _structure_victims(bot: Any, event: StructureLossEvent) -> list[Any]:
+    victims: list[Any] = []
+    for name in event.names:
+        if name == "main":
+            victims.extend(
+                s
+                for s in bot.structures
+                if s.position.distance_to(bot.start_location) <= MAIN_RADIUS
+            )
+        else:
+            victims.extend(s for s in bot.structures if s.type_id.name == name)
+    seen: set[int] = set()
+    return [v for v in victims if not (v.tag in seen or seen.add(v.tag))]
+
+
+def attach_structure_loss_scenario(
+    bot: Any, events: tuple[StructureLossEvent, ...]
+) -> None:
+    """Wrap `bot.on_step` to debug-kill the named structures the first frame
+    `bot.time >= at_time` - a stand-in for a base trade, to see whether the
+    build re-places its tech, bases and army from a surviving base."""
+    if not events:
+        return
+
+    original_on_step = bot.on_step
+    pending = sorted(events, key=lambda e: e.at_time)
+
+    async def on_step_with_structure_loss(iteration: int) -> None:
+        while pending and bot.time >= pending[0].at_time:
+            event = pending.pop(0)
+            victims = _structure_victims(bot, event)
+            if not victims:
+                logger.warning(
+                    f"Structure-loss scenario: nothing matching {event.names} "
+                    f"at t={bot.time:.1f}s"
+                )
+                continue
+            await bot.client.debug_kill_unit([v.tag for v in victims])
+            logger.info(
+                f"Structure-loss scenario: killed {len(victims)} structures "
+                f"{event.names} at t={bot.time:.1f}s (requested {event.at_time}s)"
+            )
+        await original_on_step(iteration)
+
+    bot.on_step = on_step_with_structure_loss  # type: ignore[method-assign]

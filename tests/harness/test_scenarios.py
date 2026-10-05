@@ -209,3 +209,93 @@ def test_gas_target_with_no_gas_workers_logs_and_does_not_crash() -> None:
 
     assert bot.client.kill_calls == []
     assert len(bot.workers) == 6
+
+
+# --- structure loss ---------------------------------------------------------
+
+from scripts.harness.scenarios import (  # noqa: E402
+    StructureLossEvent,
+    attach_structure_loss_scenario,
+    parse_structure_loss_spec,
+)
+
+
+def test_parse_structure_loss_spec_parses_names_and_sorts_by_time() -> None:
+    events = parse_structure_loss_spec("600:main,420:spawningpool+ROACHWARREN")
+
+    assert events == (
+        StructureLossEvent(at_time=420.0, names=("SPAWNINGPOOL", "ROACHWARREN")),
+        StructureLossEvent(at_time=600.0, names=("main",)),
+    )
+
+
+def test_parse_structure_loss_spec_rejects_a_missing_name() -> None:
+    with pytest.raises(ValueError):
+        parse_structure_loss_spec("420")
+
+
+def _structure(tag: int, name: str, at: Point2) -> SimpleNamespace:
+    return SimpleNamespace(
+        tag=tag, type_id=SimpleNamespace(name=name), position=at
+    )
+
+
+def _structure_bot(structures: list) -> SimpleNamespace:
+    killed: list[int] = []
+    steps: list[int] = []
+
+    async def on_step(iteration: int) -> None:
+        steps.append(iteration)
+
+    async def debug_kill_unit(tags) -> None:
+        killed.extend(tags)
+
+    return SimpleNamespace(
+        time=0.0,
+        start_location=Point2((10.0, 10.0)),
+        structures=structures,
+        on_step=on_step,
+        client=SimpleNamespace(debug_kill_unit=debug_kill_unit),
+        killed=killed,
+        steps=steps,
+    )
+
+
+def test_structure_loss_kills_named_structures_once_the_time_is_reached() -> None:
+    bot = _structure_bot(
+        [
+            _structure(1, "SPAWNINGPOOL", Point2((12.0, 12.0))),
+            _structure(2, "ROACHWARREN", Point2((14.0, 12.0))),
+            _structure(3, "HATCHERY", Point2((10.0, 10.0))),
+        ]
+    )
+    attach_structure_loss_scenario(
+        bot, (StructureLossEvent(at_time=100.0, names=("SPAWNINGPOOL",)),)
+    )
+
+    asyncio.run(bot.on_step(1))
+    assert bot.killed == []  # too early
+
+    bot.time = 100.0
+    asyncio.run(bot.on_step(2))
+    asyncio.run(bot.on_step(3))
+
+    assert bot.killed == [1]  # once, and only the named type
+    assert bot.steps == [1, 2, 3]  # the real on_step still runs every frame
+
+
+def test_structure_loss_main_takes_everything_near_the_start_location() -> None:
+    bot = _structure_bot(
+        [
+            _structure(1, "HATCHERY", Point2((10.0, 10.0))),
+            _structure(2, "SPAWNINGPOOL", Point2((14.0, 14.0))),
+            _structure(3, "HATCHERY", Point2((60.0, 60.0))),  # the natural
+        ]
+    )
+    attach_structure_loss_scenario(
+        bot, (StructureLossEvent(at_time=0.0, names=("main",)),)
+    )
+
+    asyncio.run(bot.on_step(1))
+
+    assert sorted(bot.killed) == [1, 2]

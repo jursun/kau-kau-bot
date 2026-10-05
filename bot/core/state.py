@@ -269,6 +269,10 @@ class RunState:
     """True once a pylon exists near Chargelot staging."""
     army_idle_check_at: float | None = None
     """Last game time `nudge_idle_army` scanned ATTACKING units."""
+    natural_established: bool = False
+    """Latched once a townhall has stood at the static natural spot, so
+    `BotContext.own_nat` only swaps in a surviving base after the natural
+    existed and was lost - never before it was first taken."""
     natural_scout_claimed: bool = False
     """Latched once a Drone has been pulled aside to pre-walk toward the
     natural expansion site (see `builds.zerg.macro_zerg._claim_natural_

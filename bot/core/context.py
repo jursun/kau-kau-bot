@@ -16,6 +16,7 @@ from ares.consts import UnitRole
 from ares.managers.manager_mediator import ManagerMediator
 
 from bot.common.geometry import safe_start_location
+from bot.common.home import surviving_main, surviving_natural, townhall_near
 from bot.core.state import RunState
 
 if TYPE_CHECKING:
@@ -44,8 +45,13 @@ class BotContext:
     def production_location(self) -> Point2:
         """Our main base location - see `safe_start_location`'s own
         comment for why this doesn't just return `self.bot.start_location`
-        directly."""
-        return safe_start_location(self.bot)
+        directly.
+
+        Once the main has fallen (a townhall no longer stands there) this
+        is the safest surviving base instead, so tech, upgrades and
+        production rebuild from wherever we still stand rather than aiming
+        at a dead main - see `bot.common.home`."""
+        return surviving_main(self.bot, safe_start_location(self.bot))
 
     @property
     def ready_townhalls(self) -> Units:
@@ -74,10 +80,19 @@ class BotContext:
         with `AttributeError: 'NoneType' object has no attribute
         'towards'` from a fallback (this property, before this fix) that
         assumed `start_location` was always safe. `safe_start_location`
-        (see its own comment) covers that gap."""
-        if self.mediator.get_own_expansions:
-            return self.mediator.get_own_nat
-        return safe_start_location(self.bot)
+        (see its own comment) covers that gap.
+
+        After the natural has stood and then fallen, this is the surviving
+        non-main base closest to it (else the main), so rally and defense
+        anchors follow the bases we still own."""
+        if not self.mediator.get_own_expansions:
+            return safe_start_location(self.bot)
+        nat = self.mediator.get_own_nat
+        if townhall_near(self.bot, nat):
+            self.state.natural_established = True
+        return surviving_natural(
+            self.bot, nat, self.production_location, self.state.natural_established
+        )
 
     @property
     def base_count(self) -> int:

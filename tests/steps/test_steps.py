@@ -832,18 +832,101 @@ def test_spawn_macro_army_skips_infestor_while_gas_starved() -> None:
     assert UnitTypeId.INFESTOR not in behavior.army_composition_dict
 
 
+def _rebuild_ctx(have: dict) -> BotContext:
+    """`have` maps structure id -> how many of it exist; absent means 0."""
+    ctx = _ctx()
+    ctx.bot.time = 600.0
+    base = MagicMock()
+    base.position = Point2((10.0, 10.0))
+    base.is_ready = True
+    ctx.bot.townhalls = [base]
+    ctx.bot.start_location = Point2((10.0, 10.0))
+
+    def structures(structure_id):
+        found = MagicMock()
+        found.amount = have.get(structure_id, 0)
+        return found
+
+    ctx.bot.structures = structures
+    return ctx
+
+
+def _rebuilt(plan) -> list:
+    return [
+        getattr(m, "structure_id", type(m).__name__) for m in plan.macros
+    ]
+
+
+def test_rebuild_lost_tech_replaces_pool_warren_and_lair_after_a_base_trade() -> None:
+    from bot.behaviors.zerg import BuildZergStructure, MorphLairAtMain
+
+    ctx = _rebuild_ctx({})
+
+    plan = z.rebuild_lost_tech()(ctx)
+
+    assert _rebuilt(plan) == [
+        UnitTypeId.SPAWNINGPOOL,
+        UnitTypeId.ROACHWARREN,
+        "MorphLairAtMain",
+    ]
+    assert isinstance(plan.macros[0], BuildZergStructure)
+    assert isinstance(plan.macros[2], MorphLairAtMain)
+
+
+def test_rebuild_lost_tech_only_replaces_what_is_missing() -> None:
+    ctx = _rebuild_ctx(
+        {UnitTypeId.SPAWNINGPOOL: 1, UnitTypeId.LAIR: 1}
+    )
+
+    plan = z.rebuild_lost_tech()(ctx)
+
+    assert _rebuilt(plan) == [UnitTypeId.ROACHWARREN]
+
+
+def test_rebuild_lost_tech_treats_a_hive_as_lair_tech() -> None:
+    ctx = _rebuild_ctx(
+        {
+            UnitTypeId.SPAWNINGPOOL: 1,
+            UnitTypeId.ROACHWARREN: 1,
+            UnitTypeId.HIVE: 1,
+        }
+    )
+
+    assert z.rebuild_lost_tech()(ctx) is None
+
+
+def test_rebuild_lost_tech_does_nothing_without_a_base_to_build_from() -> None:
+    ctx = _rebuild_ctx({})
+    ctx.bot.townhalls = []
+
+    assert z.rebuild_lost_tech()(ctx) is None
+
+
+def test_rebuild_lost_tech_builds_at_the_surviving_base() -> None:
+    survivor = MagicMock()
+    survivor.position = Point2((60.0, 60.0))
+    survivor.is_ready = True
+    ctx = _rebuild_ctx({})
+    ctx.bot.townhalls = [survivor]
+    ctx.bot.enemy_start_locations = [Point2((150.0, 150.0))]
+
+    plan = z.rebuild_lost_tech()(ctx)
+
+    assert plan.macros[0].base_location == Point2((60.0, 60.0))
+
+
 def test_forward_crawler_wave_waits_on_minerals_and_interval() -> None:
     from bot.behaviors.zerg import ForwardCrawlerWave
 
     ctx = _ctx()
-    ctx.bot.minerals = 4000
+    ctx.bot.minerals = 2000
     ctx.bot.time = 100.0
     ctx.bot.start_location = Point2((10.0, 10.0))
     ctx.bot.enemy_start_locations = [Point2((50.0, 50.0))]
     ctx.bot.mediator.get_squads.return_value = []
     assert z.forward_crawler_wave()(ctx) is None
 
-    ctx.bot.minerals = 5001
+    ctx.bot.minerals = 2001
     wave = z.forward_crawler_wave()(ctx)
     assert isinstance(wave, ForwardCrawlerWave)
     assert list(wave.structure_types).count(UnitTypeId.SPINECRAWLER) == 3

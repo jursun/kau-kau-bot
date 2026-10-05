@@ -743,6 +743,14 @@ def _overflow_after_scripted_opening(ctx):
     return z.overflow_hatcheries(mineral_threshold=500)(ctx)
 
 
+def _rebuild_lost_tech_after_opening(ctx):
+    """`z.rebuild_lost_tech`, held until the scripted opening is spent -
+    mid-opening the Pool / Warren / Lair legitimately don't exist yet."""
+    if ctx.state.opening_step_index < len(_SEQUENCE):
+        return None
+    return z.rebuild_lost_tech()(ctx)
+
+
 def _lair_commanded(ctx) -> bool:
     """True once Lair morph is actually on a townhall (or finished).
 
@@ -1320,6 +1328,11 @@ BUILD = BuildDefinition(
         # on the frame's minerals, Queen gets second, Auto Worker gets
         # whatever's left.
         _scripted_production,
+        # Base-trade recovery: once the opening is spent, re-place a lost
+        # Spawning Pool / Roach Warren / Lair at a surviving base (see
+        # `z.rebuild_lost_tech`). Ahead of Queens and army so the bank goes
+        # to getting production back before anything else spends it.
+        _rebuild_lost_tech_after_opening,
         # Always-on, not scripted: 1 Queen per ready townhall (`per_base=1`),
         # plus 2 extras for defense + creep (`extra`, see `routines.creep.
         # spread_creep`). The natural's first Queen is the designated
@@ -1426,7 +1439,7 @@ BUILD = BuildDefinition(
                 gates.negate(gates.early_aggression()),
             ),
         ),
-        # Mineral sink: >5000 bank → every 30s pull 6 drones for 3 Spine +
+        # Mineral sink: >2000 bank → every 30s pull 6 drones for 3 Spine +
         # 3 Spore beside the army (needs creep under the ball).
         z.forward_crawler_wave(),
         # Last: only fires when nothing above had anywhere to put a mineral

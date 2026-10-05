@@ -20,6 +20,7 @@ from bot.behaviors.zerg import (
     BuildZergStructure,
     ForwardCrawlerWave,
     InjectLarva,
+    MorphLairAtMain,
     MorphOverseers,
     TrainQueens,
 )
@@ -518,7 +519,73 @@ def early_aggression_spines(count: int, gate: Gate = _always) -> MacroStep:
     return step
 
 
-_FORWARD_CRAWLER_MINERALS: int = 5000
+_REBUILD_ORDER: tuple[UnitTypeId, ...] = (
+    UnitTypeId.SPAWNINGPOOL,
+    UnitTypeId.ROACHWARREN,
+)
+
+
+def rebuild_lost_tech(gate: Gate = _always) -> MacroStep:
+    """Re-place the core tech once a base trade has destroyed it.
+
+    The scripted opening commands Spawning Pool, Roach Warren and Lair once
+    and then moves on for good (its index never walks back), so nothing
+    re-buys them after they die - and without the Pool (Queens, Zerglings,
+    Roach Warren prereq) or Warren (all army production is gated on it) a
+    base trade that took the main leaves a huge bank with nothing to spend
+    it on. This keeps them standing: Pool, then Roach Warren, then Lair
+    (`MorphLairAtMain` morphs the hatchery nearest `production_location`,
+    which falls back to a surviving base once the main is gone).
+
+    Placement uses `BuildZergStructure` with `try_all_bases`, so it picks
+    legal creep at whichever base is left; `prioritize` holds the bank for
+    the structure so army production can't keep draining it. Evolution
+    Chambers, Spire, Infestation Pit and Hive already rebuild through their
+    own steps. Does nothing without a townhall to build from - rebuilding
+    the base itself is `c.expansions`' job.
+    """
+
+    def step(ctx: "BotContext"):
+        if not gate(ctx):
+            return None
+        bot = ctx.bot
+        if not bot.townhalls:
+            return None
+
+        plan = MacroPlan()
+        missing: list[str] = []
+        for structure_id in _REBUILD_ORDER:
+            if bot.structures(structure_id).amount == 0:
+                missing.append(structure_id.name)
+                plan.add(
+                    BuildZergStructure(
+                        base_location=ctx.production_location,
+                        structure_id=structure_id,
+                        to_count=1,
+                    )
+                )
+        lair_gone = (
+            bot.structures(UnitTypeId.LAIR).amount
+            + bot.structures(UnitTypeId.HIVE).amount
+            == 0
+        )
+        if lair_gone:
+            missing.append("LAIR")
+            plan.add(MorphLairAtMain(base_location=ctx.production_location))
+        if not plan.macros:
+            return None
+
+        ctx.log_once(
+            f"rebuild_tech:{'+'.join(missing)}:{int(bot.time // 60)}",
+            f"REBUILD tech lost: {', '.join(missing)} - re-placing at "
+            f"{ctx.production_location}",
+        )
+        return plan
+
+    return step
+
+
+_FORWARD_CRAWLER_MINERALS: int = 2000
 _FORWARD_CRAWLER_INTERVAL: float = 30.0
 _FORWARD_CRAWLER_WAVE: tuple[UnitTypeId, ...] = (
     UnitTypeId.SPINECRAWLER,
@@ -546,7 +613,7 @@ def _army_forward_anchor(ctx: "BotContext"):
 
 
 def forward_crawler_wave(gate: Gate = _always) -> MacroStep:
-    """When floating >5000 minerals, every 30s pull 6 workers to plant
+    """When floating >2000 minerals, every 30s pull 6 workers to plant
     3 Spines + 3 Spores beside the army (mineral sink / forward static).
 
     Placement needs creep — if the army is off creep the wave no-ops and

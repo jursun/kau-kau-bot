@@ -33,6 +33,11 @@ Each takes the same parameters:
                         on gas at 1:30 ("closest"/"gas", default "closest").
                         See scripts/harness/scenarios.py. Omit for a normal
                         run.
+    --kill-structures SPEC
+                        Stress-test base-trade recovery: debug-kill structures
+                        at scripted times, e.g. "420:SPAWNINGPOOL+ROACHWARREN,
+                        600:main" (UnitTypeId names, or "main" for every
+                        structure in the main). Omit for a normal run.
 
 Always stepped (Realtime: False) with the FastWindow corner client
 (FastWindow: True) for the quickest possible execution — there is no
@@ -77,7 +82,9 @@ from run import (  # noqa: E402
     run_local_game,
 )
 from scripts.harness.scenarios import (  # noqa: E402
+    attach_structure_loss_scenario,
     attach_worker_loss_scenario,
+    parse_structure_loss_spec,
     parse_worker_loss_spec,
 )
 from scripts.harness.smoke_common import (  # noqa: E402
@@ -215,6 +222,7 @@ def _play_one(
     leave: int | None,
     local_cfg: dict | None,
     kill_workers: str | None = None,
+    kill_structures: str | None = None,
 ) -> GameRow:
     logger.info(
         f"===== {tier.name.upper()} {settings.build or '(no build forced)'} "
@@ -223,6 +231,8 @@ def _play_one(
     bot = build_smoke_bot(validate, settings)
     if kill_workers:
         attach_worker_loss_scenario(bot, parse_worker_loss_spec(kill_workers))
+    if kill_structures:
+        attach_structure_loss_scenario(bot, parse_structure_loss_spec(kill_structures))
     metrics_box: dict[str, Any] = {}
 
     if metrics_attr:
@@ -412,6 +422,17 @@ def add_tier_args(parser: argparse.ArgumentParser, tier: TierSpec) -> None:
         ),
     )
     parser.add_argument(
+        "--kill-structures",
+        default=None,
+        metavar="SPEC",
+        help=(
+            'Stress-test base-trade recovery: debug-kill structures at '
+            'scripted times, e.g. "420:SPAWNINGPOOL+ROACHWARREN,600:main" '
+            'kills the Pool and Warren at 7:00, then everything in the main '
+            'at 10:00. See scripts/harness/scenarios.py. Omit for a normal run.'
+        ),
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=None,
@@ -488,6 +509,7 @@ def run_tier(tier: TierSpec, argv: list[str] | None = None) -> int:
                 leave=args.leave,
                 local_cfg=local_cfg,
                 kill_workers=args.kill_workers,
+                kill_structures=args.kill_structures,
             )
         )
 
