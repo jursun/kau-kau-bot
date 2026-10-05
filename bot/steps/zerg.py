@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ares.behaviors.macro import ExpansionController, MacroPlan, SpawnController, TechUp
-from ares.consts import ID, TARGET
+from ares.consts import ID, TARGET, UnitRole
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 from sc2.position import Point2
@@ -191,6 +191,78 @@ def evolution_chambers() -> MacroStep:
     return step
 
 
+_CRAWLER_TYPES: frozenset[UnitTypeId] = frozenset(
+    {UnitTypeId.SPORECRAWLER, UnitTypeId.SPINECRAWLER}
+)
+CRAWLER_STUCK_S: float = 10.0
+"""A crawler drone that gets no closer to its site for this long is stuck."""
+_CRAWLER_PROGRESS_MIN: float = 1.0
+_CRAWLER_AT_SITE_DISTANCE: float = 2.0
+
+
+def release_stuck_crawlers(ctx: "BotContext") -> None:
+    """Pull a crawler drone off its job once it has stopped making progress,
+    and remember its site as bad so the retry picks somewhere else.
+
+    ares only gives up on a builder after `BUILDING_WORKER_TIMEOUT` (120s),
+    and the crawler steps count an en-route drone as "this base is covered" -
+    so a drone that can't reach its tile (or can't place there) holds the
+    base's Spore/Spine hostage for up to two minutes. Confirmed live as the
+    cause of the Spore Crawlers consistently landing 17-77s late.
+
+    "Stuck" is progress-based, not elapsed-time-based, so a long walk across
+    the map is fine: the drone's best distance to its site must improve by
+    `_CRAWLER_PROGRESS_MIN` within `CRAWLER_STUCK_S`. A drone already at the
+    site that is simply waiting on minerals isn't stuck - the clock is held
+    while the crawler is unaffordable.
+    """
+    tracker = ctx.mediator.get_building_tracker_dict
+    progress = ctx.state.crawler_progress
+    now = ctx.bot.time
+    live: set[int] = set()
+    for tag, info in list(tracker.items()):
+        structure_type = info.get(ID)
+        if structure_type not in _CRAWLER_TYPES:
+            continue
+        target = info.get(TARGET)
+        worker = ctx.bot.unit_tag_dict.get(tag)
+        if target is None or worker is None:
+            continue
+        site = Point2(getattr(target, "position", target))
+        live.add(tag)
+        distance = worker.position.distance_to(site)
+        if tag not in progress:
+            progress[tag] = (distance, now)
+            continue
+        best, since = progress[tag]
+        if distance < best - _CRAWLER_PROGRESS_MIN:
+            progress[tag] = (distance, now)
+            continue
+        if distance <= _CRAWLER_AT_SITE_DISTANCE and not ctx.bot.can_afford(
+            structure_type
+        ):
+            progress[tag] = (best, now)
+            continue
+        if now - since < CRAWLER_STUCK_S:
+            continue
+
+        from bot.common.log import log_event
+
+        log_event(
+            ctx.bot,
+            f"CRAWLER stuck: {structure_type.name} drone {tag} made no progress "
+            f"toward ({site.x:.0f},{site.y:.0f}) for {now - since:.0f}s "
+            f"(dist {distance:.1f}) - retrying elsewhere",
+        )
+        ctx.state.bad_crawler_tiles.add((site.x, site.y))
+        ctx.mediator.get_building_counter[structure_type] -= 1
+        tracker.pop(tag, None)
+        ctx.mediator.assign_role(tag=tag, role=UnitRole.GATHERING)
+        progress.pop(tag, None)
+    for tag in set(progress) - live:
+        progress.pop(tag, None)
+
+
 def _crawlers_en_route_near(
     ctx: "BotContext", location: Point2, radius: float, structure_type: UnitTypeId
 ) -> int:
@@ -294,6 +366,7 @@ def spore_crawlers(
     """
 
     def step(ctx: "BotContext"):
+        release_stuck_crawlers(ctx)
         if not gate(ctx):
             return None
 
@@ -315,7 +388,12 @@ def spore_crawlers(
             have += _spore_crawlers_en_route_near(ctx, location, radius)
             if have >= per_base:
                 continue
-            plan.add(BuildSporeCrawler(base_location=location))
+            plan.add(
+                BuildSporeCrawler(
+                    base_location=location,
+                    avoid_tiles=frozenset(ctx.state.bad_crawler_tiles),
+                )
+            )
         if plan.macros:
             from bot.common.log import log_event
 
@@ -350,6 +428,7 @@ def spine_crawlers(
     """
 
     def step(ctx: "BotContext"):
+        release_stuck_crawlers(ctx)
         if not gate(ctx):
             return None
 
@@ -377,6 +456,7 @@ def spine_crawlers(
                 BuildSporeCrawler(
                     base_location=location,
                     structure_type=UnitTypeId.SPINECRAWLER,
+                    avoid_tiles=frozenset(ctx.state.bad_crawler_tiles),
                 )
             )
         if plan.macros:
@@ -403,6 +483,7 @@ def early_aggression_spines(count: int, gate: Gate = _always) -> MacroStep:
     """
 
     def step(ctx: "BotContext"):
+        release_stuck_crawlers(ctx)
         if not gate(ctx):
             return None
         natural = ctx.own_nat
@@ -422,6 +503,7 @@ def early_aggression_spines(count: int, gate: Gate = _always) -> MacroStep:
             BuildSporeCrawler(
                 base_location=natural,
                 structure_type=UnitTypeId.SPINECRAWLER,
+                avoid_tiles=frozenset(ctx.state.bad_crawler_tiles),
             )
         )
         from bot.common.log import log_event

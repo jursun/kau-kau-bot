@@ -318,6 +318,13 @@ class RunState:
     """Last game time `steps.zerg.spine_crawlers` ran its expansion
     (3rd+) missing check. `None` until the first check after the gate
     opens."""
+    crawler_progress: dict[int, tuple[float, float]] = field(default_factory=dict)
+    """Crawler-building drone tag -> (closest distance to its build site so
+    far, game time that best distance was last improved). Feeds
+    `steps.zerg.release_stuck_crawlers`."""
+    bad_crawler_tiles: set[tuple[float, float]] = field(default_factory=set)
+    """Build sites a crawler drone got stuck on (unreachable / unplaceable).
+    `BuildSporeCrawler` skips them so the retry lands somewhere else."""
     last_forward_crawler_wave_at: float | None = None
     """Last game time Macro Zerg dispatched a 6-worker Spine/Spore wave
     beside the army (`steps.zerg.forward_crawler_wave`)."""

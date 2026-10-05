@@ -24,7 +24,7 @@ from ares.behaviors.macro import (
     SpawnController,
     UpgradeController,
 )
-from ares.consts import ID, TARGET
+from ares.consts import ID, TARGET, UnitRole
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 from sc2.position import Point2
@@ -288,6 +288,100 @@ def test_spore_crawlers_waits_on_the_base_a_worker_is_already_en_route_to() -> N
     }
 
     assert z.spore_crawlers(per_base=1, gate=lambda _ctx: True)(ctx) is None
+
+
+def _stuck_ctx(worker_at: Point2, site: Point2, afford: bool = True) -> BotContext:
+    ctx = _ctx()
+    worker = MagicMock()
+    worker.position = worker_at
+    ctx.bot.unit_tag_dict = {999: worker}
+    ctx.bot.can_afford.return_value = afford
+    ctx.bot.time = 100.0
+    ctx.bot.mediator = ctx.mediator
+    ctx.mediator.get_building_tracker_dict = {
+        999: {ID: UnitTypeId.SPORECRAWLER, TARGET: site}
+    }
+    ctx.mediator.get_building_counter = {UnitTypeId.SPORECRAWLER: 1}
+    return ctx
+
+
+def test_release_stuck_crawlers_frees_a_drone_that_stops_making_progress() -> None:
+    """The late Spore: a drone that can't reach its tile used to sit in the
+    tracker for ares' 120s timeout, and the step counted it as covering the
+    base the whole time. After ~10s without progress it is released, its
+    site is blacklisted, and the base becomes 'missing' again."""
+    site = Point2((50.0, 50.0))
+    ctx = _stuck_ctx(Point2((20.0, 50.0)), site)
+
+    z.release_stuck_crawlers(ctx)  # first sighting: starts the clock
+    assert 999 in ctx.mediator.get_building_tracker_dict
+
+    ctx.bot.time = 100.0 + z.CRAWLER_STUCK_S - 1.0
+    z.release_stuck_crawlers(ctx)
+    assert 999 in ctx.mediator.get_building_tracker_dict  # not yet
+
+    ctx.bot.time = 100.0 + z.CRAWLER_STUCK_S + 0.5
+    z.release_stuck_crawlers(ctx)
+
+    assert 999 not in ctx.mediator.get_building_tracker_dict
+    assert (50.0, 50.0) in ctx.state.bad_crawler_tiles
+    assert ctx.mediator.get_building_counter[UnitTypeId.SPORECRAWLER] == 0
+    ctx.mediator.assign_role.assert_called_once_with(tag=999, role=UnitRole.GATHERING)
+
+
+def test_release_stuck_crawlers_leaves_a_drone_that_keeps_walking() -> None:
+    """Progress-based, so a long walk across the map is never cut short."""
+    site = Point2((90.0, 50.0))
+    ctx = _stuck_ctx(Point2((10.0, 50.0)), site)
+    worker = ctx.bot.unit_tag_dict[999]
+
+    z.release_stuck_crawlers(ctx)
+    for step in range(1, 12):  # 30s of walking, 3 tiles per 2.5s
+        ctx.bot.time = 100.0 + step * 2.5
+        worker.position = Point2((10.0 + step * 3.0, 50.0))
+        z.release_stuck_crawlers(ctx)
+
+    assert 999 in ctx.mediator.get_building_tracker_dict
+    assert not ctx.state.bad_crawler_tiles
+
+
+def test_release_stuck_crawlers_waits_for_minerals_at_the_site() -> None:
+    """A drone standing on its tile only because the crawler is momentarily
+    unaffordable is not stuck."""
+    site = Point2((50.0, 50.0))
+    ctx = _stuck_ctx(Point2((50.0, 50.5)), site, afford=False)
+
+    z.release_stuck_crawlers(ctx)
+    ctx.bot.time = 100.0 + 3 * z.CRAWLER_STUCK_S
+    z.release_stuck_crawlers(ctx)
+
+    assert 999 in ctx.mediator.get_building_tracker_dict
+    assert not ctx.state.bad_crawler_tiles
+
+
+def test_release_stuck_crawlers_ignores_other_builders() -> None:
+    site = Point2((50.0, 50.0))
+    ctx = _stuck_ctx(Point2((20.0, 50.0)), site)
+    ctx.mediator.get_building_tracker_dict = {
+        999: {ID: UnitTypeId.EXTRACTOR, TARGET: site}
+    }
+
+    z.release_stuck_crawlers(ctx)
+    ctx.bot.time = 500.0
+    z.release_stuck_crawlers(ctx)
+
+    assert 999 in ctx.mediator.get_building_tracker_dict
+
+
+def test_spore_crawlers_passes_stuck_sites_to_the_builder() -> None:
+    ctx = _ctx()
+    base = Point2((10.0, 10.0))
+    ctx.bot.owned_expansions = {base: MagicMock()}
+    ctx.state.bad_crawler_tiles.add((12.0, 11.0))
+
+    plan = z.spore_crawlers(per_base=1, gate=lambda _ctx: True)(ctx)
+
+    assert plan.macros[0].avoid_tiles == frozenset({(12.0, 11.0)})
 
 
 def test_spore_crawlers_does_not_wait_on_a_different_bases_en_route_worker() -> None:

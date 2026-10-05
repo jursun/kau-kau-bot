@@ -160,6 +160,9 @@ class BuildSporeCrawler(MacroBehavior):
 
     base_location: Point2
     structure_type: UnitTypeId = UnitTypeId.SPORECRAWLER
+    avoid_tiles: frozenset[tuple[float, float]] = frozenset()
+    """Sites a drone previously got stuck on (see `steps.zerg.
+    release_stuck_crawlers`) - never picked again."""
 
     def execute(self, ai: "AresBot", config: dict, mediator: ManagerMediator) -> bool:
         if not ai.can_afford(self.structure_type):
@@ -167,6 +170,7 @@ class BuildSporeCrawler(MacroBehavior):
 
         if self.structure_type == UnitTypeId.SPINECRAWLER:
             avoid = _spine_reserved_positions(ai, mediator)
+            avoid.extend(Point2(t) for t in self.avoid_tiles)
             for anchor in _spine_candidates(ai, self.base_location):
                 candidate = _find_near(
                     ai,
@@ -184,13 +188,28 @@ class BuildSporeCrawler(MacroBehavior):
             )
             return False
 
+        bad = [Point2(t) for t in self.avoid_tiles]
         candidates = mediator.get_behind_mineral_positions(th_pos=self.base_location)
         for candidate in candidates:
+            if any(cy_distance_to_squared(candidate, b) < 1.0 for b in bad):
+                continue
             if not mediator.can_place_structure(
                 position=candidate, structure_type=self.structure_type
             ):
                 continue
             if self._dispatch(mediator, candidate):
+                return True
+        if bad:
+            # Every mineral-line tile is used up or was a dead end: take any
+            # legal creep tile near the base instead of retrying one.
+            fallback = _find_near(
+                ai,
+                mediator,
+                self.base_location,
+                self.structure_type,
+                avoid=bad,
+            )
+            if fallback is not None and self._dispatch(mediator, fallback):
                 return True
         return False
 

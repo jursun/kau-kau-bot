@@ -15,6 +15,7 @@ Runs under pytest, or standalone with no test dependency:
 from __future__ import annotations
 
 import sys
+import pytest
 from unittest.mock import MagicMock, patch
 
 from ares.behaviors.combat import CombatManeuver
@@ -2720,8 +2721,10 @@ def test_micro_infestors_casts_fungal_on_a_clump_in_range() -> None:
     assert casts[0].unit is infestor
     assert cy_distance_to(casts[0].target, clump_center) < 1.0
 
-    # KeepUnitSafe must run first - see the equivalent escort_overseers note.
-    assert isinstance(registered.micros[0], KeepUnitSafe)
+    # The cast goes first: KeepUnitSafe / burrow both return "acted" and
+    # used to eat the frame, so Infestors fled or burrowed with full energy.
+    assert registered.micros[0] is casts[0]
+    assert any(isinstance(m, KeepUnitSafe) for m in registered.micros[1:])
 
 
 def test_micro_infestors_paths_toward_an_out_of_range_clump() -> None:
@@ -2839,7 +2842,15 @@ def test_micro_infestors_follows_squad_without_a_clump() -> None:
     moves = [b for b in registered.micros if isinstance(b, MoveToSafeTarget)]
     assert len(moves) == 1
     assert moves[0].unit is infestor
-    assert moves[0].target == destination
+    # Trails the squad (behind it, away from the destination) rather than
+    # walking at the destination itself.
+    expected = squad.squad_position.towards(
+        destination, -combat.INFESTOR_TRAIL_DISTANCE
+    )
+    assert cy_distance_to(moves[0].target, expected) < 0.01
+    assert cy_distance_to(moves[0].target, squad.squad_position) == pytest.approx(
+        combat.INFESTOR_TRAIL_DISTANCE
+    )
 
 
 def test_micro_infestors_does_not_reissue_an_in_progress_cast() -> None:
@@ -3022,10 +3033,11 @@ def test_micro_infestors_ignores_low_value_enemies_for_neural_parasite() -> None
     ]
 
 
-def test_micro_infestors_prioritizes_neural_parasite_over_fungal_growth() -> None:
-    """When both a high-value target and a clump are in range, Neural
-    Parasite - the rarer, higher-impact opportunity - wins; Fungal is not
-    also cast the same frame."""
+def test_micro_infestors_prioritizes_fungal_growth_over_neural_parasite() -> None:
+    """When both a high-value target and a clump are in range, Fungal wins:
+    a Protoss ball almost always has an Immortal/Colossus/Archon in it, and
+    preferring Neural there starved Fungal for a whole fight (and Neural was
+    never confirmed live). Neural is not also cast the same frame."""
     from bot.consts import INFESTOR_ROLE
 
     ctx = _ctx()
@@ -3047,8 +3059,8 @@ def test_micro_infestors_prioritizes_neural_parasite_over_fungal_growth() -> Non
     abilities_cast = {
         b.ability for b in registered.micros if isinstance(b, UseAbility)
     }
-    assert AbilityId.NEURALPARASITE_NEURALPARASITE in abilities_cast
-    assert AbilityId.FUNGALGROWTH_FUNGALGROWTH not in abilities_cast
+    assert AbilityId.FUNGALGROWTH_FUNGALGROWTH in abilities_cast
+    assert AbilityId.NEURALPARASITE_NEURALPARASITE not in abilities_cast
 
 
 def test_micro_infestors_two_infestors_split_neural_targets() -> None:
@@ -3111,7 +3123,136 @@ def test_micro_infestors_paths_toward_an_out_of_range_neural_target() -> None:
     paths = [b for b in registered.micros if isinstance(b, PathUnitToTarget)]
     assert len(paths) == 1
     assert paths[0].unit is infestor
-    assert paths[0].target == target.position
+    # Stops short of max cast range, on the line back toward the Infestor.
+    assert cy_distance_to(paths[0].target, target.position) == pytest.approx(
+        combat.NEURAL_PARASITE_RANGE - combat.INFESTOR_APPROACH_SLACK
+    )
+    assert paths[0].target.y == pytest.approx(0.0)
+    assert paths[0].target.x < target.position.x
+
+
+# --- micro_infestors: detection -------------------------------------------
+
+
+def _detector(type_id: UnitTypeId, position: Point2, ready: bool = True) -> MagicMock:
+    unit = _unit(900, position)
+    unit.type_id = type_id
+    unit.is_ready = ready
+    return unit
+
+
+def _detection_setup(infestor_at: Point2, energy: float = 0.0, burrowed: bool = False):
+    from bot.consts import INFESTOR_ROLE
+
+    ctx = _ctx()
+    ctx.mediator.get_ground_grid = "ground-grid"
+    ctx.mediator.get_squads.return_value = []
+    infestor = _infestor(9, infestor_at, energy=energy)
+    infestor.is_burrowed = burrowed
+    ctx.mediator.get_units_from_role.side_effect = (
+        lambda role: [infestor] if role == INFESTOR_ROLE else []
+    )
+    ctx.bot.enemy_structures = []
+    ctx.bot.enemy_units = []
+    return ctx, infestor
+
+
+def _micros(ctx):
+    return ctx.bot.register_behavior.call_args.args[0].micros
+
+
+def test_micro_infestors_retreats_out_of_cannon_detection_instead_of_burrowing() -> None:
+    ctx, infestor = _detection_setup(Point2((0.0, 0.0)))
+    ctx.bot.enemy_structures = [_detector(UnitTypeId.PHOTONCANNON, Point2((8.0, 0.0)))]
+    ctx.mediator.get_cached_enemy_army = [_enemy(1, Point2((10.0, 0.0)))]
+
+    combat.micro_infestors()(ctx)
+
+    micros = _micros(ctx)
+    assert not [
+        m
+        for m in micros
+        if isinstance(m, UseAbility) and m.ability == AbilityId.BURROWDOWN_INFESTOR
+    ]
+    paths = [m for m in micros if isinstance(m, PathUnitToTarget)]
+    assert len(paths) == 1
+    # Ends up beyond the detection radius (+margin) of the cannon, on our side.
+    assert cy_distance_to(paths[0].target, Point2((8.0, 0.0))) > (
+        combat.INFESTOR_DETECTOR_RADIUS[UnitTypeId.PHOTONCANNON]
+    )
+    assert paths[0].target.x < 0.0
+
+
+def test_micro_infestors_retreats_from_an_overseer_and_a_raven() -> None:
+    for detector_type in (UnitTypeId.OVERSEER, UnitTypeId.RAVEN, UnitTypeId.OBSERVER):
+        ctx, infestor = _detection_setup(Point2((0.0, 0.0)), burrowed=True)
+        ctx.bot.enemy_units = [_detector(detector_type, Point2((6.0, 0.0)))]
+
+        combat.micro_infestors()(ctx)
+
+        paths = [m for m in _micros(ctx) if isinstance(m, PathUnitToTarget)]
+        assert len(paths) == 1, detector_type
+        assert paths[0].target.x < 0.0, detector_type
+
+
+def test_micro_infestors_ignores_a_cannon_still_under_construction() -> None:
+    ctx, infestor = _detection_setup(Point2((0.0, 0.0)))
+    ctx.bot.enemy_structures = [
+        _detector(UnitTypeId.PHOTONCANNON, Point2((8.0, 0.0)), ready=False)
+    ]
+    ctx.mediator.get_cached_enemy_army = [_enemy(1, Point2((10.0, 0.0)))]
+
+    combat.micro_infestors()(ctx)
+
+    assert [
+        m
+        for m in _micros(ctx)
+        if isinstance(m, UseAbility) and m.ability == AbilityId.BURROWDOWN_INFESTOR
+    ]
+
+
+def test_micro_infestors_does_not_walk_into_detection_range() -> None:
+    """Out of range of a clump it wants to Fungal, but the cast position
+    sits inside a Spore's reach: hold instead of walking in."""
+    ctx, infestor = _detection_setup(Point2((0.0, 0.0)), energy=100)
+    spore_at = Point2((40.0, 0.0))
+    ctx.bot.enemy_structures = [_detector(UnitTypeId.SPORECRAWLER, spore_at)]
+    ctx.mediator.get_cached_enemy_army = [
+        _enemy(i, Point2((40.0 + i * 0.1, 0.0))) for i in range(4)
+    ]
+
+    combat.micro_infestors()(ctx)
+
+    assert not [m for m in _micros(ctx) if isinstance(m, PathUnitToTarget)]
+
+
+def test_micro_infestors_still_casts_fungal_from_inside_detection_range() -> None:
+    ctx, infestor = _detection_setup(Point2((0.0, 0.0)), energy=100)
+    ctx.bot.enemy_structures = [_detector(UnitTypeId.PHOTONCANNON, Point2((8.0, 0.0)))]
+    ctx.mediator.get_cached_enemy_army = [
+        _enemy(i, Point2((5.0 + i * 0.1, 0.0))) for i in range(4)
+    ]
+
+    combat.micro_infestors()(ctx)
+
+    micros = _micros(ctx)
+    assert isinstance(micros[0], UseAbility)
+    assert micros[0].ability == AbilityId.FUNGALGROWTH_FUNGALGROWTH
+
+
+def test_micro_infestors_approaches_a_clump_only_to_cast_range() -> None:
+    ctx, infestor = _detection_setup(Point2((0.0, 0.0)), energy=100)
+    ctx.mediator.get_cached_enemy_army = [
+        _enemy(i, Point2((50.0 + i * 0.1, 0.0))) for i in range(4)
+    ]
+
+    combat.micro_infestors()(ctx)
+
+    paths = [m for m in _micros(ctx) if isinstance(m, PathUnitToTarget)]
+    assert len(paths) == 1
+    assert cy_distance_to(paths[0].target, Point2((50.0, 0.0))) == pytest.approx(
+        combat.FUNGAL_GROWTH_RANGE - combat.INFESTOR_APPROACH_SLACK, abs=0.2
+    )
 
 
 if __name__ == "__main__":
