@@ -357,6 +357,14 @@ class RunState:
     """Overseer escorting the main ATTACKING squad."""
     overseer_scout_tag: int | None = None
     """Overseer skirting enemy bases for intel."""
+    overseer_scout_tour_index: int = 0
+    """Which base of `routines.overseers.scout_tour` the scout is on."""
+    overseer_scout_vantage: Point2 | None = None
+    """Latched park point at the edge of that base (re-picked when a threat
+    comes within range of it)."""
+    overseer_scout_dwell_since: float | None = None
+    """Game time the scout reached its vantage; the tour advances after
+    `_SCOUT_DWELL_S` there."""
     overseer_destinations: dict[int, Point2] = field(default_factory=dict)
     """Overseer tag -> sticky park/scout Point2. Stops home/army/scout
     re-path thrash when the desired point only drifts a little."""

@@ -607,28 +607,51 @@ _FORWARD_CRAWLER_WAVE: tuple[UnitTypeId, ...] = (
 )
 
 
-def _army_forward_anchor(ctx: "BotContext"):
-    """Largest ATTACKING squad position, else attack destination from home."""
-    from ares.consts import UnitRole
+_FORWARD_MIN_DISTANCE: float = 25.0
+"""The wall must start at least this far from every one of our townhalls -
+closer and it is just more static D crowding the natural."""
+_FORWARD_ANCHOR_STEP: float = 2.0
 
-    # Match `routines.combat.SQUAD_RADIUS` (local to avoid import cycle).
-    squad_radius = 9.0
-    squads = ctx.mediator.get_squads(
-        role=UnitRole.ATTACKING, squad_radius=squad_radius
-    )
-    if squads:
-        biggest = max(squads, key=lambda squad: len(squad.squad_units))
-        return biggest.squad_position
-    return targeting.attack_target(ctx, ctx.production_location)
+
+def _mid_map_anchor(ctx: "BotContext") -> Point2 | None:
+    """Where the Spine/Spore wall goes: the farthest creep tile toward the
+    middle of the map, walking out from the owned base nearest the centre.
+
+    Placement needs creep, so the true centre is only used once creep (tumor
+    highways) has reached it; until then this is the creep edge nearest the
+    centre. If even that is within `_FORWARD_MIN_DISTANCE` of every
+    townhall there is nothing forward to build at yet - `None`, so the
+    wave waits instead of piling crawlers onto the natural (the previous
+    anchor was the army's position, which is the natural whenever the army
+    is home / falling back).
+    """
+    from cython_extensions import cy_distance_to
+    from cython_extensions.general_utils import cy_has_creep
+
+    center = ctx.bot.game_info.map_center
+    townhalls = [th.position for th in ctx.bot.townhalls]
+    if not townhalls:
+        return None
+    origin = min(townhalls, key=lambda pos: cy_distance_to(pos, center))
+    creep = ctx.mediator.get_creep_grid
+    anchor = origin
+    total = cy_distance_to(origin, center)
+    distance = _FORWARD_ANCHOR_STEP
+    while distance <= total:
+        point = origin.towards(center, distance)
+        if cy_has_creep(creep, point):
+            anchor = point
+        distance += _FORWARD_ANCHOR_STEP
+    if all(cy_distance_to(anchor, pos) < _FORWARD_MIN_DISTANCE for pos in townhalls):
+        return None
+    return anchor
 
 
 def forward_crawler_wave(gate: Gate = _always) -> MacroStep:
     """When floating >2000 minerals, every 30s pull 6 workers to plant
-    3 Spines + 3 Spores beside the army (mineral sink / forward static).
-
-    Placement needs creep — if the army is off creep the wave no-ops and
-    the interval still advances so we do not spam failed placement every
-    frame.
+    3 Spines + 3 Spores toward the middle of the map (mineral sink / forward
+    static) - see `_mid_map_anchor`. Waits (no-op, interval not consumed)
+    while creep hasn't reached anywhere meaningfully forward of our bases.
     """
 
     def step(ctx: "BotContext"):
@@ -640,14 +663,16 @@ def forward_crawler_wave(gate: Gate = _always) -> MacroStep:
         if last is not None and ctx.bot.time - last < _FORWARD_CRAWLER_INTERVAL:
             return None
 
-        anchor = _army_forward_anchor(ctx)
+        anchor = _mid_map_anchor(ctx)
+        if anchor is None:
+            return None
         ctx.state.last_forward_crawler_wave_at = ctx.bot.time
         from bot.common.log import log_event
 
         log_event(
             ctx.bot,
-            "FORWARD_CRAWLER wave: 3 Spine + 3 Spore beside army "
-            f"(minerals={ctx.bot.minerals})",
+            "FORWARD_CRAWLER wave: 3 Spine + 3 Spore toward mid-map at "
+            f"({anchor.x:.0f},{anchor.y:.0f}) (minerals={ctx.bot.minerals})",
         )
         return ForwardCrawlerWave(
             anchor=anchor, structure_types=_FORWARD_CRAWLER_WAVE

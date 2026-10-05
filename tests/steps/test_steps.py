@@ -14,6 +14,8 @@ Runs under pytest, or standalone with no test dependency:
 from __future__ import annotations
 
 import sys
+
+import pytest
 from unittest.mock import MagicMock, patch
 
 from ares.behaviors.macro import (
@@ -931,23 +933,70 @@ def test_rebuild_lost_tech_builds_at_the_surviving_base() -> None:
 def test_forward_crawler_wave_waits_on_minerals_and_interval() -> None:
     from bot.behaviors.zerg import ForwardCrawlerWave
 
-    ctx = _ctx()
+    ctx = _forward_ctx(creep_until=60.0)
+
+    def wave():
+        return _with_creep(ctx, lambda: z.forward_crawler_wave()(ctx))
+
     ctx.bot.minerals = 2000
-    ctx.bot.time = 100.0
-    ctx.bot.start_location = Point2((10.0, 10.0))
-    ctx.bot.enemy_start_locations = [Point2((50.0, 50.0))]
-    ctx.bot.mediator.get_squads.return_value = []
-    assert z.forward_crawler_wave()(ctx) is None
+    assert wave() is None
 
     ctx.bot.minerals = 2001
-    wave = z.forward_crawler_wave()(ctx)
-    assert isinstance(wave, ForwardCrawlerWave)
-    assert list(wave.structure_types).count(UnitTypeId.SPINECRAWLER) == 3
-    assert list(wave.structure_types).count(UnitTypeId.SPORECRAWLER) == 3
+    found = wave()
+    assert isinstance(found, ForwardCrawlerWave)
+    assert list(found.structure_types).count(UnitTypeId.SPINECRAWLER) == 3
+    assert list(found.structure_types).count(UnitTypeId.SPORECRAWLER) == 3
     assert ctx.state.last_forward_crawler_wave_at == 100.0
-    assert z.forward_crawler_wave()(ctx) is None
+    assert wave() is None
     ctx.bot.time = 130.0
-    assert z.forward_crawler_wave()(ctx) is not None
+    assert wave() is not None
+
+
+def _forward_ctx(creep_until: float) -> BotContext:
+    """Our base at (10,10), map centre (110,110); creep covers every tile
+    within `creep_until` of the base."""
+    ctx = _ctx()
+    ctx.bot.minerals = 5000
+    ctx.bot.time = 100.0
+    base = MagicMock()
+    base.position = Point2((10.0, 10.0))
+    ctx.bot.townhalls = [base]
+    ctx.bot.game_info.map_center = Point2((110.0, 110.0))
+    ctx.mediator.get_creep_grid = "creep"
+    ctx.creep_until = creep_until
+    return ctx
+
+
+def _with_creep(ctx, fn):
+    origin = Point2((10.0, 10.0))
+    with patch(
+        "cython_extensions.general_utils.cy_has_creep",
+        lambda _grid, point: origin.distance_to(point) <= ctx.creep_until,
+    ):
+        return fn()
+
+
+def test_forward_crawler_wave_anchors_at_the_creep_edge_toward_mid_map() -> None:
+    """Not at the army (which is the natural whenever it's home or falling
+    back): out along the line to the map centre, as far as creep reaches."""
+    ctx = _forward_ctx(creep_until=60.0)
+
+    wave = _with_creep(ctx, lambda: z.forward_crawler_wave()(ctx))
+
+    anchor = wave.anchor
+    assert Point2((10.0, 10.0)).distance_to(anchor) == pytest.approx(60.0, abs=2.5)
+    # On the line from our base to the centre.
+    assert anchor.x == pytest.approx(anchor.y)
+    assert anchor.x > 10.0
+
+
+def test_forward_crawler_wave_waits_until_creep_reaches_forward_ground() -> None:
+    """Creep only around the natural -> nothing forward to build at; hold
+    (and don't burn the interval) rather than crowd the natural."""
+    ctx = _forward_ctx(creep_until=15.0)
+
+    assert _with_creep(ctx, lambda: z.forward_crawler_wave()(ctx)) is None
+    assert ctx.state.last_forward_crawler_wave_at is None
 
 
 def main() -> int:

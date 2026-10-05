@@ -8,14 +8,17 @@ Changelings get a sticky opponent-base destination (also in `RunState`) so
 frame-to-frame unit-list reshuffles cannot bounce them between targets.
 
 Movement thrash harden (CheatInsane):
-- Scout Overseer is watch-first: `PathUnitToTarget` only — no `KeepUnitSafe`
-  peel that undoes vision (same intent as opening Overlord `air_scout`).
+- Scout Overseer tours the enemy natural, third and main, parking at the
+  edge of each base (`_pick_vantage`: clear of known anti-air, toward the
+  map edge) and running `KeepUnitSafe` every frame - the earlier
+  watch-first version hovered over the base centre and died.
 - Home / army / scout destinations are sticky per tag; we skip re-issuing
   moves when already on the dest tile or already ordered toward it.
 """
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 from ares.behaviors.combat import CombatManeuver
@@ -27,7 +30,7 @@ from ares.behaviors.combat.individual import (
     UseAbility,
 )
 from ares.consts import UnitRole
-from cython_extensions import cy_distance_to_squared, cy_towards
+from cython_extensions import cy_distance_to, cy_distance_to_squared, cy_towards
 from sc2.ids.ability_id import AbilityId
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
@@ -139,19 +142,30 @@ def _should_skip_move(unit: "Unit", target: Point2) -> bool:
     return _already_ordered_to_point(unit, target)
 
 
-def _watch_air_move(ctx: "BotContext", unit: "Unit", target: Point2) -> None:
-    """Scout path — vision watch-first, no KeepUnitSafe peel."""
-    if _should_skip_move(unit, target):
-        return
+def _scout_air_move(ctx: "BotContext", unit: "Unit", target: Point2) -> None:
+    """Scout path: `KeepUnitSafe` every frame, then the move (skipped while
+    already on its way / arrived).
+
+    The safety check runs even when the move itself is skipped - a scout
+    already flying toward its vantage still has to notice a Stalker or
+    Cannon appearing next to it. The old watch-first version skipped the
+    peel entirely to keep vision, and the scout floated over the enemy base
+    until it died; the vantage points below (edge of the base, clear of
+    known anti-air) are what keep vision cheap now.
+    """
     grid = ctx.mediator.get_air_grid
-    ctx.bot.register_behavior(
-        PathUnitToTarget(
-            unit=unit,
-            grid=grid,
-            target=target,
-            success_at_distance=_OVERSEER_ARRIVE,
+    maneuver = CombatManeuver()
+    maneuver.add(KeepUnitSafe(unit=unit, grid=grid))
+    if not _should_skip_move(unit, target):
+        maneuver.add(
+            PathUnitToTarget(
+                unit=unit,
+                grid=grid,
+                target=target,
+                success_at_distance=_SCOUT_ARRIVE,
+            )
         )
-    )
+    ctx.bot.register_behavior(maneuver)
 
 
 def _safe_air_move(ctx: "BotContext", unit: "Unit", target: Point2) -> None:
@@ -185,42 +199,158 @@ def _army_target(ctx: "BotContext") -> Point2 | None:
     return targeting.squad_destination(ctx, biggest.squad_position)
 
 
-def _scout_target(ctx: "BotContext", scout: "Unit") -> Point2:
-    """Enemy-side expansion to skirt — sticky so we do not flip every frame.
+# How far from a base's townhall the scout parks. Overseer sight is 11, so
+# this still sees the townhall and most of the mineral line from the edge
+# instead of from on top of the army and the anti-air.
+_SCOUT_VANTAGE_RADIUS: float = 9.5
+_SCOUT_ARRIVE: float = 2.5
+_SCOUT_DWELL_S: float = 8.0
+"""Time spent watching one base before moving on to the next in the tour."""
+_SCOUT_THREAT_MARGIN: float = 3.0
+"""Extra clearance beyond a threat's air range before a vantage is 'safe'."""
+_SCOUT_CLEARANCE_CAP: float = 12.0
+_SCOUT_ANGLES: int = 16
+_SCOUT_EDGE_MARGIN: float = 1.0
+"""Keep vantage points this far inside the playable area."""
+_SCOUT_TOUR_EXPANSIONS: int = 2
+"""Enemy natural + third, then the main."""
 
-    Keeps a latched destination while the scout is still en route / watching.
-    Repicks only when the latch is missing, the scout has arrived, or the
-    point is no longer a valid enemy-side candidate.
+
+def scout_tour(ctx: "BotContext") -> list[Point2]:
+    """Bases the scout Overseer visits, in order: the enemy's natural and
+    third (the enemy-side expansions closest to its start), then its main.
+
+    The main goes last - it is the most heavily defended, and the other two
+    are what tell us how greedy the enemy is.
     """
-    enemy_start = ctx.bot.enemy_start_locations[0]
-    expansions = sorted(
-        ctx.bot.expansion_locations_list,
+    starts = list(ctx.bot.enemy_start_locations)
+    if not starts:
+        return []
+    enemy_start = starts[0]
+    our_start = ctx.production_location
+    enemy_side = sorted(
+        (
+            Point2(loc)
+            for loc in ctx.bot.expansion_locations_list
+            if cy_distance_to_squared(loc, enemy_start) > _BASE_MATCH_SQ
+            and cy_distance_to_squared(loc, enemy_start)
+            < cy_distance_to_squared(loc, our_start)
+        ),
         key=lambda loc: cy_distance_to_squared(loc, enemy_start),
     )
-    owned = set(ctx.bot.owned_expansions.keys())
-    fallback = Point2(cy_towards(enemy_start, ctx.production_location, 25.0))
+    return enemy_side[:_SCOUT_TOUR_EXPANSIONS] + [Point2(enemy_start)]
 
-    def _valid(loc: Point2) -> bool:
-        if any(cy_distance_to_squared(loc, o) <= _BASE_MATCH_SQ for o in owned):
-            return False
-        return True
 
-    candidates = [
-        Point2(loc)
-        for loc in expansions
-        if loc not in owned and cy_distance_to_squared(loc, scout.position) > 25.0
-    ]
+def _air_threats(ctx: "BotContext") -> list[tuple[Point2, float]]:
+    """(position, air range) of every visible enemy that can shoot up."""
+    threats: list[tuple[Point2, float]] = []
+    for group in (ctx.bot.enemy_units, ctx.bot.enemy_structures):
+        for unit in group:
+            if not getattr(unit, "can_attack_air", False):
+                continue
+            if not getattr(unit, "is_ready", True):
+                continue
+            threats.append((unit.position, float(getattr(unit, "air_range", 0.0) or 0.0)))
+    return threats
 
-    latched = ctx.state.overseer_destinations.get(scout.tag)
-    if latched is not None and _valid(latched):
-        # Still traveling or parked on the latch — keep it (no candidate flip).
-        if cy_distance_to_squared(scout.position, latched) > _OVERSEER_ARRIVE_SQ:
-            return latched
-        # Arrived: hold the tile (caller skips re-issue via arrive check).
-        return latched
 
-    pick = candidates[0] if candidates else fallback
-    return _sticky_dest(ctx, scout.tag, pick, force=True)
+def _clearance(point: Point2, threats: list[tuple[Point2, float]]) -> float:
+    """Distance from `point` to the edge of the nearest threat's air range
+    (negative inside it), capped so far-away threats stop mattering."""
+    if not threats:
+        return _SCOUT_CLEARANCE_CAP
+    return min(
+        _SCOUT_CLEARANCE_CAP,
+        min(
+            cy_distance_to(point, position) - air_range
+            for position, air_range in threats
+        ),
+    )
+
+
+def _in_playable_area(ctx: "BotContext", point: Point2) -> bool:
+    area = ctx.bot.game_info.playable_area
+    margin = _SCOUT_EDGE_MARGIN
+    return (
+        area.x + margin <= point.x <= area.x + area.width - margin
+        and area.y + margin <= point.y <= area.y + area.height - margin
+    )
+
+
+def _pick_vantage(
+    ctx: "BotContext",
+    base: Point2,
+    scout_position: Point2,
+    threats: list[tuple[Point2, float]],
+) -> Point2:
+    """Where to hover to watch `base` from its edge.
+
+    Samples a ring of `_SCOUT_VANTAGE_RADIUS` around the base and keeps the
+    point with the most clearance from known anti-air, preferring points
+    toward the map edge (away from the centre, where the enemy army walks)
+    and ones the scout doesn't have to cross the base to reach.
+    """
+    center = ctx.bot.game_info.map_center
+    best: Point2 | None = None
+    best_score = float("-inf")
+    for index in range(_SCOUT_ANGLES):
+        angle = 2.0 * math.pi * index / _SCOUT_ANGLES
+        point = Point2(
+            (
+                base.x + _SCOUT_VANTAGE_RADIUS * math.cos(angle),
+                base.y + _SCOUT_VANTAGE_RADIUS * math.sin(angle),
+            )
+        )
+        if not _in_playable_area(ctx, point):
+            continue
+        score = (
+            _clearance(point, threats)
+            + 0.05 * cy_distance_to(point, center)
+            - 0.03 * cy_distance_to(point, scout_position)
+        )
+        if score > best_score:
+            best, best_score = point, score
+    if best is None:
+        return Point2(cy_towards(base, scout_position, _SCOUT_VANTAGE_RADIUS))
+    return best
+
+
+def _scout_target(ctx: "BotContext", scout: "Unit") -> Point2 | None:
+    """Vantage point the scout should be at right now, advancing the tour.
+
+    Visits `scout_tour` in order, `_SCOUT_DWELL_S` at each base, then wraps
+    around. The vantage is latched per base and only re-picked when a
+    threat comes within range + margin of it (or the tour moves on), so the
+    scout doesn't dither between ring points frame to frame.
+    """
+    tour = scout_tour(ctx)
+    state = ctx.state
+    if not tour:
+        return None
+    index = state.overseer_scout_tour_index % len(tour)
+    base = tour[index]
+    threats = _air_threats(ctx)
+
+    vantage = state.overseer_scout_vantage
+    stale = (
+        vantage is None
+        or cy_distance_to_squared(vantage, base)
+        > (_SCOUT_VANTAGE_RADIUS + 1.0) ** 2
+    )
+    if stale or _clearance(vantage, threats) < _SCOUT_THREAT_MARGIN:
+        vantage = _pick_vantage(ctx, base, scout.position, threats)
+        state.overseer_scout_vantage = vantage
+
+    if cy_distance_to_squared(scout.position, vantage) <= _SCOUT_ARRIVE**2:
+        if state.overseer_scout_dwell_since is None:
+            state.overseer_scout_dwell_since = ctx.bot.time
+        elif ctx.bot.time - state.overseer_scout_dwell_since >= _SCOUT_DWELL_S:
+            state.overseer_scout_tour_index = (index + 1) % len(tour)
+            state.overseer_scout_dwell_since = None
+            state.overseer_scout_vantage = None
+    else:
+        state.overseer_scout_dwell_since = None
+    return vantage
 
 
 
@@ -348,8 +478,9 @@ def manage_overseers() -> CombatRoutine:
 
         if (tag := state.overseer_scout_tag) is not None and tag in alive:
             scout = alive[tag]
-            # Watch-first: PathUnitToTarget only — KeepUnitSafe peels vision.
-            _watch_air_move(ctx, scout, _scout_target(ctx, scout))
+            vantage = _scout_target(ctx, scout)
+            if vantage is not None:
+                _scout_air_move(ctx, scout, vantage)
 
         _cast_changelings(ctx)
         _spread_changelings(ctx)
