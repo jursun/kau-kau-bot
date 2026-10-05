@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from ares.behaviors.macro import ExpansionController, MacroPlan, SpawnController, TechUp
 from ares.consts import ID, TARGET, UnitRole
+from sc2.ids.ability_id import AbilityId
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 from sc2.position import Point2
@@ -253,7 +254,8 @@ def release_stuck_crawlers(ctx: "BotContext") -> None:
             ctx.bot,
             f"CRAWLER stuck: {structure_type.name} drone {tag} made no progress "
             f"toward ({site.x:.0f},{site.y:.0f}) for {now - since:.0f}s "
-            f"(dist {distance:.1f}) - retrying elsewhere",
+            f"(dist {distance:.1f}, idle={worker.is_idle}, "
+            f"minerals={ctx.bot.minerals}) - retrying elsewhere",
         )
         ctx.state.bad_crawler_tiles.add((site.x, site.y))
         ctx.mediator.get_building_counter[structure_type] -= 1
@@ -564,10 +566,18 @@ def rebuild_lost_tech(gate: Gate = _always) -> MacroStep:
                         to_count=1,
                     )
                 )
+        # A Lair morph in flight doesn't show in `structures(LAIR)` until it
+        # finishes, so check the townhall orders too - otherwise every morph
+        # reads as "lost" for its whole ~57s.
         lair_gone = (
             bot.structures(UnitTypeId.LAIR).amount
             + bot.structures(UnitTypeId.HIVE).amount
             == 0
+            and not any(
+                o.ability.id == AbilityId.UPGRADETOLAIR_LAIR
+                for th in bot.townhalls
+                for o in th.orders
+            )
         )
         if lair_gone:
             missing.append("LAIR")

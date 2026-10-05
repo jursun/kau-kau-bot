@@ -25,6 +25,7 @@ from ares.behaviors.macro import (
     UpgradeController,
 )
 from ares.consts import ID, TARGET, UnitRole
+from sc2.ids.ability_id import AbilityId
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.ids.upgrade_id import UpgradeId
 from sc2.position import Point2
@@ -891,6 +892,18 @@ def test_rebuild_lost_tech_treats_a_hive_as_lair_tech() -> None:
             UnitTypeId.HIVE: 1,
         }
     )
+
+    assert z.rebuild_lost_tech()(ctx) is None
+
+
+def test_rebuild_lost_tech_ignores_a_lair_morph_in_flight() -> None:
+    """`structures(LAIR)` is 0 for the whole ~57s morph - that is not a loss."""
+    ctx = _rebuild_ctx(
+        {UnitTypeId.SPAWNINGPOOL: 1, UnitTypeId.ROACHWARREN: 1}
+    )
+    order = MagicMock()
+    order.ability.id = AbilityId.UPGRADETOLAIR_LAIR
+    ctx.bot.townhalls[0].orders = [order]
 
     assert z.rebuild_lost_tech()(ctx) is None
 
