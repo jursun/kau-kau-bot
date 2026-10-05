@@ -460,6 +460,11 @@ def _handle_fall_back(
     state = ctx.state
     position = squad.squad_position
     units = [u for u in squad.squad_units if u.type_id != UnitTypeId.ROACHBURROWED]
+    if not units:
+        # Only dug-in regen Roaches (`regen_burrow_roaches` owns them): there
+        # is nobody to move, and "falling back" them re-triggered and logged
+        # every frame (50+ "FALL BACK 0 units" lines in one fight).
+        return False
 
     if squad.tags & state.falling_back_tags:
         if cy_distance_to_squared(position, rally) <= (MUSTER_RADIUS * 1.5) ** 2:
@@ -1154,12 +1159,146 @@ def _breach_worker_target(ctx: "BotContext", unit: Unit) -> Unit | None:
     return cy_closest_to(position=unit.position, units=workers)
 
 
+# --- Flanking an enemy that is engaging our static defense ---------------
+
+WALL_ENGAGE_RADIUS: float = 12.0
+"""An enemy army unit this close to one of our Spine/Spore Crawlers counts
+as engaging the wall."""
+WALL_ENGAGE_MIN_ENEMIES: int = 3
+"""Fewer than this is a poke, not an engagement worth abandoning a
+fall-back / muster for."""
+WALL_ENGAGE_HOLD_S: float = 6.0
+"""Keep flanking this long after the enemy was last seen at the wall, so the
+decision doesn't flicker as units die / step out of radius."""
+FLANK_OFFSET: float = 9.0
+"""How far to the side of the enemy ball the approach point sits."""
+FLANK_BEHIND: float = 3.0
+"""...and how far past it (away from the wall) - the ball is facing the
+wall, so lateral-and-behind is where it isn't looking."""
+FLANK_ATTACK_RANGE: float = 14.0
+"""Within this of the enemy ball a squad is already in it: stop staging and
+attack-move in rather than walking a detour under fire."""
+FLANK_STAGE_ARRIVE: float = 5.0
+_FLANK_TARGET_GRID: float = 4.0
+"""Attack-move target is snapped to this grid so a drifting enemy centre
+doesn't re-issue every unit's order every frame."""
+
+
+def _wall_engagement(ctx: "BotContext") -> tuple[Point2, Point2] | None:
+    """(enemy ball centre, our engaged wall centre) while an enemy army is
+    attacking our Spine/Spore Crawlers, else `None`.
+
+    Latched for `WALL_ENGAGE_HOLD_S` after the last sighting.
+    """
+    state = ctx.state
+    crawlers = [
+        s.position
+        for s in ctx.bot.structures(
+            {UnitTypeId.SPINECRAWLER, UnitTypeId.SPORECRAWLER}
+        ).ready
+    ]
+    if crawlers:
+        radius_sq = WALL_ENGAGE_RADIUS**2
+        engaged = [
+            e
+            for e in enemy_army(ctx)
+            if any(
+                cy_distance_to_squared(e.position, c) <= radius_sq for c in crawlers
+            )
+        ]
+        if len(engaged) >= WALL_ENGAGE_MIN_ENEMIES:
+            enemy_center = Point2(cy_center([e.position for e in engaged]))
+            near_wall = [
+                c
+                for c in crawlers
+                if cy_distance_to_squared(c, enemy_center)
+                <= (WALL_ENGAGE_RADIUS + 4.0) ** 2
+            ] or crawlers
+            wall_center = Point2(cy_center(near_wall))
+            state.wall_engagement = (enemy_center, wall_center)
+            state.wall_engagement_until = ctx.bot.time + WALL_ENGAGE_HOLD_S
+            return state.wall_engagement
+    if state.wall_engagement is not None and ctx.bot.time < state.wall_engagement_until:
+        return state.wall_engagement
+    state.wall_engagement = None
+    return None
+
+
+def _flank_staging_point(enemy: Point2, wall: Point2, squad_position: Point2) -> Point2:
+    """Beside and just behind the enemy ball, on whichever side of the
+    wall->enemy axis our squad is already on (so it doesn't cross the
+    fight to reach the far flank)."""
+    dx, dy = enemy.x - wall.x, enemy.y - wall.y
+    length = math.hypot(dx, dy)
+    if length < 0.01:
+        dx, dy, length = 1.0, 0.0, 1.0
+    ax, ay = dx / length, dy / length  # wall -> enemy
+    px, py = -ay, ax  # perpendicular
+    side = 1.0 if (squad_position.x - enemy.x) * px + (squad_position.y - enemy.y) * py >= 0 else -1.0
+    return Point2(
+        (
+            enemy.x + side * px * FLANK_OFFSET + ax * FLANK_BEHIND,
+            enemy.y + side * py * FLANK_OFFSET + ay * FLANK_BEHIND,
+        )
+    )
+
+
+def _flank_squad(
+    ctx: "BotContext", squad, engagement: tuple[Point2, Point2]
+) -> None:
+    """Commit this squad against the enemy ball that is hitting our wall,
+    from the side, whatever the supply ratio.
+
+    Overrides fall-back / muster: the whole point is that the enemy has
+    already committed into static defense, which is the best moment to
+    trade even from behind. Far from the fight the squad stages at a flank
+    point first (plain move, so it doesn't stop to trade on the way); once
+    within `FLANK_ATTACK_RANGE` of the ball, or at the staging point, it
+    attack-moves in.
+    """
+    enemy, wall = engagement
+    state = ctx.state
+    state.falling_back_tags -= squad.tags
+    state.mustering_tags -= squad.tags
+    state.regroup_enemy_supply = None
+
+    position = squad.squad_position
+    stage = _flank_staging_point(enemy, wall, position)
+    staging = (
+        cy_distance_to(position, enemy) > FLANK_ATTACK_RANGE
+        and cy_distance_to(position, stage) > FLANK_STAGE_ARRIVE
+    )
+    ctx.log_once(
+        f"flank:{int(ctx.bot.time // 20)}",
+        f"FLANK enemy engaging our wall at ({enemy.x:.0f},{enemy.y:.0f}) - "
+        f"{len(squad.squad_units)} units, staging={staging}",
+    )
+    snapped = Point2(
+        (
+            round(enemy.x / _FLANK_TARGET_GRID) * _FLANK_TARGET_GRID,
+            round(enemy.y / _FLANK_TARGET_GRID) * _FLANK_TARGET_GRID,
+        )
+    )
+    for unit in squad.squad_units:
+        if unit.type_id == UnitTypeId.ROACHBURROWED:
+            continue
+        maneuver = CombatManeuver()
+        if staging:
+            maneuver.add(_Move(unit=unit, target=stage))
+        elif not _already_ordered_to_point(unit, snapped):
+            maneuver.add(AMove(unit=unit, target=snapped))
+        else:
+            continue
+        ctx.bot.register_behavior(maneuver)
+
+
 def attack_squads(
     squad_radius: float = SQUAD_RADIUS,
     min_engage_range: float | None = None,
     never_retreat: bool = False,
     kite_types: frozenset = frozenset(),
     fall_back_ratio: float | None = None,
+    flank_at_wall: bool = False,
 ) -> CombatRoutine:
     """Drive each ATTACKING squad at its nearest worthwhile target.
 
@@ -1204,6 +1343,11 @@ def attack_squads(
       `REGROUP_MAX_HOLD_S` passes, and re-pushes as a ball. For a build
       with the economy to remax: trade inefficiently, but don't feed a
       hopeless fight. Decided per squad from total supply, never per unit.
+    - `flank_at_wall=True`: while an enemy army is attacking our Spine/Spore
+      Crawlers (`_wall_engagement`), every ATTACKING squad - mustering or
+      falling back included - flanks it (`_flank_squad`) regardless of the
+      supply ratio. Holding back until the enemy commits into static
+      defense is right; once it has, trading from the side is the payoff.
     - Otherwise, unsafe ground influence: `KeepGroupSafe` / `KeepUnitSafe`
       run first so the ball leaves bad tiles instead of parking.
     - Enemy force strictly smaller than ours: `StutterGroupForward` trades
@@ -1254,7 +1398,11 @@ def attack_squads(
         )
         rally = targeting.rally_point(ctx)
         grid = ctx.mediator.get_ground_grid
+        engagement = _wall_engagement(ctx) if flank_at_wall else None
         for squad in squads:
+            if engagement is not None:
+                _flank_squad(ctx, squad, engagement)
+                continue
             position = squad.squad_position
             mustering = squad.tags & ctx.state.mustering_tags
 

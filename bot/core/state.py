@@ -171,6 +171,11 @@ class RunState:
     pending. While set, squads holding at the rally wait until they are big
     enough to re-push (or `REGROUP_MAX_HOLD_S` passes), and streamed
     reinforcements muster there instead of trickling to the front."""
+    wall_engagement: tuple[Point2, Point2] | None = None
+    """(enemy ball centre, our wall centre) while an enemy army is attacking
+    our Spine/Spore Crawlers - see `routines.combat._wall_engagement`."""
+    wall_engagement_until: float = 0.0
+    """Game time the latched `wall_engagement` expires."""
     regroup_since: float = 0.0
     """Game time the pending regroup started."""
     defender_hold: dict[int, Point2] = field(default_factory=dict)

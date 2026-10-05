@@ -1277,6 +1277,9 @@ BUILD = BuildDefinition(
             # idiom as Four Rax Marines.
             combat.attack_squads(
                 fall_back_ratio=_FALL_BACK_RATIO,
+                # Waiting for the bigger army to commit into our Spine/Spore
+                # wall is right; once it has, flank it even from behind.
+                flank_at_wall=True,
                 kite_types=frozenset({UnitTypeId.ROACH}),
                 min_engage_range=_ROACH_MIN_ENGAGE_RANGE,
             ),

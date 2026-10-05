@@ -579,6 +579,22 @@ def test_outmatched_is_a_strict_ratio_of_supply() -> None:
     assert not combat._outmatched(5.0, 0.0, 0.55)  # no enemy, nothing to fear
 
 
+def test_fall_back_ignores_a_squad_of_only_burrowed_roaches() -> None:
+    rally = Point2((50.0, 50.0))
+    original = _patch_targeting(rally, Point2((999.0, 999.0)))
+    try:
+        ctx, units = _fall_back_setup(our_count=2, enemy_count=5)
+        for unit in units:
+            unit.type_id = UnitTypeId.ROACHBURROWED
+
+        combat.attack_squads(fall_back_ratio=0.55)(ctx)
+
+        assert ctx.state.falling_back_tags == set()
+        assert ctx.state.regroup_enemy_supply is None
+    finally:
+        _restore_targeting(original)
+
+
 def test_fall_back_moves_the_whole_squad_to_the_rally_when_outmatched() -> None:
     rally = Point2((50.0, 50.0))
     original = _patch_targeting(rally, Point2((999.0, 999.0)))
@@ -2626,6 +2642,140 @@ def test_release_home_zerglings_after_early_noop_during_window() -> None:
     combat.release_home_zerglings_after_early()(ctx)
 
     ctx.mediator.assign_role.assert_not_called()
+
+
+# --- flank an enemy engaging our wall ---------------------------------------
+
+
+def _crawler(tag: int, at: Point2) -> MagicMock:
+    c = _unit(tag, at)
+    c.type_id = UnitTypeId.SPINECRAWLER
+    return c
+
+
+def _wall_ctx(crawler_at: Point2, enemy_at: Point2, enemy_count: int = 5):
+    """Our crawlers at `crawler_at`, `enemy_count` enemies at `enemy_at`, and
+    one squad of 2 units sitting at the rally (50, 50), mustering."""
+    ctx = _ctx()
+    ctx.bot.time = 100.0
+    ctx.bot.townhalls = []
+    crawlers = [_crawler(500 + i, Point2((crawler_at.x + i, crawler_at.y))) for i in range(2)]
+    structures = MagicMock()
+    structures.ready = crawlers
+    ctx.bot.structures = MagicMock(return_value=structures)
+    enemies = [
+        _unit(90 + i, Point2((enemy_at.x + 0.3 * i, enemy_at.y))) for i in range(enemy_count)
+    ]
+    ctx.mediator.get_cached_enemy_army = enemies
+    units = [_unit(i, Point2((50.0 + i, 50.0))) for i in range(1, 3)]
+    ctx.mediator.get_squads.return_value = [_squad(units)]
+    ctx.mediator.get_units_from_role.return_value = units
+    ctx.mediator.get_units_in_range.return_value = [[]]
+    return ctx, units, enemies
+
+
+def test_wall_engagement_detects_an_army_attacking_our_crawlers() -> None:
+    ctx, _, _ = _wall_ctx(Point2((100.0, 100.0)), Point2((108.0, 100.0)))
+
+    engagement = combat._wall_engagement(ctx)
+
+    assert engagement is not None
+    enemy, wall = engagement
+    assert cy_distance_to(enemy, Point2((108.0, 100.0))) < 1.0
+    assert cy_distance_to(wall, Point2((100.5, 100.0))) < 1.0
+
+
+def test_wall_engagement_ignores_a_poke_and_a_far_army() -> None:
+    poke, _, _ = _wall_ctx(Point2((100.0, 100.0)), Point2((108.0, 100.0)), enemy_count=2)
+    far, _, _ = _wall_ctx(Point2((100.0, 100.0)), Point2((160.0, 100.0)))
+
+    assert combat._wall_engagement(poke) is None
+    assert combat._wall_engagement(far) is None
+
+
+def test_wall_engagement_latches_briefly_after_the_enemy_leaves_radius() -> None:
+    ctx, _, enemies = _wall_ctx(Point2((100.0, 100.0)), Point2((108.0, 100.0)))
+    assert combat._wall_engagement(ctx) is not None
+
+    ctx.mediator.get_cached_enemy_army = []
+    ctx.bot.time += combat.WALL_ENGAGE_HOLD_S - 1.0
+    assert combat._wall_engagement(ctx) is not None
+
+    ctx.bot.time += 2.0
+    assert combat._wall_engagement(ctx) is None
+
+
+def test_flank_staging_point_is_beside_the_ball_on_our_side() -> None:
+    wall = Point2((100.0, 100.0))
+    enemy = Point2((110.0, 100.0))  # enemy east of the wall, attacking west
+
+    north = combat._flank_staging_point(enemy, wall, Point2((105.0, 140.0)))
+    south = combat._flank_staging_point(enemy, wall, Point2((105.0, 60.0)))
+
+    assert north.y > 100.0 and south.y < 100.0  # the side the squad is on
+    assert north.x > enemy.x  # and slightly past the ball, away from the wall
+    assert cy_distance_to(north, enemy) == pytest.approx(
+        (combat.FLANK_OFFSET**2 + combat.FLANK_BEHIND**2) ** 0.5
+    )
+
+
+def test_flank_overrides_fall_back_and_muster_when_the_wall_is_engaged() -> None:
+    """Weaker than the enemy and mustering at the rally: normally holds back.
+    With the enemy committed into our wall it goes in from the side."""
+    original = _patch_targeting(Point2((50.0, 50.0)), Point2((999.0, 999.0)))
+    try:
+        ctx, units, _ = _wall_ctx(Point2((100.0, 100.0)), Point2((108.0, 100.0)))
+        ctx.state.mustering_tags = {u.tag for u in units}
+        ctx.state.falling_back_tags = {1}
+        ctx.state.regroup_enemy_supply = 40.0
+
+        combat.attack_squads(fall_back_ratio=0.55, flank_at_wall=True)(ctx)
+
+        assert ctx.state.mustering_tags == set()
+        assert ctx.state.falling_back_tags == set()
+        assert ctx.state.regroup_enemy_supply is None
+        micros = _all_micros(ctx)
+        moves = [m for m in micros if isinstance(m, combat._Move)]
+        # Far from the ball: staged to the flank point with plain moves.
+        assert {m.unit.tag for m in moves} == {1, 2}
+        stage = moves[0].target
+        assert cy_distance_to(stage, Point2((108.0, 100.0))) == pytest.approx(
+            (combat.FLANK_OFFSET**2 + combat.FLANK_BEHIND**2) ** 0.5, abs=0.5
+        )
+    finally:
+        _restore_targeting(original)
+
+
+def test_flank_attack_moves_in_once_the_squad_is_at_the_ball() -> None:
+    original = _patch_targeting(Point2((50.0, 50.0)), Point2((999.0, 999.0)))
+    try:
+        ctx, units, _ = _wall_ctx(Point2((100.0, 100.0)), Point2((100.0, 100.0)))
+        for i, unit in enumerate(units):  # squad 6 tiles from the ball
+            unit.position = Point2((106.0 + i, 100.0))
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+
+        combat.attack_squads(fall_back_ratio=0.55, flank_at_wall=True)(ctx)
+
+        amoves = [m for m in _all_micros(ctx) if isinstance(m, AMove)]
+        assert {m.unit.tag for m in amoves} == {1, 2}
+        assert all(cy_distance_to(m.target, Point2((100.0, 100.0))) < 3.0 for m in amoves)
+    finally:
+        _restore_targeting(original)
+
+
+def test_flank_is_off_unless_the_build_asks_for_it() -> None:
+    original = _patch_targeting(Point2((50.0, 50.0)), Point2((999.0, 999.0)))
+    try:
+        ctx, units, _ = _wall_ctx(Point2((100.0, 100.0)), Point2((108.0, 100.0)))
+        ctx.state.mustering_tags = {u.tag for u in units}
+
+        combat.attack_squads(fall_back_ratio=0.55)(ctx)
+
+        assert ctx.state.wall_engagement is None  # never even evaluated
+        assert not [m for m in _all_micros(ctx) if isinstance(m, combat._Move)
+                    and cy_distance_to(m.target, Point2((108.0, 100.0))) < 20.0]
+    finally:
+        _restore_targeting(original)
 
 
 # --- micro_infestors ----------------------------------------------------
