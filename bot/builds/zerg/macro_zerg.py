@@ -148,8 +148,8 @@ real army — then streams new units into ATTACKING forever after.
 pipeline at all — see `combat.escort_corruptors` and
 `core.roles.SUPPORT_ROLES`. Home Zerglings stay on `ZERGLING_DEFENDER_ROLE`
 (`combat.defend_with_zerglings`); extras join the attack wave. Once Burrow
-is done, hurt Roaches (<25% HP) dig in via `combat.regen_burrow_roaches`
-until ~50% health, then unburrow. With Tunneling Claws they also retreat
+is done, hurt Roaches (<50% HP) dig in via `combat.regen_burrow_roaches`
+until full health, then unburrow. With Tunneling Claws they also retreat
 toward home on the influence grid while burrowed so they heal at a safe
 distance.
 

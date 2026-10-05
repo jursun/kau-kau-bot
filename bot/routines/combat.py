@@ -2154,8 +2154,10 @@ def escort_overseers() -> CombatRoutine:
 
     return routine
 
-_ROACH_REGEN_BURROW_BELOW: float = 1.0
-"""Burrow to regenerate once health is strictly below full (100%)."""
+_ROACH_REGEN_BURROW_BELOW: float = 0.5
+"""Burrow to regenerate once health is strictly below half. It was "below
+full", which pulled Roaches out of the fight at the first scratch (live:
+Roaches burrowing and tunnelling home the moment they took any damage)."""
 _ROACH_REGEN_UNBURROW_AT: float = 1.0
 """Unburrow only at full health — stay dug while tunneling home to regen."""
 _ROACH_REGEN_SAFE_ENEMY_RANGE: float = 36.0
@@ -2204,7 +2206,7 @@ def _roach_burrowed_already_pathing(unit: Unit) -> bool:
 def regen_burrow_roaches() -> CombatRoutine:
     """Burrow damaged Roaches and tunnel home until full HP.
 
-    Requires Burrow researched. Any surface Roach below 100% HP digs in;
+    Requires Burrow researched. Any surface Roach below half HP digs in;
     `ROACHBURROWED` surfaces only at full health. With Tunneling Claws,
     burrowed Roaches issue a *single* sticky path toward home (no
     KeepUnitSafe — that re-picked a safe tile every frame and thrashed
