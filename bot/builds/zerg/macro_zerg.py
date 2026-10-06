@@ -605,12 +605,41 @@ def _upgrade_slot_target(ctx) -> int:
     """Concurrent researches: army-behind → 1(+1 extra); else 2(+1 extra)."""
     base = 1 if intel_army.army_behind_on_supply(ctx) else 2
     if _has_extra_upgrade_budget(ctx):
-        return base + 1
+        base += 1
+    if _gas_surplus(ctx):
+        base += 1  # the 3rd Evolution Chamber / Spawning Pool research
     return base
+
+
+_GAS_SURPLUS_BANK: int = 1000
+"""Banked gas that means we are floating: the normal upgrade path can't spend
+it, so a 3rd Evolution Chamber goes down and melee attack + Adrenal Glands
+join the research list."""
+_SURPLUS_UPGRADES: tuple[UpgradeId, ...] = (
+    UpgradeId.ZERGMELEEWEAPONSLEVEL1,
+    UpgradeId.ZERGLINGATTACKSPEED,  # Adrenal Glands (needs Hive)
+    UpgradeId.ZERGMELEEWEAPONSLEVEL2,
+    UpgradeId.ZERGMELEEWEAPONSLEVEL3,
+)
+
+
+def _gas_surplus(ctx) -> bool:
+    """True once the gas bank has passed `_GAS_SURPLUS_BANK`. Latched: spending
+    the bank down must not pull the 3rd Evolution Chamber's research back out
+    from under it."""
+    if ctx.bot.vespene >= _GAS_SURPLUS_BANK:
+        ctx.state.gas_surplus = True
+    return ctx.state.gas_surplus
+
+
+def _surplus_evolution_chambers(ctx) -> int:
+    return 1 if _gas_surplus(ctx) else 0
 
 
 def _desired_upgrades(ctx) -> list[UpgradeId]:
     upgrades = list(ctx.build.army.upgrades)
+    if _gas_surplus(ctx):
+        upgrades.extend(u for u in _SURPLUS_UPGRADES if u not in upgrades)
     if intel_army.enemy_has_air_units(ctx):
         upgrades.extend(_AIR_UPGRADES)
     return upgrades
@@ -1406,7 +1435,7 @@ BUILD = BuildDefinition(
                 gates.negate(gates.early_aggression()),
             ),
         ),
-        z.evolution_chambers(),
+        z.evolution_chambers(extra=_surplus_evolution_chambers),
         # 4th/5th only - `_expansions_after_scripted_third` (supply>=27 alone
         # raced hatch #3 ahead of the scripted expand; see that helper).
         _expansions_after_scripted_third,
@@ -1444,7 +1473,7 @@ BUILD = BuildDefinition(
                 gates.negate(gates.early_aggression()),
             ),
         ),
-        # Mineral sink: >2000 bank → every 30s pull 6 drones for 3 Spine +
+        # Mineral sink: >2000 bank → every 20s pull 6 drones for 3 Spine +
         # 3 Spore beside the army (needs creep under the ball).
         z.forward_crawler_wave(),
         # Last: only fires when nothing above had anywhere to put a mineral

@@ -6,7 +6,7 @@ in `steps/common.py`, so the shared engine stays race-neutral.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from ares.behaviors.macro import ExpansionController, MacroPlan, SpawnController, TechUp
 from ares.consts import ID, TARGET, UnitRole
@@ -173,9 +173,12 @@ def overflow_hatcheries(mineral_threshold: int = 500) -> MacroStep:
     return step
 
 
-def evolution_chambers() -> MacroStep:
+def evolution_chambers(extra: "Callable[[BotContext], int] | None" = None) -> MacroStep:
     """`UpgradeController` only ever builds one; a build wanting more than
     one +1/+1 tier researching in parallel needs another.
+
+    `extra(ctx)` adds chambers on top of the build's own count - Macro Zerg
+    uses it for a 3rd one while gas is piling up (see `_gas_surplus`).
 
     Count and gate both come from `ctx.build.army.evolution_chambers` /
     `.evolution_chamber_gate` rather than being passed in here, so a build
@@ -187,7 +190,7 @@ def evolution_chambers() -> MacroStep:
     def step(ctx: "BotContext"):
         return common.structure(
             UnitTypeId.EVOLUTIONCHAMBER,
-            ctx.build.army.evolution_chambers,
+            ctx.build.army.evolution_chambers + (extra(ctx) if extra else 0),
             ctx.build.army.evolution_chamber_gate,
         )(ctx)
 
@@ -630,7 +633,7 @@ def rebuild_lost_tech(gate: Gate = _always) -> MacroStep:
 
 
 _FORWARD_CRAWLER_MINERALS: int = 2000
-_FORWARD_CRAWLER_INTERVAL: float = 30.0
+_FORWARD_CRAWLER_INTERVAL: float = 20.0
 _FORWARD_CRAWLER_WAVE: tuple[UnitTypeId, ...] = (
     UnitTypeId.SPINECRAWLER,
     UnitTypeId.SPINECRAWLER,
@@ -757,7 +760,7 @@ def _forward_anchor(ctx: "BotContext") -> Point2 | None:
 
 
 def forward_crawler_wave(gate: Gate = _always) -> MacroStep:
-    """When floating >2000 minerals, every 30s pull 6 workers to plant
+    """When floating >2000 minerals, every 20s pull 6 workers to plant
     3 Spines + 3 Spores at the current forward wall group - groups of ~10,
     each further toward the enemy base than the last (`_forward_anchor`).
     Waits (no-op, interval not consumed) while creep hasn't reached anywhere

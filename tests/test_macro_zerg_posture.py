@@ -27,6 +27,7 @@ def _ctx(**bot_attrs) -> BotContext:
     bot.time = 300.0
     bot.supply_army = 20
     bot.supply_used = 100
+    bot.vespene = 0
     bot.larva = MagicMock()
     bot.larva.__bool__ = lambda self: True
     bot.larva.__len__ = lambda self: 3
@@ -559,6 +560,53 @@ def test_zergling_still_scouts_under_early_aggression() -> None:
     ctx.mediator.assign_role.assert_called_with(
         tag=1, role=ZERGLING_SCOUT_ROLE
     )
+
+
+# --- gas surplus: 3rd Evo + melee / Adrenal Glands ---------------------------
+
+
+def test_gas_surplus_latches_once_the_bank_passes_1000() -> None:
+    ctx = _ctx(vespene=999)
+    assert mz._gas_surplus(ctx) is False
+
+    ctx.bot.vespene = 1000
+    assert mz._gas_surplus(ctx) is True
+
+    ctx.bot.vespene = 50  # spent down: stays on
+    assert mz._gas_surplus(ctx) is True
+
+
+def test_surplus_adds_melee_and_adrenal_after_the_normal_upgrades() -> None:
+    ctx = _ctx(vespene=1500)
+
+    upgrades = mz._desired_upgrades(ctx)
+
+    assert upgrades[:3] == list(ctx.build.army.upgrades)
+    for expected in (
+        UpgradeId.ZERGMELEEWEAPONSLEVEL1,
+        UpgradeId.ZERGLINGATTACKSPEED,
+        UpgradeId.ZERGMELEEWEAPONSLEVEL2,
+        UpgradeId.ZERGMELEEWEAPONSLEVEL3,
+    ):
+        assert expected in upgrades
+    assert upgrades.index(UpgradeId.ZERGMELEEWEAPONSLEVEL1) < upgrades.index(
+        UpgradeId.ZERGLINGATTACKSPEED
+    )
+
+
+def test_no_surplus_leaves_the_upgrade_list_alone() -> None:
+    ctx = _ctx(vespene=200)
+
+    assert mz._desired_upgrades(ctx) == list(ctx.build.army.upgrades)
+    assert mz._surplus_evolution_chambers(ctx) == 0
+
+
+def test_surplus_wants_a_third_evolution_chamber_and_one_more_research_slot() -> None:
+    plain = _ctx(vespene=0)
+    rich = _ctx(vespene=1500)
+
+    assert mz._surplus_evolution_chambers(rich) == 1
+    assert mz._upgrade_slot_target(rich) == mz._upgrade_slot_target(plain) + 1
 
 
 def main() -> int:

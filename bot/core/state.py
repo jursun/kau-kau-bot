@@ -331,6 +331,10 @@ class RunState:
     """Crawler-building drone tag -> (closest distance to its build site so
     far, game time that best distance was last improved). Feeds
     `steps.zerg.release_stuck_crawlers`."""
+    gas_surplus: bool = False
+    """Latched once the gas bank passed 1000 (`macro_zerg._gas_surplus`): adds
+    a 3rd Evolution Chamber and melee attack / Adrenal Glands to the
+    research list."""
     forward_anchors: list[Point2] = field(default_factory=list)
     """Spine/Spore wall groups in the order they were started, each one
     further toward the enemy (see `steps.zerg.forward_crawler_wave`). The
