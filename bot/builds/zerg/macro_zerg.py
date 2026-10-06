@@ -218,6 +218,7 @@ from bot.intel import army as intel_army
 from bot.routines import (
     combat,
     creep,
+    emergency_defense,
     gates,
     overlords as overlord_routines,
     overseers as overseer_routines,
@@ -1327,6 +1328,10 @@ BUILD = BuildDefinition(
         routines=(
             # Intel-scaled leave (see wave_gate), then stream every new
             # army unit into ATTACKING from then on.
+            # Timing attack at home: Queens (Transfuse the Spines) and, when
+            # outmatched, Drones defend. First so the pulled units' roles are
+            # settled before any other routine orders them.
+            emergency_defense.pull_defense(),
             combat.release_first_wave_then_stream(muster=True),
             combat.reinforce_home_vs_early_aggression(),
             # After early window: home/scout lings join DEFENDING → ATTACKING.

@@ -334,6 +334,14 @@ class RunState:
     melee_evo_tag: int | None = None
     """The Evolution Chamber pinned to the melee attack chain (the gas-surplus
     3rd one) - see `behaviors.zerg.ResearchChain`."""
+    pulled_drone_tags: set[int] = field(default_factory=set)
+    """Drones pulled to defend a timing attack (`routines.emergency_defense`)."""
+    pulled_queen_roles: dict[int, "UnitRole"] = field(default_factory=dict)
+    """Pulled Queen tag -> the role to restore when the threat is over."""
+    home_threat_until: float = 0.0
+    """Keep the pull until this game time (last sighting + hold)."""
+    transfuse_at: dict[int, float] = field(default_factory=dict)
+    """Transfuse target tag -> game time last cast on it."""
     gas_surplus: bool = False
     """Latched once the gas bank passed 1000 (`macro_zerg._gas_surplus`): adds
     a 3rd Evolution Chamber and melee attack / Adrenal Glands to the
