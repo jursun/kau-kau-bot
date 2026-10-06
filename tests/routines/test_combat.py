@@ -2329,16 +2329,16 @@ def test_regen_burrow_roaches_skips_claws_move_when_already_moving() -> None:
     ctx.bot.register_behavior.assert_not_called()
 
 
-def test_regen_burrow_roaches_burrows_only_below_half_hp() -> None:
-    """Scratched Roaches (e.g. 60%) keep fighting; only < 50% dig in."""
+def test_regen_burrow_roaches_burrows_only_below_35_percent_hp() -> None:
+    """Scratched Roaches (e.g. 40-60%) keep fighting; only < 35% dig in."""
     ctx = _ctx()
     ctx.bot.state.upgrades = {UpgradeId.BURROW}
     hurt = _unit(1)
     hurt.type_id = UnitTypeId.ROACH
-    hurt.health_percentage = 0.49
+    hurt.health_percentage = 0.34
     scratched = _unit(3)
     scratched.type_id = UnitTypeId.ROACH
-    scratched.health_percentage = 0.6
+    scratched.health_percentage = 0.4
     healthy = _unit(2)
     healthy.type_id = UnitTypeId.ROACH
     healthy.health_percentage = 1.0
@@ -2361,13 +2361,13 @@ def test_regen_burrow_roaches_burrows_only_below_half_hp() -> None:
     assert registered[0].unit is hurt
 
 
-def test_regen_burrow_roaches_unburrows_at_full_health() -> None:
+def test_regen_burrow_roaches_unburrows_at_80_percent_health() -> None:
     ctx = _ctx()
     ctx.bot.state.upgrades = {UpgradeId.BURROW}
     ready = _unit(1)
-    ready.health_percentage = 1.0
+    ready.health_percentage = 0.8
     healing = _unit(2)
-    healing.health_percentage = 0.99
+    healing.health_percentage = 0.79
 
     def _units(unit_type):
         if unit_type == UnitTypeId.ROACH:
@@ -2388,7 +2388,7 @@ def test_regen_burrow_roaches_unburrows_at_full_health() -> None:
 
 
 def test_regen_burrow_roaches_unburrows_even_when_army_nearby() -> None:
-    """At full HP, surface to fight — do not wait for a clear bubble."""
+    """At 80% HP, surface to fight — do not wait for a clear bubble."""
     ctx = _ctx()
     ctx.bot.state.upgrades = {UpgradeId.BURROW}
     ready = _unit(1, Point2((50.0, 50.0)))
