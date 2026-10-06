@@ -3223,7 +3223,7 @@ def test_micro_infestors_prioritizes_fungal_growth_over_neural_parasite() -> Non
     ctx.mediator.get_squads.return_value = []
 
     infestor = _infestor(9, Point2((0.0, 0.0)), energy=100)
-    infestor.is_burrowed = True
+    infestor.is_burrowed = False
     ctx.mediator.get_units_from_role.side_effect = (
         lambda role: [infestor] if role == INFESTOR_ROLE else []
     )
@@ -3380,6 +3380,87 @@ def test_micro_infestors_with_normal_energy_saves_fungal_for_three() -> None:
         if isinstance(m, UseAbility)
         and m.ability == AbilityId.FUNGALGROWTH_FUNGALGROWTH
     ]
+
+
+def test_micro_infestors_burrowed_unburrows_to_fungal_a_clump() -> None:
+    """The live bug: ~2900 Fungal orders, energy never dropped - a burrowed
+    Infestor isn't offered Fungal Growth. It must surface, then cast."""
+    ctx, infestor = _infestor_ctx(Point2((0.0, 0.0)), energy=90)
+    infestor.is_burrowed = True
+    ctx.mediator.get_cached_enemy_army = [
+        _sized_enemy(i, Point2((5.0 + 0.4 * i, 0.0)), 0.6) for i in range(4)
+    ]
+
+    combat.micro_infestors()(ctx)
+
+    micros = _all_micros(ctx)
+    assert [m for m in micros if isinstance(m, UseAbility)
+            and m.ability == AbilityId.BURROWUP_INFESTOR]
+    assert not [m for m in micros if isinstance(m, UseAbility)
+                and m.ability == AbilityId.FUNGALGROWTH_FUNGALGROWTH]
+
+
+def test_micro_infestors_burrowed_prefers_a_castable_neural_over_unburrowing() -> None:
+    ctx, infestor = _infestor_ctx(Point2((0.0, 0.0)), energy=120)
+    infestor.is_burrowed = True
+    target = _high_value_enemy(1, Point2((6.0, 0.0)))
+    clump = [_sized_enemy(10 + i, Point2((7.0 + 0.4 * i, 0.0)), 0.6) for i in range(4)]
+    ctx.mediator.get_cached_enemy_army = [target] + clump
+
+    combat.micro_infestors()(ctx)
+
+    abilities = {m.ability for m in _all_micros(ctx) if isinstance(m, UseAbility)}
+    assert AbilityId.NEURALPARASITE_NEURALPARASITE in abilities
+    assert AbilityId.BURROWUP_INFESTOR not in abilities
+
+
+def test_micro_infestors_surfaced_with_fungal_energy_does_not_burrow_near_a_clump() -> None:
+    ctx, infestor = _infestor_ctx(Point2((0.0, 0.0)), energy=90)
+    ctx.mediator.get_cached_enemy_army = [
+        _sized_enemy(i, Point2((5.0 + 0.4 * i, 0.0)), 0.6) for i in range(4)
+    ]
+
+    combat.micro_infestors()(ctx)
+
+    abilities = {m.ability for m in _all_micros(ctx) if isinstance(m, UseAbility)}
+    assert AbilityId.FUNGALGROWTH_FUNGALGROWTH in abilities
+    assert AbilityId.BURROWDOWN_INFESTOR not in abilities
+
+
+def test_micro_infestors_without_fungal_energy_still_burrows_near_enemies() -> None:
+    ctx, infestor = _infestor_ctx(Point2((0.0, 0.0)), energy=30)
+    ctx.mediator.get_cached_enemy_army = [
+        _sized_enemy(i, Point2((5.0 + 0.4 * i, 0.0)), 0.6) for i in range(4)
+    ]
+
+    combat.micro_infestors()(ctx)
+
+    abilities = {m.ability for m in _all_micros(ctx) if isinstance(m, UseAbility)}
+    assert AbilityId.BURROWDOWN_INFESTOR in abilities
+
+
+def test_micro_infestors_logs_sc2_cast_rejections() -> None:
+    from types import SimpleNamespace
+
+    from sc2.data import ActionResult
+
+    ctx, infestor = _infestor_ctx(Point2((0.0, 0.0)), energy=90)
+    ctx.mediator.get_cached_enemy_army = []
+    ctx.bot.state.action_errors = [
+        SimpleNamespace(
+            ability_id=AbilityId.FUNGALGROWTH_FUNGALGROWTH.value,
+            unit_tag=9,
+            result=ActionResult.CantBuildLocationInvalid.value,
+        ),
+        SimpleNamespace(ability_id=AbilityId.ATTACK.value, unit_tag=9, result=1),
+    ]
+    ctx.log_once = MagicMock()
+
+    combat.micro_infestors()(ctx)
+
+    keys = [c.args[0] for c in ctx.log_once.call_args_list]
+    assert any(k.startswith("infestor_err:FUNGALGROWTH") for k in keys)
+    assert not any("ATTACK" in k for k in keys)
 
 
 def test_micro_infestors_ignores_a_clump_far_from_the_army() -> None:

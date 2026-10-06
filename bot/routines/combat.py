@@ -2538,6 +2538,28 @@ def _cast_position(infestor: Unit, target: Point2, cast_range: float) -> Point2:
     )
 
 
+def _log_infestor_cast_errors(ctx: "BotContext") -> None:
+    """Log (once per distinct result) any SC2 rejection of a Fungal / Neural
+    order - the game's own reason beats guessing why energy isn't dropping."""
+    from sc2.data import ActionResult
+
+    for error in getattr(ctx.bot.state, "action_errors", None) or []:
+        try:
+            ability = AbilityId(error.ability_id)
+        except ValueError:
+            continue
+        if "FUNGAL" not in ability.name and "NEURAL" not in ability.name:
+            continue
+        try:
+            result = ActionResult(error.result).name
+        except ValueError:
+            result = str(error.result)
+        ctx.log_once(
+            f"infestor_err:{ability.name}:{result}",
+            f"INFESTOR {ability.name} rejected by SC2: {result}",
+        )
+
+
 def micro_infestors() -> CombatRoutine:
     """Infestor: cast first, stay out of detection, burrow near the enemy.
 
@@ -2555,7 +2577,11 @@ def micro_infestors() -> CombatRoutine:
     3. Detection. Inside a detector's reach (see `INFESTOR_DETECTOR_RADIUS`)
        burrowing hides nothing, so leave it rather than burrow; never
        burrow-down within reach of one.
-    4. Burrow once enemies are within `INFESTOR_BURROW_NEAR_RADIUS`.
+    4. Burrow once enemies are within `INFESTOR_BURROW_NEAR_RADIUS` - unless
+       it has the energy for a Fungal and a clump to throw it at: Fungal
+       Growth cannot be cast burrowed, so such an Infestor stays surfaced
+       (and a burrowed one unburrows to cast). Neural Parasite can be cast
+       burrowed.
     5. Move: stay with the army. Trail the biggest ATTACKING squad closely
        (the rally point when there is none) - never roam. Only when a
        Fungal clump / Neural target is within `INFESTOR_ENGAGE_LEASH` of
@@ -2616,6 +2642,7 @@ def micro_infestors() -> CombatRoutine:
         approach_neural = [e for e in neural_candidates if _escorted(e.position)]
         zones = _detector_zones(ctx)
         grid = ctx.mediator.get_ground_grid
+        _log_infestor_cast_errors(ctx)
         claimed_clumps: set[tuple[int, int]] = set()
         claimed_neural: set[int] = set()  # enemy tags
         for infestor in infestors:
@@ -2658,9 +2685,11 @@ def micro_infestors() -> CombatRoutine:
                         claimed_clumps.add(key)
                         break
                 if fungal_target is not None:
-                    ctx.log(
-                        f"FUNGAL cast on {_clump_size(enemies, fungal_target)} "
-                        f"enemies (energy={infestor.energy:.0f})"
+                    ctx.log_once(
+                        f"fungal_cast:{infestor.tag}:{int(ctx.bot.time)}",
+                        f"FUNGAL {'unburrowing to cast' if burrowed else 'cast'} on "
+                        f"{_clump_size(enemies, fungal_target)} enemies "
+                        f"(energy={infestor.energy:.0f})",
                     )
                 elif fight_started:
                     biggest = max(
@@ -2682,7 +2711,12 @@ def micro_infestors() -> CombatRoutine:
                     for e in enemies
                 )
             )
-            if fungal_target is None and has_neural_energy and near_fight:
+            # A burrowed Infestor cannot Fungal Growth (the ability is simply
+            # not offered while burrowed - live: ~2900 Fungal orders over a
+            # fight, energy never dropped), but can Neural Parasite. So a
+            # burrowed Infestor Neural-casts if it has a target, and only
+            # otherwise surfaces to Fungal.
+            if (fungal_target is None or burrowed) and has_neural_energy and near_fight:
                 in_range = [
                     e
                     for e in neural_candidates
@@ -2695,7 +2729,20 @@ def micro_infestors() -> CombatRoutine:
                         position=infestor.position, units=in_range
                     )
                     claimed_neural.add(neural_target.tag)
+            unburrow_to_fungal = (
+                burrowed and fungal_target is not None and neural_target is None
+            )
+            if burrowed and neural_target is not None:
+                fungal_target = None
 
+            wants_to_fungal = has_fungal_energy and (
+                fungal_target is not None or bool(approach_clumps)
+            )
+
+            if unburrow_to_fungal:
+                maneuver.add(UseAbility(AbilityId.BURROWUP_INFESTOR, infestor))
+                ctx.bot.register_behavior(maneuver)
+                continue
             if fungal_target is not None:
                 maneuver.add(
                     UseAbility(
@@ -2725,7 +2772,10 @@ def micro_infestors() -> CombatRoutine:
                 <= INFESTOR_BURROW_NEAR_RADIUS
                 for e in enemies
             )
-            if near_enemies and not burrowed:
+            # Stay surfaced while there is a Fungal to throw: a burrowed
+            # Infestor can't cast it, and burrowing straight back down after
+            # unburrowing would just thrash.
+            if near_enemies and not burrowed and not wants_to_fungal:
                 maneuver.add(UseAbility(AbilityId.BURROWDOWN_INFESTOR, infestor))
 
             move_to = None

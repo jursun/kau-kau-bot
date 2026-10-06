@@ -283,6 +283,11 @@ def release_stuck_crawlers(ctx: "BotContext") -> None:
             f"toward ({site.x:.0f},{site.y:.0f}) for {now - since:.0f}s "
             f"(dist {distance:.1f}, idle={worker.is_idle}, "
             f"minerals={ctx.bot.minerals}, "
+            f"carrying={getattr(worker, 'is_carrying_resource', None)}, "
+            f"orders={[o.ability.id.name for o in worker.orders]}, "
+            f"can_afford={ctx.bot.can_afford(structure_type)}, "
+            f"tech={ctx.bot.tech_requirement_progress(structure_type)}, "
+            f"can_place={ctx.mediator.can_place_structure(position=site, structure_type=structure_type)}, "
             f"last SC2 build error={ctx.state.crawler_last_error.get(tag)}) "
             "- retrying elsewhere",
         )
