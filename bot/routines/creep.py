@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from ares.behaviors.combat.individual import KeepUnitSafe
 from ares.consts import UnitRole
-from cython_extensions import cy_distance_to_squared
+from cython_extensions import cy_distance_to, cy_distance_to_squared
 from cython_extensions.general_utils import cy_has_creep
 from sc2.ids.ability_id import AbilityId
 from sc2.ids.unit_typeid import UnitTypeId
@@ -157,14 +157,51 @@ def _priority_creep_locations(ctx: "BotContext") -> list[Point2]:
     return points
 
 
+# How far toward the enemy start (from our most forward base) the creep
+# frontier is aimed once home is covered. Never the enemy base itself.
+_FORWARD_CREEP_FRACTION: float = 0.55
+
+
+def _forward_creep_target(ctx: "BotContext") -> Point2 | None:
+    """Where creep should be heading once every own base is connected: out
+    toward the middle of the map from our most forward base, so Spine/Spore
+    walls, the army's regroup point and static D have creep to stand on.
+    (Creep used to stop at the furthest own base, so the forward wall had
+    nowhere to build once its first group was up.)"""
+    starts = ctx.bot.enemy_start_locations
+    if not starts:
+        return None
+    enemy = starts[0]
+    bases = [th.position for th in ctx.bot.townhalls.ready] or [ctx.production_location]
+    front = min(bases, key=lambda pos: cy_distance_to_squared(pos, enemy))
+    return front.towards(enemy, cy_distance_to(front, enemy) * _FORWARD_CREEP_FRACTION)
+
+
+def _creep_frontier(
+    ctx: "BotContext", from_pos: Point2, target: Point2, step: float = 3.0
+) -> Point2 | None:
+    """Farthest point on the line from `from_pos` toward `target` that is on
+    creep (the walkable end of the creep network in that direction)."""
+    creep_grid = ctx.mediator.get_creep_grid
+    limit = min(cy_distance_to(from_pos, target), 45.0)
+    best: Point2 | None = None
+    distance = step
+    while distance <= limit:
+        point = from_pos.towards(target, distance)
+        if cy_has_creep(creep_grid, point):
+            best = point
+        distance += step
+    return best
+
+
 def _creep_spread_target(ctx: "BotContext", from_pos: Point2) -> Point2:
     """Next plant goal: uncovered priority spots, else own-base highway.
 
     Priority locations need at least one tumor within
     `_PRIORITY_TUMOR_RADIUS`. Once those are covered, aim at the next own
     base that still lacks creep (nearest-to-main first). Once every owned
-    base tile is on creep, keep aiming at the furthest own base so tumors
-    thicken the network — never the enemy natural/main.
+    base tile is on creep, push the frontier toward the middle of the map
+    (`_forward_creep_target`) - not onto the enemy base.
     """
     del from_pos  # reserved for callers; target is global priority/fan order
     for location in _priority_creep_locations(ctx):
@@ -176,7 +213,7 @@ def _creep_spread_target(ctx: "BotContext", from_pos: Point2) -> Point2:
     for base in bases[1:]:
         if not cy_has_creep(creep_grid, base):
             return base
-    return bases[-1]
+    return _forward_creep_target(ctx) or bases[-1]
 
 
 def _spot_has_creep(ctx: "BotContext", spot: Point2) -> bool:
@@ -428,6 +465,91 @@ def _place_tumor_toward(
 _DESIRED_CREEP_QUEENS: int = 2
 
 
+def _reconcile_queens(
+    ctx: "BotContext", creep_queens: list, injectors: list
+) -> tuple[list, list]:
+    """Keep exactly one inject Queen per hatchery and the rest on creep.
+
+    Drives off `RunState.queen_home_townhall` (recorded when each Queen was
+    born). Fixes the cases that left Queens sitting at full energy:
+
+    - an injector whose home hatchery died: re-homed to a hatchery that has
+      no injector, else sent to creep;
+    - two injectors on one hatchery: the nearer keeps it, the other is
+      re-homed / sent to creep;
+    - a hatchery with no injector while more than `_DESIRED_CREEP_QUEENS`
+      are on creep: the nearest surplus creep Queen becomes its injector.
+
+    Queens with no recorded home are left alone. Returns the updated
+    (creep_queens, injectors) lists.
+    """
+    homes = ctx.state.queen_home_townhall
+    townhalls = {th.tag: th for th in ctx.bot.townhalls.ready}
+    if not townhalls:
+        return creep_queens, injectors
+
+    by_home: dict[int, list] = {}
+    extras: list = []
+    for queen in injectors:
+        home = homes.get(queen.tag)
+        if home is None:
+            continue
+        if home in townhalls:
+            by_home.setdefault(home, []).append(queen)
+        else:
+            extras.append(queen)
+    for home, queens in by_home.items():
+        queens.sort(
+            key=lambda q: cy_distance_to_squared(q.position, townhalls[home].position)
+        )
+        extras.extend(queens[1:])
+        by_home[home] = queens[:1]
+
+    uncovered = [tag for tag in townhalls if tag not in by_home]
+    creep_queens = list(creep_queens)
+    injectors = list(injectors)
+
+    for queen in extras:
+        if uncovered:
+            target = min(
+                uncovered,
+                key=lambda tag: cy_distance_to_squared(
+                    queen.position, townhalls[tag].position
+                ),
+            )
+            homes[queen.tag] = target
+            uncovered.remove(target)
+            ctx.log(f"QUEEN {queen.tag} re-homed to hatchery {target} (inject)")
+        else:
+            ctx.mediator.assign_role(tag=queen.tag, role=UnitRole.QUEEN_CREEP)
+            injectors.remove(queen)
+            creep_queens.append(queen)
+            ctx.log(f"QUEEN {queen.tag} spare injector -> creep")
+
+    reserved = (
+        ctx.state.natural_queen_tag if not ctx.state.natural_queen_tumor_done else None
+    )
+    for tag in list(uncovered):
+        spare = [
+            q
+            for q in creep_queens
+            if q.tag != reserved and q.tag != ctx.state.natural_extra_queen_tag
+        ]
+        if len(creep_queens) <= _DESIRED_CREEP_QUEENS or not spare:
+            break
+        queen = min(
+            spare,
+            key=lambda q: cy_distance_to_squared(q.position, townhalls[tag].position),
+        )
+        homes[queen.tag] = tag
+        ctx.mediator.assign_role(tag=queen.tag, role=UnitRole.QUEEN_INJECT)
+        creep_queens.remove(queen)
+        injectors.append(queen)
+        uncovered.remove(tag)
+        ctx.log(f"QUEEN {queen.tag} creep -> inject at hatchery {tag}")
+    return creep_queens, injectors
+
+
 def spread_creep() -> CombatRoutine:
     """Dedicate `_DESIRED_CREEP_QUEENS` Queens (beyond one per base) to
     defense + creep.
@@ -446,12 +568,16 @@ def spread_creep() -> CombatRoutine:
                 role=UnitRole.QUEEN_CREEP, unit_type=UnitTypeId.QUEEN
             )
         )
-        if len(creep_queens) < _DESIRED_CREEP_QUEENS:
-            injectors = list(
-                ctx.mediator.get_units_from_role(
-                    role=UnitRole.QUEEN_INJECT, unit_type=UnitTypeId.QUEEN
-                )
+        all_injectors = list(
+            ctx.mediator.get_units_from_role(
+                role=UnitRole.QUEEN_INJECT, unit_type=UnitTypeId.QUEEN
             )
+        )
+        creep_queens, all_injectors = _reconcile_queens(
+            ctx, creep_queens, all_injectors
+        )
+        if len(creep_queens) < _DESIRED_CREEP_QUEENS:
+            injectors = list(all_injectors)
             if len(injectors) > ctx.base_count:
                 newest = max(injectors, key=lambda q: q.tag)
                 ctx.mediator.assign_role(tag=newest.tag, role=UnitRole.QUEEN_CREEP)
@@ -471,7 +597,20 @@ def spread_creep() -> CombatRoutine:
             if queen.tag in reserved:
                 continue
             target = _creep_spread_target(ctx, queen.position)
-            _place_tumor_toward(ctx, queen, target, queen=True)
+            if _place_tumor_toward(ctx, queen, target, queen=True):
+                continue
+            # No plantable spot nearby (home creep is full): don't idle at
+            # full energy - walk out to the creep frontier toward the target
+            # so the next tumor goes down there.
+            if not queen.is_idle:
+                continue
+            frontier = _creep_frontier(ctx, queen.position, target)
+            if (
+                frontier is not None
+                and cy_distance_to_squared(queen.position, frontier) > 25.0
+                and not _queen_already_ordered_to(queen, frontier)
+            ):
+                queen.move(frontier)
 
     return routine
 

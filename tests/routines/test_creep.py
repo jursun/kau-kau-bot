@@ -275,9 +275,9 @@ def test_highway_target_skips_bases_already_on_creep() -> None:
     assert target == Point2((80.0, 20.0))
 
 
-def test_spread_target_stays_on_own_bases_once_connected() -> None:
-    """Once every own base has creep, keep thickening the furthest hub —
-    never push to the enemy natural."""
+def test_spread_target_pushes_toward_the_middle_once_own_bases_are_connected() -> None:
+    """Once every own base is on creep the frontier heads out from the most
+    forward base toward the enemy - but never onto the enemy base itself."""
     import bot.routines.creep as creep_mod
 
     ctx = _ctx(townhall_count=3)
@@ -290,9 +290,141 @@ def test_spread_target_stays_on_own_bases_once_connected() -> None:
     creep_mod.cy_has_creep = (  # type: ignore[attr-defined]
         lambda grid, pos: pos in own
     )
+
     target = creep._creep_spread_target(ctx, Point2((20.0, 20.0)))
-    assert target == Point2((80.0, 20.0))
-    assert target != Point2((90.0, 90.0))
+
+    front = Point2((80.0, 20.0))  # the base nearest the enemy
+    assert target.distance_to(_ENEMY_START) < front.distance_to(_ENEMY_START)
+    assert target.distance_to(front) == (
+        __import__("pytest").approx(front.distance_to(_ENEMY_START) * 0.55)
+    )
+    assert target != _ENEMY_START and target.distance_to(_ENEMY_START) > 20.0
+
+
+def test_creep_frontier_is_the_farthest_creep_point_toward_the_target() -> None:
+    import bot.routines.creep as creep_mod
+
+    ctx = _ctx()
+    creep_mod.cy_has_creep = (  # type: ignore[attr-defined]
+        lambda grid, pos: pos.x <= 40.0
+    )
+
+    frontier = creep._creep_frontier(ctx, Point2((10.0, 10.0)), Point2((100.0, 10.0)))
+
+    assert frontier is not None
+    assert 37.0 <= frontier.x <= 40.0
+
+
+def test_creep_queen_with_no_plantable_spot_walks_to_the_frontier() -> None:
+    """Full energy and nothing to plant nearby: head for the creep edge
+    instead of idling in the main."""
+    import bot.routines.creep as creep_mod
+
+    ctx = _ctx(townhall_count=3)
+    _cover_priorities(ctx)
+    # Unique tag: the sticky-tile table is module-level and shared across tests.
+    queen = _queen(9001, Point2((20.0, 20.0)))
+    queen.is_idle = True
+    queen.order_target = None
+    ctx.mediator.get_units_from_role.side_effect = _role_lookup(creep_queens=[queen])
+    ctx.mediator.get_next_tumor_on_path.return_value = None
+    ctx.mediator.find_nearby_creep_edge_position.return_value = None
+    creep_mod.cy_has_creep = lambda grid, pos: pos.x <= 60.0  # type: ignore[attr-defined]
+
+    creep.spread_creep()(ctx)
+
+    queen.move.assert_called_once()
+    assert queen.move.call_args.args[0].x > 40.0
+
+
+# --- queen role reconcile ----------------------------------------------------
+
+
+def _hatch(tag: int, at: Point2) -> MagicMock:
+    th = MagicMock()
+    th.tag = tag
+    th.position = at
+    return th
+
+
+def _reconcile_ctx(hatches):
+    ctx = _ctx(townhall_count=0)
+    ctx.bot.townhalls.ready = list(hatches)
+    return ctx
+
+
+def test_reconcile_rehomes_an_injector_whose_hatchery_died() -> None:
+    main = _hatch(1, Point2((20.0, 20.0)))
+    nat = _hatch(2, Point2((50.0, 20.0)))
+    ctx = _reconcile_ctx([main, nat])
+    main_q = _queen(10, Point2((20.0, 20.0)))
+    orphan = _queen(11, Point2((48.0, 20.0)))
+    ctx.state.queen_home_townhall.update({10: 1, 11: 99})  # 99 is dead
+
+    creep_q, injectors = creep._reconcile_queens(ctx, [], [main_q, orphan])
+
+    assert ctx.state.queen_home_townhall[11] == 2  # the hatchery with no injector
+    assert creep_q == [] and set(injectors) == {main_q, orphan}
+    ctx.mediator.assign_role.assert_not_called()
+
+
+def test_reconcile_sends_a_duplicate_injector_to_creep_when_every_base_is_covered() -> None:
+    main = _hatch(1, Point2((20.0, 20.0)))
+    ctx = _reconcile_ctx([main])
+    near = _queen(10, Point2((20.0, 21.0)))
+    far = _queen(11, Point2((30.0, 20.0)))
+    ctx.state.queen_home_townhall.update({10: 1, 11: 1})
+
+    creep_q, injectors = creep._reconcile_queens(ctx, [], [near, far])
+
+    assert injectors == [near]
+    assert creep_q == [far]
+    ctx.mediator.assign_role.assert_called_once_with(tag=11, role=UnitRole.QUEEN_CREEP)
+
+
+def test_reconcile_gives_a_bare_hatchery_an_injector_from_surplus_creep_queens() -> None:
+    main = _hatch(1, Point2((20.0, 20.0)))
+    nat = _hatch(2, Point2((50.0, 20.0)))
+    ctx = _reconcile_ctx([main, nat])
+    inj = _queen(10, Point2((20.0, 20.0)))
+    creep_qs = [_queen(20, Point2((20.0, 20.0))), _queen(21, Point2((49.0, 20.0))),
+                _queen(22, Point2((10.0, 20.0)))]
+    ctx.state.queen_home_townhall.update({10: 1})
+    ctx.state.natural_extra_queen_tag = 20
+
+    creep_q, injectors = creep._reconcile_queens(ctx, creep_qs, [inj])
+
+    assert ctx.state.queen_home_townhall[21] == 2  # nearest surplus to the natural
+    assert {q.tag for q in injectors} == {10, 21}
+    assert len(creep_q) == 2
+    ctx.mediator.assign_role.assert_called_once_with(tag=21, role=UnitRole.QUEEN_INJECT)
+
+
+def test_reconcile_keeps_two_creep_queens_even_if_a_base_lacks_an_injector() -> None:
+    """Never robs the two dedicated creep Queens - a new injector is trained."""
+    main = _hatch(1, Point2((20.0, 20.0)))
+    nat = _hatch(2, Point2((50.0, 20.0)))
+    ctx = _reconcile_ctx([main, nat])
+    inj = _queen(10)
+    ctx.state.queen_home_townhall.update({10: 1})
+
+    creep_q, injectors = creep._reconcile_queens(
+        ctx, [_queen(20), _queen(21)], [inj]
+    )
+
+    assert len(creep_q) == 2
+    ctx.mediator.assign_role.assert_not_called()
+
+
+def test_reconcile_leaves_queens_without_a_recorded_home_alone() -> None:
+    main = _hatch(1, Point2((20.0, 20.0)))
+    ctx = _reconcile_ctx([main])
+    stray = _queen(30)
+
+    creep_q, injectors = creep._reconcile_queens(ctx, [], [stray, _queen(31)])
+
+    assert len(injectors) == 2
+    ctx.mediator.assign_role.assert_not_called()
 
 
 def test_priority_target_is_nat_front_when_uncovered() -> None:
