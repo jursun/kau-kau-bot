@@ -160,6 +160,29 @@ def _restore_targeting(original) -> None:
     targeting.rally_point, targeting.attack_target = original
 
 
+@pytest.fixture(autouse=True)
+def _infestor_rally_at_origin(request):
+    """`micro_infestors` waits at the rally point when no army is out; the
+    fake ctx can't resolve one, so pin it at the origin for those tests."""
+    if "micro_infestors" not in request.node.name:
+        yield
+        return
+    original = (targeting.rally_point, targeting.attack_target)
+    targeting.rally_point = lambda _ctx: Point2((0.0, 0.0))
+    targeting.attack_target = lambda _ctx, _pos: Point2((999.0, 999.0))
+    try:
+        yield
+    finally:
+        targeting.rally_point, targeting.attack_target = original
+
+
+def _escort_squad(ctx, at: Point2) -> None:
+    """An ATTACKING squad of two at `at` for the Infestor to escort."""
+    ctx.mediator.get_squads.return_value = [
+        _squad([_unit(701, at), _unit(702, Point2((at.x + 1.0, at.y)))])
+    ]
+
+
 def test_mustering_squad_moves_to_rally_not_the_attack_target() -> None:
     rally = Point2((50.0, 50.0))
     attack = Point2((999.0, 999.0))
@@ -2897,6 +2920,7 @@ def test_micro_infestors_paths_toward_an_out_of_range_clump() -> None:
         _enemy(i, Point2((50.0 + i * 0.1, 0.0))) for i in range(4)
     ]
 
+    _escort_squad(ctx, Point2((40.0, 0.0)))
     combat.micro_infestors()(ctx)
 
     registered = ctx.bot.register_behavior.call_args.args[0]
@@ -3270,6 +3294,7 @@ def test_micro_infestors_paths_toward_an_out_of_range_neural_target() -> None:
     target = _high_value_enemy(1, Point2((50.0, 0.0)))
     ctx.mediator.get_cached_enemy_army = [target]
 
+    _escort_squad(ctx, Point2((40.0, 0.0)))
     combat.micro_infestors()(ctx)
 
     registered = ctx.bot.register_behavior.call_args.args[0]
@@ -3283,6 +3308,125 @@ def test_micro_infestors_paths_toward_an_out_of_range_neural_target() -> None:
     )
     assert paths[0].target.y == pytest.approx(0.0)
     assert paths[0].target.x < target.position.x
+
+
+# --- micro_infestors: stay with the army --------------------------------------
+
+
+def _infestor_ctx(infestor_at: Point2, energy: float):
+    from bot.consts import INFESTOR_ROLE
+
+    ctx = _ctx()
+    ctx.mediator.get_ground_grid = "ground-grid"
+    ctx.mediator.get_squads.return_value = []
+    infestor = _infestor(9, infestor_at, energy=energy)
+    ctx.mediator.get_units_from_role.side_effect = (
+        lambda role: [infestor] if role == INFESTOR_ROLE else []
+    )
+    ctx.bot.enemy_structures = []
+    ctx.bot.enemy_units = []
+    return ctx, infestor
+
+
+def test_micro_infestors_ignores_a_clump_far_from_the_army() -> None:
+    """The "hanging out across the map" bug: `enemy_army` includes units seen
+    anywhere, and the nearest clump pulled the Infestor off alone."""
+    ctx, infestor = _infestor_ctx(Point2((0.0, 0.0)), energy=100)
+    _escort_squad(ctx, Point2((0.0, 5.0)))
+    ctx.mediator.get_cached_enemy_army = [
+        _enemy(i, Point2((90.0 + i * 0.1, 0.0))) for i in range(4)
+    ]
+
+    combat.micro_infestors()(ctx)
+
+    micros = _all_micros(ctx)
+    assert not [m for m in micros if isinstance(m, PathUnitToTarget)]
+    assert not [m for m in micros if isinstance(m, UseAbility)
+                and m.ability == AbilityId.FUNGALGROWTH_FUNGALGROWTH]
+
+
+def test_micro_infestors_with_no_army_goes_to_the_rally_point() -> None:
+    ctx, infestor = _infestor_ctx(Point2((80.0, 80.0)), energy=0)
+    ctx.mediator.get_cached_enemy_army = []
+    targeting.rally_point = lambda _ctx: Point2((20.0, 20.0))
+
+    combat.micro_infestors()(ctx)
+
+    moves = [m for m in _all_micros(ctx) if isinstance(m, MoveToSafeTarget)]
+    assert len(moves) == 1
+    assert moves[0].target == Point2((20.0, 20.0))
+
+
+def test_micro_infestors_holds_once_at_its_follow_point() -> None:
+    ctx, infestor = _infestor_ctx(Point2((20.0, 20.0)), energy=0)
+    ctx.mediator.get_cached_enemy_army = []
+    targeting.rally_point = lambda _ctx: Point2((21.0, 20.0))  # within arrive
+
+    combat.micro_infestors()(ctx)
+
+    assert not [m for m in _all_micros(ctx) if isinstance(m, MoveToSafeTarget)]
+
+
+def test_micro_infestors_trails_close_behind_the_squad() -> None:
+    ctx, infestor = _infestor_ctx(Point2((0.0, 0.0)), energy=0)
+    ctx.mediator.get_cached_enemy_army = []
+    _escort_squad(ctx, Point2((30.0, 0.0)))
+
+    combat.micro_infestors()(ctx)
+
+    moves = [m for m in _all_micros(ctx) if isinstance(m, MoveToSafeTarget)]
+    assert len(moves) == 1
+    # Squad centre is (30.5, 0); the (patched) destination is far off east, so
+    # the trail point sits just west of the squad - not at the destination.
+    assert cy_distance_to(moves[0].target, Point2((30.5, 0.0))) == pytest.approx(
+        combat.INFESTOR_TRAIL_DISTANCE
+    )
+
+
+def test_micro_infestors_waits_for_the_fight_before_neural_parasite() -> None:
+    from bot.consts import INFESTOR_ROLE
+
+    ctx, infestor = _infestor_ctx(Point2((0.0, 0.0)), energy=100)
+    infestor.is_burrowed = True
+    _escort_squad(ctx, Point2((100.0, 0.0)))  # army far away: no fight yet
+    target = _high_value_enemy(1, Point2((5.0, 0.0)))
+    ctx.mediator.get_cached_enemy_army = [target]
+
+    combat.micro_infestors()(ctx)
+
+    assert not [
+        m for m in _all_micros(ctx)
+        if isinstance(m, UseAbility)
+        and m.ability == AbilityId.NEURALPARASITE_NEURALPARASITE
+    ]
+
+    # Same target, but the army is now fighting beside it.
+    ctx.bot.register_behavior.reset_mock()
+    _escort_squad(ctx, Point2((2.0, 0.0)))
+
+    combat.micro_infestors()(ctx)
+
+    assert [
+        m for m in _all_micros(ctx)
+        if isinstance(m, UseAbility)
+        and m.ability == AbilityId.NEURALPARASITE_NEURALPARASITE
+    ]
+
+
+def test_micro_infestors_fungals_a_clump_in_range_without_waiting_for_a_fight() -> None:
+    ctx, infestor = _infestor_ctx(Point2((0.0, 0.0)), energy=100)
+    _escort_squad(ctx, Point2((100.0, 0.0)))  # army far away
+    ctx.mediator.get_cached_enemy_army = [
+        _enemy(i, Point2((5.0 + i * 0.1, 0.0))) for i in range(4)
+    ]
+
+    combat.micro_infestors()(ctx)
+
+    assert [
+        m for m in _all_micros(ctx)
+        if isinstance(m, UseAbility)
+        and m.ability == AbilityId.FUNGALGROWTH_FUNGALGROWTH
+    ]
 
 
 # --- micro_infestors: detection -------------------------------------------
@@ -3400,6 +3544,7 @@ def test_micro_infestors_approaches_a_clump_only_to_cast_range() -> None:
         _enemy(i, Point2((50.0 + i * 0.1, 0.0))) for i in range(4)
     ]
 
+    _escort_squad(ctx, Point2((40.0, 0.0)))
     combat.micro_infestors()(ctx)
 
     paths = [m for m in _micros(ctx) if isinstance(m, PathUnitToTarget)]

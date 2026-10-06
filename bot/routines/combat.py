@@ -2464,6 +2464,16 @@ INFESTOR_TRAIL_DISTANCE: float = 4.0
 # Infestor isn't casting at the very edge where a step of enemy movement
 # takes the target out of range again.
 INFESTOR_APPROACH_SLACK: float = 1.0
+# An Infestor only walks toward a clump / Neural target that is within this
+# of the army it escorts. `enemy_army` includes units seen anywhere on the
+# map, and approaching "the nearest clump" sent Infestors off alone to die to
+# a single Zealot.
+INFESTOR_ENGAGE_LEASH: float = 22.0
+# Neural Parasite waits for the fight to start: an enemy army unit this close
+# to the escorted squad. (Fungal fires on any clump it can see.)
+INFESTOR_FIGHT_RADIUS: float = 18.0
+# Already within this of its follow point: hold instead of re-issuing a move.
+INFESTOR_FOLLOW_ARRIVE: float = 2.5
 
 
 def _detector_zones(ctx: "BotContext") -> list[tuple[Point2, float]]:
@@ -2525,9 +2535,15 @@ def micro_infestors() -> CombatRoutine:
        burrowing hides nothing, so leave it rather than burrow; never
        burrow-down within reach of one.
     4. Burrow once enemies are within `INFESTOR_BURROW_NEAR_RADIUS`.
-    5. Move: to a cast position short of the best target if it has energy
-       for one, otherwise trail the biggest ATTACKING squad. Any move that
-       would end inside a detector zone is dropped - hold instead.
+    5. Move: stay with the army. Trail the biggest ATTACKING squad closely
+       (the rally point when there is none) - never roam. Only when a
+       Fungal clump / Neural target is within `INFESTOR_ENGAGE_LEASH` of
+       that squad does it step out to a cast position short of the target.
+       Any move that would end inside a detector zone is dropped - hold.
+
+    Neural Parasite additionally waits until the fight has started (an
+    enemy within `INFESTOR_FIGHT_RADIUS` of the squad); Fungal fires on any
+    clump in range.
 
     Kept out of `army.types` on its own `INFESTOR_ROLE` (see
     `core.roles.SUPPORT_ROLES`) - a caster has no place in a muster/attack
@@ -2547,19 +2563,35 @@ def micro_infestors() -> CombatRoutine:
         squads = ctx.mediator.get_squads(
             role=UnitRole.ATTACKING, squad_radius=SQUAD_RADIUS
         )
-        follow_target = None
+        anchor: Point2 | None = None
         if squads:
             biggest = max(squads, key=lambda squad: len(squad.squad_units))
-            destination = targeting.squad_destination(ctx, biggest.squad_position)
-            follow_target = biggest.squad_position.towards(
-                destination, -INFESTOR_TRAIL_DISTANCE
-            )
+            anchor = biggest.squad_position
+            destination = targeting.squad_destination(ctx, anchor)
+            follow_target = anchor.towards(destination, -INFESTOR_TRAIL_DISTANCE)
+        else:
+            # No army out: wait with the home defense, not wherever the last
+            # follow order happened to leave us.
+            follow_target = targeting.rally_point(ctx)
 
         enemies = enemy_army(ctx)
+        fight_started = anchor is not None and any(
+            cy_distance_to(anchor, e.position) <= INFESTOR_FIGHT_RADIUS
+            for e in enemies
+        )
+
+        def _escorted(point: Point2) -> bool:
+            """Close enough to the army to be worth walking to."""
+            return anchor is not None and (
+                cy_distance_to(point, anchor) <= INFESTOR_ENGAGE_LEASH
+            )
+
         clumps = _best_fungal_clumps(enemies)
         neural_candidates = [
             e for e in enemies if e.type_id in NEURAL_PARASITE_TARGET_TYPES
         ]
+        approach_clumps = [c for c in clumps if _escorted(c)]
+        approach_neural = [e for e in neural_candidates if _escorted(e.position)]
         zones = _detector_zones(ctx)
         grid = ctx.mediator.get_ground_grid
         claimed_clumps: set[int] = set()
@@ -2599,7 +2631,15 @@ def micro_infestors() -> CombatRoutine:
                         break
 
             neural_target = None
-            if fungal_target is None and has_neural_energy:
+            near_fight = fight_started or (
+                anchor is None
+                and any(
+                    cy_distance_to(infestor.position, e.position)
+                    <= INFESTOR_BURROW_NEAR_RADIUS
+                    for e in enemies
+                )
+            )
+            if fungal_target is None and has_neural_energy and near_fight:
                 in_range = [
                     e
                     for e in neural_candidates
@@ -2646,11 +2686,13 @@ def micro_infestors() -> CombatRoutine:
                 maneuver.add(UseAbility(AbilityId.BURROWDOWN_INFESTOR, infestor))
 
             move_to = None
-            if has_fungal_energy and clumps:
-                move_to = _cast_position(infestor, clumps[0], FUNGAL_GROWTH_RANGE)
-            elif has_neural_energy and neural_candidates:
+            if has_fungal_energy and approach_clumps:
+                move_to = _cast_position(
+                    infestor, approach_clumps[0], FUNGAL_GROWTH_RANGE
+                )
+            elif has_neural_energy and fight_started and approach_neural:
                 closest = cy_closest_to(
-                    position=infestor.position, units=neural_candidates
+                    position=infestor.position, units=approach_neural
                 )
                 move_to = _cast_position(
                     infestor, closest.position, NEURAL_PARASITE_RANGE
@@ -2660,8 +2702,11 @@ def micro_infestors() -> CombatRoutine:
                     maneuver.add(
                         PathUnitToTarget(unit=infestor, grid=grid, target=move_to)
                     )
-            elif follow_target is not None and not _in_detector_zone(
-                follow_target, zones
+            elif (
+                follow_target is not None
+                and cy_distance_to(infestor.position, follow_target)
+                > INFESTOR_FOLLOW_ARRIVE
+                and not _in_detector_zone(follow_target, zones)
             ):
                 maneuver.add(
                     MoveToSafeTarget(unit=infestor, grid=grid, target=follow_target)
