@@ -654,6 +654,38 @@ def test_dedicated_research_keeps_its_evo_while_alive_and_repicks_when_it_dies()
     assert ctx.state.melee_evo_tag == 7
 
 
+# --- Hydralisk / Lurker Den research ------------------------------------------
+
+
+def test_den_research_pins_each_den_to_its_own_upgrades() -> None:
+    ctx = _ctx()
+
+    def structures(unit_type):
+        found = MagicMock()
+        found.ready = {
+            UnitTypeId.HYDRALISKDEN: [_structure(4)],
+            UnitTypeId.LURKERDENMP: [_structure(8)],
+        }.get(unit_type, [])
+        return found
+
+    ctx.bot.structures = structures
+
+    plan = mz._den_research(ctx)
+
+    chains = {m.structure_tag: tuple(m.upgrades) for m in plan.macros}
+    assert chains[4] == mz._HYDRA_DEN_UPGRADES
+    assert chains[8] == mz._LURKER_DEN_UPGRADES
+    assert UpgradeId.EVOLVEGROOVEDSPINES in chains[4]
+    assert UpgradeId.DIGGINGCLAWS in chains[8]
+
+
+def test_den_research_does_nothing_without_a_den() -> None:
+    ctx = _ctx()
+    ctx.bot.structures = lambda _t: MagicMock(ready=[])
+
+    assert mz._den_research(ctx) is None
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failures = 0

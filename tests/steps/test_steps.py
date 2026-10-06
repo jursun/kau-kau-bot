@@ -964,6 +964,79 @@ def test_rebuild_lost_tech_builds_at_the_surviving_base() -> None:
     assert plan.macros[0].base_location == Point2((60.0, 60.0))
 
 
+def _comp_ctx(hydra: bool, lurker: bool, pit: bool = False, air: bool = False):
+    ctx = _ctx()
+    ctx.bot.minerals = 100
+    ctx.bot.vespene = 100  # not gas-starved
+
+    def structures(unit_type):
+        found = MagicMock()
+        found.ready = {
+            UnitTypeId.HYDRALISKDEN: hydra,
+            UnitTypeId.LURKERDENMP: lurker,
+            UnitTypeId.INFESTATIONPIT: pit,
+            UnitTypeId.SPIRE: air,
+        }.get(unit_type, False)
+        found.amount = 0
+        return found
+
+    ctx.bot.structures = structures
+    return ctx
+
+
+def _chosen_comp(ctx) -> dict:
+    with patch("bot.steps.zerg.enemy_has_air_units", lambda _c: False):
+        behavior = z.spawn_macro_army(gate=lambda _c: True)(ctx)
+    return behavior.army_composition_dict
+
+
+def test_spawn_macro_army_adds_hydralisks_once_the_den_is_up() -> None:
+    comp = _chosen_comp(_comp_ctx(hydra=True, lurker=False))
+
+    assert UnitTypeId.HYDRALISK in comp
+    assert UnitTypeId.LURKERMP not in comp
+
+
+def test_spawn_macro_army_morphs_lurkers_once_both_dens_are_up() -> None:
+    comp = _chosen_comp(_comp_ctx(hydra=True, lurker=True))
+
+    assert UnitTypeId.HYDRALISK in comp and UnitTypeId.LURKERMP in comp
+    assert UnitTypeId.INFESTOR not in comp
+
+
+def test_spawn_macro_army_keeps_infestors_alongside_lurkers() -> None:
+    comp = _chosen_comp(_comp_ctx(hydra=True, lurker=True, pit=True))
+
+    assert UnitTypeId.LURKERMP in comp and UnitTypeId.INFESTOR in comp
+
+
+def test_spawn_macro_army_stays_roach_ling_without_a_hydra_den() -> None:
+    comp = _chosen_comp(_comp_ctx(hydra=False, lurker=False))
+
+    assert UnitTypeId.HYDRALISK not in comp and UnitTypeId.LURKERMP not in comp
+
+
+def test_spawn_macro_army_swaps_lurkers_for_corruptors_against_air() -> None:
+    ctx = _comp_ctx(hydra=True, lurker=True, air=True)
+    with patch("bot.steps.zerg.enemy_has_air_units", lambda _c: True):
+        comp = z.spawn_macro_army(gate=lambda _c: True)(ctx).army_composition_dict
+
+    assert UnitTypeId.HYDRALISK in comp and UnitTypeId.CORRUPTOR in comp
+    assert UnitTypeId.LURKERMP not in comp
+
+
+def test_every_late_comp_sums_to_one() -> None:
+    from bot import consts
+
+    for comp in (
+        consts.ROACH_HYDRA_COMP,
+        consts.HYDRA_LURKER_COMP,
+        consts.HYDRA_LURKER_INFESTOR_COMP,
+        consts.ROACH_HYDRA_CORRUPTOR_COMP,
+    ):
+        assert sum(v["proportion"] for v in comp.values()) == pytest.approx(1.0)
+
+
 def test_forward_crawler_wave_waits_on_minerals_and_interval() -> None:
     from bot.behaviors.zerg import ForwardCrawlerWave
 

@@ -3744,6 +3744,136 @@ def test_controlled_disruptor_novas_a_pair_but_not_through_its_own_units() -> No
                 if isinstance(m, UseAbility) and m.ability == nova]
 
 
+# --- micro_lurkers -------------------------------------------------------------
+
+
+def _lurker(tag: int, at: Point2) -> MagicMock:
+    unit = _unit(tag, at)
+    unit.type_id = UnitTypeId.LURKERMP
+    return unit
+
+
+def _lurker_ctx(surfaced=(), burrowed=(), enemies=(), squad_at=None, upgrades=()):
+    ctx = _ctx()
+    ctx.bot.time = 100.0
+    ctx.bot.state.upgrades = set(upgrades)
+    ctx.bot.enemy_structures = []
+    ctx.bot.enemy_units = []
+    ctx.mediator.get_ground_grid = "ground-grid"
+    ctx.mediator.get_cached_enemy_army = list(enemies)
+    ctx.bot.units = MagicMock(
+        side_effect=lambda t: list(surfaced)
+        if t == UnitTypeId.LURKERMP
+        else list(burrowed)
+        if t == UnitTypeId.LURKERMPBURROWED
+        else []
+    )
+    if squad_at is None:
+        ctx.mediator.get_squads.return_value = []
+    else:
+        _escort_squad(ctx, squad_at)
+    return ctx
+
+
+def _abilities(ctx) -> set:
+    return {m.ability for m in _all_micros(ctx) if isinstance(m, UseAbility)}
+
+
+def test_micro_lurkers_does_nothing_without_lurkers() -> None:
+    ctx = _lurker_ctx()
+
+    combat.micro_lurkers()(ctx)
+
+    ctx.bot.register_behavior.assert_not_called()
+
+
+def test_micro_lurkers_burrows_when_the_enemy_walks_into_range() -> None:
+    lurker = _lurker(1, Point2((0.0, 0.0)))
+    enemy = _sized_enemy(10, Point2((9.0, 0.0)), 0.6)  # inside 8 + 2 margin
+    ctx = _lurker_ctx(surfaced=[lurker], enemies=[enemy], squad_at=Point2((0.0, 1.0)))
+
+    combat.micro_lurkers()(ctx)
+
+    assert AbilityId.BURROWDOWN_LURKER in _abilities(ctx)
+
+
+def test_micro_lurkers_range_upgrade_burrows_earlier() -> None:
+    lurker = _lurker(1, Point2((0.0, 0.0)))
+    enemy = _sized_enemy(10, Point2((11.0, 0.0)), 0.6)  # beyond 10, inside 12
+
+    plain = _lurker_ctx(surfaced=[lurker], enemies=[enemy], squad_at=Point2((0.0, 1.0)))
+    combat.micro_lurkers()(plain)
+    assert AbilityId.BURROWDOWN_LURKER not in _abilities(plain)
+
+    upgraded = _lurker_ctx(
+        surfaced=[lurker],
+        enemies=[enemy],
+        squad_at=Point2((0.0, 1.0)),
+        upgrades={UpgradeId.LURKERRANGE},
+    )
+    combat.micro_lurkers()(upgraded)
+    assert AbilityId.BURROWDOWN_LURKER in _abilities(upgraded)
+
+
+def test_micro_lurkers_ignores_air_when_deciding_to_burrow() -> None:
+    lurker = _lurker(1, Point2((0.0, 0.0)))
+    flyer = _sized_enemy(10, Point2((5.0, 0.0)), 0.6)
+    flyer.is_flying = True
+    ctx = _lurker_ctx(surfaced=[lurker], enemies=[flyer], squad_at=Point2((0.0, 1.0)))
+
+    combat.micro_lurkers()(ctx)
+
+    assert AbilityId.BURROWDOWN_LURKER not in _abilities(ctx)
+
+
+def test_micro_lurkers_follows_the_army_while_nothing_is_near() -> None:
+    lurker = _lurker(1, Point2((0.0, 0.0)))
+    ctx = _lurker_ctx(surfaced=[lurker], squad_at=Point2((40.0, 0.0)))
+
+    combat.micro_lurkers()(ctx)
+
+    paths = [m for m in _all_micros(ctx) if isinstance(m, PathUnitToTarget)]
+    assert len(paths) == 1
+    assert cy_distance_to(paths[0].target, Point2((40.5, 0.0))) < 0.1
+    assert AbilityId.BURROWDOWN_LURKER not in _abilities(ctx)
+
+
+def test_micro_lurkers_stays_burrowed_while_enemies_are_near() -> None:
+    lurker = _lurker(1, Point2((0.0, 0.0)))
+    lurker.type_id = UnitTypeId.LURKERMPBURROWED
+    enemy = _sized_enemy(10, Point2((15.0, 0.0)), 0.6)  # inside the 18 clear radius
+    ctx = _lurker_ctx(burrowed=[lurker], enemies=[enemy], squad_at=Point2((0.0, 1.0)))
+
+    combat.micro_lurkers()(ctx)
+
+    assert AbilityId.BURROWUP_LURKER not in _abilities(ctx)
+
+
+def test_micro_lurkers_unburrows_once_the_ground_is_clear() -> None:
+    lurker = _lurker(1, Point2((0.0, 0.0)))
+    lurker.type_id = UnitTypeId.LURKERMPBURROWED
+    far = _sized_enemy(10, Point2((60.0, 0.0)), 0.6)
+    ctx = _lurker_ctx(burrowed=[lurker], enemies=[far], squad_at=Point2((0.0, 1.0)))
+
+    combat.micro_lurkers()(ctx)
+
+    assert AbilityId.BURROWUP_LURKER in _abilities(ctx)
+
+
+def test_micro_lurkers_does_not_burrow_inside_a_detectors_reach() -> None:
+    lurker = _lurker(1, Point2((0.0, 0.0)))
+    enemy = _sized_enemy(10, Point2((9.0, 0.0)), 0.6)
+    ctx = _lurker_ctx(surfaced=[lurker], enemies=[enemy], squad_at=Point2((0.0, 1.0)))
+    ctx.bot.enemy_units = [_detector(UnitTypeId.OBSERVER, Point2((6.0, 0.0)))]
+
+    combat.micro_lurkers()(ctx)
+
+    assert AbilityId.BURROWDOWN_LURKER not in _abilities(ctx)
+    # ...and it backs out of the reach instead.
+    paths = [m for m in _all_micros(ctx) if isinstance(m, PathUnitToTarget)]
+    assert paths and paths[0].target.x < 0.0
+
+
 # --- micro_infestors: detection -------------------------------------------
 
 

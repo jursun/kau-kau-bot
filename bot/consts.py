@@ -99,6 +99,41 @@ ROACH_LING_CORRUPTOR_INFESTOR_COMP: dict[UnitTypeId, dict[str, float | int]] = {
     UnitTypeId.ZERGLING: {"proportion": 0.15, "priority": 1},
 }
 
+# Late game: Roach/Zergling alone can't break a Protoss ball. Once the
+# Hydralisk Den is up fold Hydralisks in; once the Lurker Den is up too, a
+# fifth of the army morphs into Lurkers (SpawnController morphs them from
+# Hydralisks - `ares.dicts.does_not_use_larva`). Lurkers are siege units:
+# see `routines.combat.micro_lurkers`.
+ROACH_HYDRA_COMP: dict[UnitTypeId, dict[str, float | int]] = {
+    UnitTypeId.ROACH: {"proportion": 0.55, "priority": 0},
+    UnitTypeId.HYDRALISK: {"proportion": 0.30, "priority": 0},
+    UnitTypeId.ZERGLING: {"proportion": 0.15, "priority": 1},
+}
+
+HYDRA_LURKER_COMP: dict[UnitTypeId, dict[str, float | int]] = {
+    UnitTypeId.ROACH: {"proportion": 0.35, "priority": 0},
+    UnitTypeId.HYDRALISK: {"proportion": 0.25, "priority": 0},
+    UnitTypeId.LURKERMP: {"proportion": 0.20, "priority": 0},
+    UnitTypeId.ZERGLING: {"proportion": 0.20, "priority": 1},
+}
+
+HYDRA_LURKER_INFESTOR_COMP: dict[UnitTypeId, dict[str, float | int]] = {
+    UnitTypeId.ROACH: {"proportion": 0.30, "priority": 0},
+    UnitTypeId.HYDRALISK: {"proportion": 0.25, "priority": 0},
+    UnitTypeId.LURKERMP: {"proportion": 0.20, "priority": 0},
+    UnitTypeId.INFESTOR: {"proportion": 0.10, "priority": 0},
+    UnitTypeId.ZERGLING: {"proportion": 0.15, "priority": 1},
+}
+
+# Enemy has shown air and we have the Den: Hydralisks answer air themselves,
+# Corruptors cover the heavy flyers.
+ROACH_HYDRA_CORRUPTOR_COMP: dict[UnitTypeId, dict[str, float | int]] = {
+    UnitTypeId.ROACH: {"proportion": 0.40, "priority": 0},
+    UnitTypeId.HYDRALISK: {"proportion": 0.30, "priority": 0},
+    UnitTypeId.CORRUPTOR: {"proportion": 0.20, "priority": 0},
+    UnitTypeId.ZERGLING: {"proportion": 0.10, "priority": 1},
+}
+
 # How skewed mineral:gas must be before Macro Zerg flips to ling-heavy.
 GAS_STARVED_MINERAL_RATIO: float = 5.0
 

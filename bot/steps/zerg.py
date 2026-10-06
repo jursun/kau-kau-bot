@@ -29,8 +29,12 @@ from bot.builds.definition import _always
 from bot.consts import (
     ALL_TOWNHALL_TYPES,
     GAS_STARVED_MINERAL_RATIO,
+    HYDRA_LURKER_COMP,
+    HYDRA_LURKER_INFESTOR_COMP,
     LING_HEAVY_CORRUPTOR_COMP,
     LING_HEAVY_ROACH_COMP,
+    ROACH_HYDRA_COMP,
+    ROACH_HYDRA_CORRUPTOR_COMP,
     ROACH_LING_COMP,
     ROACH_LING_CORRUPTOR_COMP,
     ROACH_LING_CORRUPTOR_INFESTOR_COMP,
@@ -862,6 +866,12 @@ def spawn_macro_army(gate: Gate = _always) -> MacroStep:
     fold Corruptor in. When mineral:gas > `GAS_STARVED_MINERAL_RATIO` (5:1),
     flip to the ling-heavy comps so larva spends on Zerglings instead of Roaches.
 
+    Late game, with the Hydralisk Den ready, Hydralisks join the Roach/
+    Zergling army (`ROACH_HYDRA_COMP`); with the Lurker Den too, a fifth of
+    it morphs into Lurkers (`HYDRA_LURKER_COMP`) - Roach/Zergling alone
+    could not break a Protoss ball. Both keep Infestors when the Pit is up,
+    and an air-heavy enemy swaps Lurkers for Corruptors.
+
     Once Infestation Pit is ready - late game only, it's gated behind
     Tunneling Claws (see `macro_zerg.py`'s tech_up gate) - fold Infestor in
     too, same "at Roach's expense" pattern as Corruptor. Skipped while
@@ -890,14 +900,23 @@ def spawn_macro_army(gate: Gate = _always) -> MacroStep:
             and enemy_has_air_units(ctx)
         )
         infestor_ready = bool(ctx.bot.structures(UnitTypeId.INFESTATIONPIT).ready)
+        hydra_ready = bool(ctx.bot.structures(UnitTypeId.HYDRALISKDEN).ready)
+        lurker_ready = bool(ctx.bot.structures(UnitTypeId.LURKERDENMP).ready)
         if gas_starved:
             comp = LING_HEAVY_CORRUPTOR_COMP if air else LING_HEAVY_ROACH_COMP
         elif air:
-            comp = (
-                ROACH_LING_CORRUPTOR_INFESTOR_COMP
-                if infestor_ready
-                else ROACH_LING_CORRUPTOR_COMP
-            )
+            if hydra_ready:
+                comp = ROACH_HYDRA_CORRUPTOR_COMP
+            else:
+                comp = (
+                    ROACH_LING_CORRUPTOR_INFESTOR_COMP
+                    if infestor_ready
+                    else ROACH_LING_CORRUPTOR_COMP
+                )
+        elif lurker_ready and hydra_ready:
+            comp = HYDRA_LURKER_INFESTOR_COMP if infestor_ready else HYDRA_LURKER_COMP
+        elif hydra_ready:
+            comp = ROACH_HYDRA_COMP
         else:
             comp = ROACH_LING_INFESTOR_COMP if infestor_ready else ROACH_LING_COMP
         return SpawnController(dict(comp), spawn_target=None)

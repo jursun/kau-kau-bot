@@ -2827,6 +2827,97 @@ def micro_infestors() -> CombatRoutine:
     return routine
 
 
+# --- Lurkers -------------------------------------------------------------------
+
+LURKER_RANGE: float = 8.0
+"""Base Lurker attack range (10 with Seismic Spines, `UpgradeId.LURKERRANGE`)."""
+LURKER_RANGE_UPGRADED: float = 10.0
+LURKER_BURROW_MARGIN: float = 2.0
+"""Burrow once a ground enemy is within range + this: burrowing takes about a
+second, and the enemy is walking at us."""
+LURKER_UNBURROW_CLEAR_RADIUS: float = 18.0
+"""A burrowed Lurker only gets up once nothing on the ground is within this."""
+LURKER_FOLLOW_ARRIVE: float = 3.0
+
+
+def _lurker_range(ctx: "BotContext") -> float:
+    if UpgradeId.LURKERRANGE in ctx.bot.state.upgrades:
+        return LURKER_RANGE_UPGRADED
+    return LURKER_RANGE
+
+
+def micro_lurkers() -> CombatRoutine:
+    """Lurkers: ride with the army, burrow when the enemy walks into range,
+    stay burrowed while there is anything on the ground nearby, then get up
+    and follow again.
+
+    A surfaced Lurker cannot attack, so the whole job is timing the burrow.
+    Burrowing inside an enemy detector's reach (`INFESTOR_DETECTOR_RADIUS`:
+    Observer, Cannon, Overseer, Raven, Spore, Turret) just parks a target, so
+    a Lurker there backs off instead. Units are found by type rather than by
+    role: a Hydralisk morphs into a Lurker through `SpawnController`, which
+    clears its role on the way.
+    """
+
+    def routine(ctx: "BotContext") -> None:
+        surfaced = list(ctx.bot.units(UnitTypeId.LURKERMP))
+        burrowed = list(ctx.bot.units(UnitTypeId.LURKERMPBURROWED))
+        if not surfaced and not burrowed:
+            return
+
+        squads = ctx.mediator.get_squads(
+            role=UnitRole.ATTACKING, squad_radius=SQUAD_RADIUS
+        )
+        if squads:
+            biggest = max(squads, key=lambda squad: len(squad.squad_units))
+            follow_target = biggest.squad_position
+        else:
+            follow_target = targeting.regroup_point(ctx)
+
+        ground = [e for e in enemy_army(ctx) if not getattr(e, "is_flying", False)]
+        zones = _detector_zones(ctx)
+        grid = ctx.mediator.get_ground_grid
+        burrow_radius = _lurker_range(ctx) + LURKER_BURROW_MARGIN
+        burrow_sq = burrow_radius**2
+        clear_sq = LURKER_UNBURROW_CLEAR_RADIUS**2
+
+        def nearest_sq(unit) -> float:
+            return min(
+                (cy_distance_to_squared(unit.position, e.position) for e in ground),
+                default=float("inf"),
+            )
+
+        for lurker in surfaced:
+            maneuver = CombatManeuver()
+            in_zone = _in_detector_zone(lurker.position, zones)
+            if nearest_sq(lurker) <= burrow_sq and not in_zone:
+                maneuver.add(UseAbility(AbilityId.BURROWDOWN_LURKER, lurker))
+            elif in_zone:
+                exit_point = _detector_exit_point(lurker.position, zones)
+                if exit_point is not None:
+                    maneuver.add(
+                        PathUnitToTarget(unit=lurker, grid=grid, target=exit_point)
+                    )
+            if (
+                follow_target is not None
+                and cy_distance_to(lurker.position, follow_target)
+                > LURKER_FOLLOW_ARRIVE
+                and not in_zone
+            ):
+                maneuver.add(
+                    PathUnitToTarget(unit=lurker, grid=grid, target=follow_target)
+                )
+            ctx.bot.register_behavior(maneuver)
+
+        for lurker in burrowed:
+            if nearest_sq(lurker) > clear_sq:
+                maneuver = CombatManeuver()
+                maneuver.add(UseAbility(AbilityId.BURROWUP_LURKER, lurker))
+                ctx.bot.register_behavior(maneuver)
+
+    return routine
+
+
 # --- Units we control through Neural Parasite --------------------------------
 
 

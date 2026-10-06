@@ -637,6 +637,29 @@ def _surplus_evolution_chambers(ctx) -> int:
     return 1 if _gas_surplus(ctx) else 0
 
 
+_HYDRA_DEN_UPGRADES: tuple[UpgradeId, ...] = (
+    UpgradeId.EVOLVEGROOVEDSPINES,  # Grooved Spines: +range
+    UpgradeId.EVOLVEMUSCULARAUGMENTS,  # Muscular Augments: +speed
+    UpgradeId.LURKERRANGE,  # Seismic Spines (needs Hive)
+)
+_LURKER_DEN_UPGRADES: tuple[UpgradeId, ...] = (
+    UpgradeId.DIGGINGCLAWS,  # Adaptive Talons (needs Hive)
+)
+
+
+def _den_research(ctx):
+    """Hydralisk / Lurker upgrades, each pinned to its own Den
+    (`ResearchChain`) so they research as soon as the Den is up instead of
+    waiting on the shared queue. A level that isn't available yet (Hive
+    upgrades) just waits."""
+    plan = MacroPlan()
+    for den in ctx.bot.structures(UnitTypeId.HYDRALISKDEN).ready:
+        plan.add(ResearchChain(den.tag, _HYDRA_DEN_UPGRADES))
+    for den in ctx.bot.structures(UnitTypeId.LURKERDENMP).ready:
+        plan.add(ResearchChain(den.tag, _LURKER_DEN_UPGRADES))
+    return plan if plan.macros else None
+
+
 def _dedicated_research(ctx):
     """Gas surplus: the 3rd Evolution Chamber researches melee attack and the
     Spawning Pool researches Adrenal Glands, each pinned to its own building
@@ -1262,7 +1285,9 @@ BUILD = BuildDefinition(
         # Roach + Zergling both wave-eligible; one Zergling per observation
         # tower parks on `ZERGLING_SCOUT_ROLE`, then further lings fill
         # `ZERGLING_DEFENDER_ROLE` in `_macro_zerg_on_unit_created`.
-        types=frozenset({UnitTypeId.ROACH, UnitTypeId.ZERGLING}),
+        types=frozenset(
+            {UnitTypeId.ROACH, UnitTypeId.ZERGLING, UnitTypeId.HYDRALISK}
+        ),
         upgrades=(
             UpgradeId.ZERGLINGMOVEMENTSPEED,  # opening upgrade, well before 5:00
             # Post-5:00 priority (`_desired_upgrades`/`UpgradeSlots` both
@@ -1334,6 +1359,8 @@ BUILD = BuildDefinition(
             combat.engage_idle_attackers(),
             combat.escort_corruptors(),
             combat.micro_infestors(),
+            # Lurkers burrow at range from the army and unburrow to advance.
+            combat.micro_lurkers(),
             # Units Neural Parasite has handed us: Storm, Nova, EMP, Fungal, else fight.
             combat.use_controlled_units(),
             overseer_routines.manage_overseers(),
@@ -1464,6 +1491,8 @@ BUILD = BuildDefinition(
         # Gas surplus: 3rd Evo -> melee attack, Pool -> Adrenal Glands, each on
         # its own building and independent of the shared upgrade queue.
         _dedicated_research,
+        # Hydralisk / Lurker Den upgrades, each on its own Den.
+        _den_research,
         # Whole game once Lair is commanded (Glial/Burrow/Claws, then the
         # rest of `Army.upgrades`) - see its own docstring for why this
         # must outrank `_post_opening_production` below.
@@ -1492,6 +1521,23 @@ BUILD = BuildDefinition(
             UnitTypeId.HIVE,
             gate=gates.all_of(
                 gates.structure_started(UnitTypeId.INFESTATIONPIT),
+                gates.negate(gates.early_aggression()),
+            ),
+        ),
+        # Late-game Hydralisk + Lurker: Roach/Zergling alone can't break a
+        # Protoss ball. Den after the Pit (Lair + Claws path first), Lurker
+        # Den once the Hydralisk Den stands (`spawn_macro_army` switches comps).
+        z.tech_up(
+            UnitTypeId.HYDRALISKDEN,
+            gate=gates.all_of(
+                gates.structure_started(UnitTypeId.INFESTATIONPIT),
+                gates.negate(gates.early_aggression()),
+            ),
+        ),
+        z.tech_up(
+            UnitTypeId.LURKERDENMP,
+            gate=gates.all_of(
+                gates.has_structure(UnitTypeId.HYDRALISKDEN),
                 gates.negate(gates.early_aggression()),
             ),
         ),
