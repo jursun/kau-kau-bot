@@ -331,6 +331,9 @@ class RunState:
     """Crawler-building drone tag -> (closest distance to its build site so
     far, game time that best distance was last improved). Feeds
     `steps.zerg.release_stuck_crawlers`."""
+    crawler_last_error: dict[int, str] = field(default_factory=dict)
+    """Drone tag -> the last SC2 `ActionResult` name returned for its Spine/
+    Spore build command. Diagnostic only (shown in the stuck-drone log)."""
     bad_crawler_tiles: set[tuple[float, float]] = field(default_factory=set)
     """Build sites a crawler drone got stuck on (unreachable / unplaceable).
     `BuildSporeCrawler` skips them so the retry lands somewhere else."""

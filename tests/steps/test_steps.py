@@ -362,6 +362,40 @@ def test_release_stuck_crawlers_waits_for_minerals_at_the_site() -> None:
     assert not ctx.state.bad_crawler_tiles
 
 
+def test_release_stuck_crawlers_reports_the_sc2_build_error() -> None:
+    """Drones idle on their site with a full bank: the game's own error code
+    is what says why, so it goes in the stuck log."""
+    from types import SimpleNamespace
+
+    from sc2.data import ActionResult
+
+    site = Point2((50.0, 50.0))
+    ctx = _stuck_ctx(Point2((50.0, 50.0)), site)
+    ctx.bot.state.action_errors = [
+        SimpleNamespace(
+            ability_id=AbilityId.ZERGBUILD_SPORECRAWLER.value,
+            unit_tag=999,
+            result=ActionResult.CantBuildLocationInvalid.value,
+        ),
+        SimpleNamespace(  # not a crawler build: ignored
+            ability_id=AbilityId.ATTACK.value, unit_tag=999, result=1
+        ),
+    ]
+
+    z.release_stuck_crawlers(ctx)
+
+    assert ctx.state.crawler_last_error == {999: "CantBuildLocationInvalid"}
+
+
+def test_forward_crawler_wave_passes_stuck_sites_to_the_wave() -> None:
+    ctx = _forward_ctx(creep_until=60.0)
+    ctx.state.bad_crawler_tiles.add((72.0, 90.0))
+
+    wave = _with_creep(ctx, lambda: z.forward_crawler_wave()(ctx))
+
+    assert wave.avoid_tiles == frozenset({(72.0, 90.0)})
+
+
 def test_release_stuck_crawlers_ignores_other_builders() -> None:
     site = Point2((50.0, 50.0))
     ctx = _stuck_ctx(Point2((20.0, 50.0)), site)

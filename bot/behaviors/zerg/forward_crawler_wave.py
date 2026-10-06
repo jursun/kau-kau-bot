@@ -37,6 +37,7 @@ def _find_near(
     structure_type: UnitTypeId,
     min_radius: float = 1.0,
     max_radius: float = 12.0,
+    avoid: Sequence[Point2] = (),
 ) -> Point2 | None:
     """Ring-search a legal crawler spot near `reference` (needs creep)."""
     resources = [*ai.mineral_field, *ai.vespene_geyser]
@@ -63,6 +64,8 @@ def _find_near(
             continue
         if any(cy_distance_to_squared(point, r.position) < resource_sq for r in resources):
             continue
+        if any(cy_distance_to_squared(point, a) < 1.0 for a in avoid):
+            continue
         if mediator.can_place_structure(
             position=point, structure_type=structure_type
         ):
@@ -82,9 +85,13 @@ class ForwardCrawlerWave(MacroBehavior):
 
     anchor: Point2
     structure_types: Sequence[UnitTypeId]
+    avoid_tiles: frozenset[tuple[float, float]] = frozenset()
+    """Sites a drone previously got stuck on - never picked again (see
+    `steps.zerg.release_stuck_crawlers`)."""
 
     def execute(self, ai: "AresBot", config: dict, mediator: ManagerMediator) -> bool:
         acted = False
+        bad = [Point2(t) for t in self.avoid_tiles]
         # Slight angular spread so six crawlers do not fight one tile.
         offsets = [
             Point2((3.0 * cos(2.0 * pi * i / max(len(self.structure_types), 1)),
@@ -97,7 +104,7 @@ class ForwardCrawlerWave(MacroBehavior):
             if not ai.can_afford(structure_type):
                 break
             reference = self.anchor + offsets[index]
-            pos = _find_near(ai, mediator, reference, structure_type)
+            pos = _find_near(ai, mediator, reference, structure_type, avoid=bad)
             if pos is None:
                 continue
             worker = mediator.select_worker(target_position=pos, force_close=True)

@@ -202,6 +202,31 @@ _CRAWLER_PROGRESS_MIN: float = 1.0
 _CRAWLER_AT_SITE_DISTANCE: float = 2.0
 
 
+_CRAWLER_BUILD_ABILITIES: frozenset[int] = frozenset(
+    {
+        AbilityId.ZERGBUILD_SPINECRAWLER.value,
+        AbilityId.ZERGBUILD_SPORECRAWLER.value,
+    }
+)
+
+
+def _record_crawler_build_errors(ctx: "BotContext") -> None:
+    """Remember the SC2 error code the game last returned for each drone's
+    Spine/Spore build command (`state.action_errors` only lives for one
+    frame). Drones were found idling exactly on their site with a full bank,
+    never building - this is what says *why* the game refused."""
+    from sc2.data import ActionResult
+
+    for error in getattr(ctx.bot.state, "action_errors", None) or []:
+        if error.ability_id not in _CRAWLER_BUILD_ABILITIES:
+            continue
+        try:
+            name = ActionResult(error.result).name
+        except ValueError:
+            name = str(error.result)
+        ctx.state.crawler_last_error[error.unit_tag] = name
+
+
 def release_stuck_crawlers(ctx: "BotContext") -> None:
     """Pull a crawler drone off its job once it has stopped making progress,
     and remember its site as bad so the retry picks somewhere else.
@@ -222,6 +247,7 @@ def release_stuck_crawlers(ctx: "BotContext") -> None:
     progress = ctx.state.crawler_progress
     now = ctx.bot.time
     live: set[int] = set()
+    _record_crawler_build_errors(ctx)
     for tag, info in list(tracker.items()):
         structure_type = info.get(ID)
         if structure_type not in _CRAWLER_TYPES:
@@ -255,7 +281,9 @@ def release_stuck_crawlers(ctx: "BotContext") -> None:
             f"CRAWLER stuck: {structure_type.name} drone {tag} made no progress "
             f"toward ({site.x:.0f},{site.y:.0f}) for {now - since:.0f}s "
             f"(dist {distance:.1f}, idle={worker.is_idle}, "
-            f"minerals={ctx.bot.minerals}) - retrying elsewhere",
+            f"minerals={ctx.bot.minerals}, "
+            f"last SC2 build error={ctx.state.crawler_last_error.get(tag)}) "
+            "- retrying elsewhere",
         )
         ctx.state.bad_crawler_tiles.add((site.x, site.y))
         ctx.mediator.get_building_counter[structure_type] -= 1
@@ -675,7 +703,9 @@ def forward_crawler_wave(gate: Gate = _always) -> MacroStep:
             f"({anchor.x:.0f},{anchor.y:.0f}) (minerals={ctx.bot.minerals})",
         )
         return ForwardCrawlerWave(
-            anchor=anchor, structure_types=_FORWARD_CRAWLER_WAVE
+            anchor=anchor,
+            structure_types=_FORWARD_CRAWLER_WAVE,
+            avoid_tiles=frozenset(ctx.state.bad_crawler_tiles),
         )
 
     return step
