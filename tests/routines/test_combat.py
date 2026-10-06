@@ -2848,8 +2848,8 @@ def test_best_fungal_clumps_ignores_units_below_the_minimum() -> None:
 
 
 def test_best_fungal_clumps_reports_two_distinct_far_apart_balls() -> None:
-    near_a = [_enemy(i, Point2((0.0 + i * 0.1, 0.0))) for i in range(4)]
-    near_b = [_enemy(10 + i, Point2((100.0 + i * 0.1, 0.0))) for i in range(4)]
+    near_a = [_enemy(i, Point2((0.0 + i * 0.1, 0.0))) for i in range(5)]
+    near_b = [_enemy(10 + i, Point2((100.0 + i * 0.1, 0.0))) for i in range(5)]
 
     clumps = combat._best_fungal_clumps(near_a + near_b)
 
@@ -2879,9 +2879,10 @@ def test_micro_infestors_casts_fungal_on_a_clump_in_range() -> None:
 
     clump_center = Point2((5.0, 0.0))  # within FUNGAL_GROWTH_RANGE (10)
     ctx.mediator.get_cached_enemy_army = [
-        _enemy(i, Point2((5.0 + i * 0.1, 0.0))) for i in range(4)
+        _enemy(i, Point2((5.0 + i * 0.1, 0.0))) for i in range(5)
     ]
 
+    _escort_squad(ctx, Point2((1.0, 0.0)))
     combat.micro_infestors()(ctx)
 
     registered = ctx.bot.register_behavior.call_args.args[0]
@@ -2917,7 +2918,7 @@ def test_micro_infestors_paths_toward_an_out_of_range_clump() -> None:
     )
     # Well past FUNGAL_GROWTH_RANGE (10).
     ctx.mediator.get_cached_enemy_army = [
-        _enemy(i, Point2((50.0 + i * 0.1, 0.0))) for i in range(4)
+        _enemy(i, Point2((50.0 + i * 0.1, 0.0))) for i in range(5)
     ]
 
     _escort_squad(ctx, Point2((40.0, 0.0)))
@@ -2973,10 +2974,11 @@ def test_micro_infestors_two_infestors_split_across_two_clumps() -> None:
         lambda role: [infestor_a, infestor_b] if role == INFESTOR_ROLE else []
     )
 
-    clump_near_a = [_enemy(i, Point2((5.0 + i * 0.1, 0.0))) for i in range(4)]
-    clump_near_b = [_enemy(10 + i, Point2((-5.0 + i * 0.1, 0.0))) for i in range(4)]
+    clump_near_a = [_enemy(i, Point2((5.0 + i * 0.1, 0.0))) for i in range(5)]
+    clump_near_b = [_enemy(10 + i, Point2((-5.0 + i * 0.1, 0.0))) for i in range(5)]
     ctx.mediator.get_cached_enemy_army = clump_near_a + clump_near_b
 
+    _escort_squad(ctx, Point2((1.0, 0.0)))
     combat.micro_infestors()(ctx)
 
     calls = ctx.bot.register_behavior.call_args_list
@@ -3222,15 +3224,16 @@ def test_micro_infestors_prioritizes_fungal_growth_over_neural_parasite() -> Non
     ctx.mediator.get_ground_grid = "ground-grid"
     ctx.mediator.get_squads.return_value = []
 
-    infestor = _infestor(9, Point2((0.0, 0.0)), energy=100)
+    infestor = _infestor(9, Point2((0.0, 0.0)), energy=200)
     infestor.is_burrowed = False
     ctx.mediator.get_units_from_role.side_effect = (
         lambda role: [infestor] if role == INFESTOR_ROLE else []
     )
     target = _high_value_enemy(1, Point2((5.0, 0.0)))
-    clump = [_enemy(10 + i, Point2((5.0 + i * 0.1, 0.0))) for i in range(4)]
+    clump = [_enemy(10 + i, Point2((5.0 + i * 0.1, 0.0))) for i in range(5)]
     ctx.mediator.get_cached_enemy_army = [target] + clump
 
+    _escort_squad(ctx, Point2((1.0, 0.0)))
     combat.micro_infestors()(ctx)
 
     registered = ctx.bot.register_behavior.call_args.args[0]
@@ -3336,27 +3339,30 @@ def _sized_enemy(tag: int, position: Point2, radius: float) -> MagicMock:
 
 
 def test_best_fungal_clumps_counts_unit_body_not_just_the_centre() -> None:
-    """Three Stalkers a typical 2.6 apart (radius 0.625): a centre-only 2.25
-    radius found no clump in a spread army; the body-aware reach does."""
-    enemies = [_sized_enemy(i, Point2((50.0 + 2.6 * i, 50.0)), 0.625) for i in range(3)]
+    """Five Stalkers 1.2 apart (radius 0.625): a centre-only 2.25
+    radius counts the middle three at most; the body-aware reach catches all
+    five."""
+    enemies = [_sized_enemy(i, Point2((50.0 + 1.2 * i, 50.0)), 0.625) for i in range(5)]
 
     clumps = combat._best_fungal_clumps(enemies)
 
     assert len(clumps) == 1
 
 
-def test_best_fungal_clumps_min_clump_is_three_by_default() -> None:
-    pair = [_sized_enemy(i, Point2((50.0 + i, 50.0)), 0.6) for i in range(2)]
+def test_best_fungal_clumps_min_clump_is_five_by_default() -> None:
+    four = [_sized_enemy(i, Point2((50.0 + 0.5 * i, 50.0)), 0.6) for i in range(4)]
 
-    assert combat._best_fungal_clumps(pair) == []
-    assert len(combat._best_fungal_clumps(pair, min_clump=2)) == 1
+    assert combat._best_fungal_clumps(four) == []
+    assert len(combat._best_fungal_clumps(four, min_clump=3)) == 1
 
 
-def test_micro_infestors_with_banked_energy_fungals_a_pair() -> None:
-    ctx, infestor = _infestor_ctx(Point2((0.0, 0.0)), energy=160)
+def test_micro_infestors_with_banked_energy_fungals_a_smaller_clump() -> None:
+    """175+ energy is a Fungal plus a Neural's worth: a trio is worth it."""
+    ctx, infestor = _infestor_ctx(Point2((0.0, 0.0)), energy=180)
     ctx.mediator.get_cached_enemy_army = [
-        _sized_enemy(i, Point2((5.0 + i, 0.0)), 0.6) for i in range(2)
+        _sized_enemy(i, Point2((5.0 + 0.5 * i, 0.0)), 0.6) for i in range(3)
     ]
+    _escort_squad(ctx, Point2((1.0, 0.0)))
 
     combat.micro_infestors()(ctx)
 
@@ -3388,9 +3394,10 @@ def test_micro_infestors_burrowed_unburrows_to_fungal_a_clump() -> None:
     ctx, infestor = _infestor_ctx(Point2((0.0, 0.0)), energy=90)
     infestor.is_burrowed = True
     ctx.mediator.get_cached_enemy_army = [
-        _sized_enemy(i, Point2((5.0 + 0.4 * i, 0.0)), 0.6) for i in range(4)
+        _sized_enemy(i, Point2((5.0 + 0.4 * i, 0.0)), 0.6) for i in range(5)
     ]
 
+    _escort_squad(ctx, Point2((1.0, 0.0)))
     combat.micro_infestors()(ctx)
 
     micros = _all_micros(ctx)
@@ -3417,9 +3424,10 @@ def test_micro_infestors_burrowed_prefers_a_castable_neural_over_unburrowing() -
 def test_micro_infestors_surfaced_with_fungal_energy_does_not_burrow_near_a_clump() -> None:
     ctx, infestor = _infestor_ctx(Point2((0.0, 0.0)), energy=90)
     ctx.mediator.get_cached_enemy_army = [
-        _sized_enemy(i, Point2((5.0 + 0.4 * i, 0.0)), 0.6) for i in range(4)
+        _sized_enemy(i, Point2((5.0 + 0.4 * i, 0.0)), 0.6) for i in range(5)
     ]
 
+    _escort_squad(ctx, Point2((1.0, 0.0)))
     combat.micro_infestors()(ctx)
 
     abilities = {m.ability for m in _all_micros(ctx) if isinstance(m, UseAbility)}
@@ -3548,23 +3556,75 @@ def test_micro_infestors_waits_for_the_fight_before_neural_parasite() -> None:
     ]
 
 
-def test_micro_infestors_fungals_a_clump_in_range_without_waiting_for_a_fight() -> None:
+def test_micro_infestors_holds_fungal_until_the_squad_is_going_in() -> None:
+    """Conservative: no Fungal while the army is nowhere near the fight."""
     ctx, infestor = _infestor_ctx(Point2((0.0, 0.0)), energy=100)
-    _escort_squad(ctx, Point2((100.0, 0.0)))  # army far away
+    _escort_squad(ctx, Point2((100.0, 0.0)))  # army far away: no fight
     ctx.mediator.get_cached_enemy_army = [
-        _enemy(i, Point2((5.0 + i * 0.1, 0.0))) for i in range(4)
+        _sized_enemy(i, Point2((5.0 + 0.5 * i, 0.0)), 0.6) for i in range(6)
     ]
 
     combat.micro_infestors()(ctx)
 
-    assert [
+    assert not _fungal_casts(ctx)
+
+
+def _fungal_casts(ctx) -> list:
+    return [
         m for m in _all_micros(ctx)
         if isinstance(m, UseAbility)
         and m.ability == AbilityId.FUNGALGROWTH_FUNGALGROWTH
     ]
 
 
-# --- use_controlled_units ---------------------------------------------------
+def _fight_ctx(energy: float, count: int = 6):
+    ctx, infestor = _infestor_ctx(Point2((0.0, 0.0)), energy=energy)
+    ctx.mediator.get_cached_enemy_army = [
+        _sized_enemy(i, Point2((5.0 + 0.5 * i, 0.0)), 0.6) for i in range(count)
+    ]
+    _escort_squad(ctx, Point2((1.0, 0.0)))
+    return ctx, infestor
+
+
+def test_micro_infestors_no_fungal_while_the_squad_is_mustering_or_falling_back() -> None:
+    for attr in ("mustering_tags", "falling_back_tags"):
+        ctx, _ = _fight_ctx(energy=100)
+        setattr(ctx.state, attr, {701, 702})
+
+        combat.micro_infestors()(ctx)
+
+        assert not _fungal_casts(ctx), attr
+
+
+def test_micro_infestors_fungals_when_the_squad_is_going_in() -> None:
+    ctx, _ = _fight_ctx(energy=100)
+
+    combat.micro_infestors()(ctx)
+
+    assert _fungal_casts(ctx)
+
+
+def test_micro_infestors_keeps_neural_energy_while_a_big_target_is_near() -> None:
+    """A Colossus near the army: 100 energy is a Neural, not a Fungal."""
+    ctx, _ = _fight_ctx(energy=150)
+    ctx.mediator.get_cached_enemy_army = list(ctx.mediator.get_cached_enemy_army) + [
+        _high_value_enemy(99, Point2((14.0, 0.0)))
+    ]
+
+    combat.micro_infestors()(ctx)
+
+    assert not _fungal_casts(ctx)
+
+
+def test_micro_infestors_fungals_with_enough_energy_for_both() -> None:
+    ctx, _ = _fight_ctx(energy=180)
+    ctx.mediator.get_cached_enemy_army = list(ctx.mediator.get_cached_enemy_army) + [
+        _high_value_enemy(99, Point2((14.0, 0.0)))
+    ]
+
+    combat.micro_infestors()(ctx)
+
+    assert _fungal_casts(ctx)
 
 
 def _controlled(tag: int, type_id: UnitTypeId, at: Point2, energy: float = 100.0):
@@ -3783,9 +3843,10 @@ def test_micro_infestors_still_casts_fungal_from_inside_detection_range() -> Non
     ctx, infestor = _detection_setup(Point2((0.0, 0.0)), energy=100)
     ctx.bot.enemy_structures = [_detector(UnitTypeId.PHOTONCANNON, Point2((8.0, 0.0)))]
     ctx.mediator.get_cached_enemy_army = [
-        _enemy(i, Point2((5.0 + i * 0.1, 0.0))) for i in range(4)
+        _enemy(i, Point2((5.0 + i * 0.1, 0.0))) for i in range(5)
     ]
 
+    _escort_squad(ctx, Point2((1.0, 0.0)))
     combat.micro_infestors()(ctx)
 
     micros = _micros(ctx)
@@ -3796,7 +3857,7 @@ def test_micro_infestors_still_casts_fungal_from_inside_detection_range() -> Non
 def test_micro_infestors_approaches_a_clump_only_to_cast_range() -> None:
     ctx, infestor = _detection_setup(Point2((0.0, 0.0)), energy=100)
     ctx.mediator.get_cached_enemy_army = [
-        _enemy(i, Point2((50.0 + i * 0.1, 0.0))) for i in range(4)
+        _enemy(i, Point2((50.0 + i * 0.1, 0.0))) for i in range(5)
     ]
 
     _escort_squad(ctx, Point2((40.0, 0.0)))

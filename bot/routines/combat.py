@@ -2350,14 +2350,15 @@ FUNGAL_GROWTH_ENERGY_COST: float = 75.0
 FUNGAL_GROWTH_RANGE: float = 10.0
 FUNGAL_GROWTH_RADIUS: float = 2.25
 # Fewer enemies than this packed together isn't worth rooting/damaging one
-# at a time - save the energy for an actual clump. Was 4 *centre points*
-# within the bare 2.25 radius, which a spread-out Protoss army almost never
-# satisfied (live: Neural Parasite got used, Fungal never was).
-FUNGAL_GROWTH_MIN_CLUMP: int = 3
-# With this much energy banked (two Fungals' worth) a pair is worth casting on
-# rather than sitting at the energy cap.
-FUNGAL_GROWTH_RICH_ENERGY: float = 150.0
-FUNGAL_GROWTH_RICH_MIN_CLUMP: int = 2
+# at a time - save the energy for an actual clump. Conservative on purpose:
+# once Fungal actually fired it fired so often that Infestors were out of
+# energy when a Colossus / Archon / Immortal worth Neural-ing showed up. The
+# count is body-aware (`_fungal_reach`), not centre-points-in-2.25.
+FUNGAL_GROWTH_MIN_CLUMP: int = 5
+# With this much energy banked - a Fungal plus a Neural Parasite's worth - a
+# smaller clump is worth a cast, since it can't eat the Neural reserve.
+FUNGAL_GROWTH_RICH_ENERGY: float = 175.0
+FUNGAL_GROWTH_RICH_MIN_CLUMP: int = 3
 _FUNGAL_DEFAULT_UNIT_RADIUS: float = 0.6
 
 
@@ -2588,9 +2589,12 @@ def micro_infestors() -> CombatRoutine:
        that squad does it step out to a cast position short of the target.
        Any move that would end inside a detector zone is dropped - hold.
 
-    Neural Parasite additionally waits until the fight has started (an
-    enemy within `INFESTOR_FIGHT_RADIUS` of the squad); Fungal fires on any
-    clump in range.
+    Neural Parasite waits until the fight has started (an enemy within
+    `INFESTOR_FIGHT_RADIUS` of the squad). Fungal is conservative: only while
+    the escorted squad is going in (attacking - not mustering or falling
+    back - with the fight started), only on a clump of
+    `FUNGAL_GROWTH_MIN_CLUMP`, and never into the 100 energy of a Neural
+    Parasite while a high-value target is near the army.
 
     Kept out of `army.types` on its own `INFESTOR_ROLE` (see
     `core.roles.SUPPORT_ROLES`) - a caster has no place in a muster/attack
@@ -2640,6 +2644,18 @@ def micro_infestors() -> CombatRoutine:
         ]
         approach_clumps = [c for c in clumps if _escorted(c)]
         approach_neural = [e for e in neural_candidates if _escorted(e.position)]
+        # Fungal is for going in: the escorted squad is attacking (not
+        # mustering / falling back) and the fight has started.
+        pushing = (
+            anchor is not None
+            and not (biggest.tags & (ctx.state.falling_back_tags | ctx.state.mustering_tags))
+        )
+        fungal_allowed = pushing and fight_started
+        # Keep a Neural Parasite's energy in reserve while there is a high-
+        # value target worth taking near the army.
+        fungal_energy_needed = FUNGAL_GROWTH_ENERGY_COST + (
+            NEURAL_PARASITE_ENERGY_COST if approach_neural else 0.0
+        )
         zones = _detector_zones(ctx)
         grid = ctx.mediator.get_ground_grid
         _log_infestor_cast_errors(ctx)
@@ -2666,7 +2682,9 @@ def micro_infestors() -> CombatRoutine:
                 ctx.bot.register_behavior(maneuver)
                 continue
 
-            has_fungal_energy = infestor.energy >= FUNGAL_GROWTH_ENERGY_COST
+            has_fungal_energy = fungal_allowed and (
+                infestor.energy >= fungal_energy_needed
+            )
             has_neural_energy = infestor.energy >= NEURAL_PARASITE_ENERGY_COST
 
             fungal_target = None
@@ -2692,13 +2710,13 @@ def micro_infestors() -> CombatRoutine:
                         f"(energy={infestor.energy:.0f})",
                     )
                 elif fight_started:
-                    biggest = max(
+                    biggest_clump = max(
                         (_clump_size(enemies, e.position) for e in enemies), default=0
                     )
                     ctx.log_once(
                         f"fungal_none:{int(ctx.bot.time // 10)}",
                         f"FUNGAL held: energy={infestor.energy:.0f}, "
-                        f"{len(enemies)} enemies, biggest clump {biggest}, "
+                        f"{len(enemies)} enemies, biggest clump {biggest_clump}, "
                         f"in range of {len(usable)} usable",
                     )
 
