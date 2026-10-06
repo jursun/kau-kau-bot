@@ -27,6 +27,7 @@ from bot.behaviors.zerg import (
 )
 from bot.builds.definition import _always
 from bot.consts import (
+    ALL_TOWNHALL_TYPES,
     GAS_STARVED_MINERAL_RATIO,
     LING_HEAVY_CORRUPTOR_COMP,
     LING_HEAVY_ROACH_COMP,
@@ -675,11 +676,87 @@ def _mid_map_anchor(ctx: "BotContext") -> Point2 | None:
     return anchor
 
 
+_FORWARD_GROUP_SIZE: int = 10
+"""A wall group is "done" once this many crawlers stand within
+`targeting.FORWARD_LINE_RADIUS` of its anchor; the next group then goes
+further toward the enemy."""
+_FORWARD_ADVANCE_MIN: float = 8.0
+"""Each new group starts at least this far beyond the previous anchor."""
+_FORWARD_ADVANCE_MAX: float = 40.0
+_FORWARD_ENEMY_STANDOFF: float = 45.0
+"""Never advance the wall to within this of the enemy start or a known
+enemy townhall - the wall supports the army, it doesn't siege a base."""
+
+
+def _advance_anchor(ctx: "BotContext", current: Point2) -> Point2 | None:
+    """Next wall group: the farthest creep tile on the line from `current`
+    toward the enemy base, at least `_FORWARD_ADVANCE_MIN` further on and
+    outside `_FORWARD_ENEMY_STANDOFF` of every known enemy base. `None`
+    while creep hasn't reached anywhere that qualifies (the wave waits)."""
+    from cython_extensions import cy_distance_to
+    from cython_extensions.general_utils import cy_has_creep
+
+    starts = list(ctx.bot.enemy_start_locations)
+    if not starts:
+        return None
+    enemy_bases = [Point2(starts[0])] + [
+        th.position for th in ctx.bot.enemy_structures.of_type(ALL_TOWNHALL_TYPES)
+    ]
+    creep = ctx.mediator.get_creep_grid
+    best: Point2 | None = None
+    distance = _FORWARD_ADVANCE_MIN
+    while distance <= _FORWARD_ADVANCE_MAX:
+        point = current.towards(starts[0], distance)
+        if all(
+            cy_distance_to(point, base) >= _FORWARD_ENEMY_STANDOFF
+            for base in enemy_bases
+        ) and cy_has_creep(creep, point):
+            best = point
+        distance += _FORWARD_ANCHOR_STEP
+    return best
+
+
+def _forward_anchor(ctx: "BotContext") -> Point2 | None:
+    """Where the next crawler pulse goes.
+
+    The first group goes to the creep edge toward mid-map (`_mid_map_anchor`);
+    once ~10 crawlers stand around it, the next group starts further toward
+    the enemy base (`_advance_anchor`), and so on. Every anchor is kept in
+    `RunState.forward_anchors` - the army regroups on the most advanced one
+    that is standing (`targeting.regroup_point`).
+    """
+    from cython_extensions import cy_distance_to_squared
+
+    anchors = ctx.state.forward_anchors
+    if not anchors:
+        first = _mid_map_anchor(ctx)
+        if first is not None:
+            anchors.append(first)
+        return first
+    current = anchors[-1]
+    radius_sq = targeting.FORWARD_LINE_RADIUS**2
+    have = sum(
+        1
+        for s in ctx.bot.structures(
+            {UnitTypeId.SPINECRAWLER, UnitTypeId.SPORECRAWLER}
+        )
+        if cy_distance_to_squared(s.position, current) <= radius_sq
+    )
+    if have < _FORWARD_GROUP_SIZE:
+        return current
+    nxt = _advance_anchor(ctx, current)
+    if nxt is None:
+        return None  # creep hasn't reached anywhere further forward yet
+    anchors.append(nxt)
+    return nxt
+
+
 def forward_crawler_wave(gate: Gate = _always) -> MacroStep:
     """When floating >2000 minerals, every 30s pull 6 workers to plant
-    3 Spines + 3 Spores toward the middle of the map (mineral sink / forward
-    static) - see `_mid_map_anchor`. Waits (no-op, interval not consumed)
-    while creep hasn't reached anywhere meaningfully forward of our bases.
+    3 Spines + 3 Spores at the current forward wall group - groups of ~10,
+    each further toward the enemy base than the last (`_forward_anchor`).
+    Waits (no-op, interval not consumed) while creep hasn't reached anywhere
+    forward enough to build the next group.
     """
 
     def step(ctx: "BotContext"):
@@ -691,7 +768,7 @@ def forward_crawler_wave(gate: Gate = _always) -> MacroStep:
         if last is not None and ctx.bot.time - last < _FORWARD_CRAWLER_INTERVAL:
             return None
 
-        anchor = _mid_map_anchor(ctx)
+        anchor = _forward_anchor(ctx)
         if anchor is None:
             return None
         ctx.state.last_forward_crawler_wave_at = ctx.bot.time
@@ -699,7 +776,8 @@ def forward_crawler_wave(gate: Gate = _always) -> MacroStep:
 
         log_event(
             ctx.bot,
-            "FORWARD_CRAWLER wave: 3 Spine + 3 Spore toward mid-map at "
+            f"FORWARD_CRAWLER wave: 3 Spine + 3 Spore, group "
+            f"{len(ctx.state.forward_anchors)} at "
             f"({anchor.x:.0f},{anchor.y:.0f}) (minerals={ctx.bot.minerals})",
         )
         return ForwardCrawlerWave(

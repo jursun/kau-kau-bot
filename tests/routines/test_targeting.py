@@ -18,6 +18,8 @@ from __future__ import annotations
 import sys
 from unittest.mock import MagicMock
 
+import pytest
+
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
 
@@ -366,6 +368,74 @@ def test_squad_destination_falls_back_to_attack_target() -> None:
     ctx.build.combat.attack_objective = None
 
     assert targeting.squad_destination(ctx, FROM_POS) == HATCHERY
+
+
+# --- regroup_point -----------------------------------------------------------
+
+
+def _regroup_ctx(anchors, crawler_positions, townhall=Point2((10.0, 10.0))):
+    from bot.core.state import RunState
+
+    ctx = MagicMock()
+    ctx.state = RunState()
+    ctx.state.forward_anchors = list(anchors)
+    crawlers = []
+    for pos in crawler_positions:
+        crawler = MagicMock()
+        crawler.position = pos
+        crawlers.append(crawler)
+    structures = MagicMock()
+    structures.ready = crawlers
+    ctx.bot.structures = MagicMock(return_value=structures)
+    base = MagicMock()
+    base.position = townhall
+    ctx.bot.townhalls = [base]
+    ctx.build.combat.rally = None
+    ctx.build.combat.rally_offset = 5.0
+    ctx.own_nat = Point2((20.0, 20.0))
+    ctx.bot.enemy_start_locations = [Point2((150.0, 150.0))]
+    return ctx
+
+
+def test_regroup_point_is_the_natural_rally_without_a_wall() -> None:
+    ctx = _regroup_ctx([], [])
+
+    assert targeting.regroup_point(ctx) == targeting.rally_point(ctx)
+
+
+def test_regroup_point_is_the_forward_wall_once_it_stands() -> None:
+    anchor = Point2((80.0, 80.0))
+    ctx = _regroup_ctx([anchor], [Point2((80.0 + i, 80.0)) for i in range(5)])
+
+    point = targeting.regroup_point(ctx)
+
+    assert point != targeting.rally_point(ctx)
+    # Just behind the crawlers, toward home - not inside them.
+    assert point.distance_to(anchor) == pytest.approx(targeting.FORWARD_REGROUP_BEHIND)
+    assert point.distance_to(Point2((10.0, 10.0))) < anchor.distance_to(Point2((10.0, 10.0)))
+
+
+def test_regroup_point_waits_for_enough_standing_crawlers() -> None:
+    anchor = Point2((80.0, 80.0))
+    ctx = _regroup_ctx([anchor], [Point2((80.0, 80.0))])  # 1 < minimum
+
+    assert targeting.regroup_point(ctx) == targeting.rally_point(ctx)
+
+
+def test_regroup_point_uses_the_most_advanced_standing_group() -> None:
+    first = Point2((60.0, 60.0))
+    second = Point2((100.0, 100.0))
+    crawlers = [Point2((60.0 + i, 60.0)) for i in range(5)] + [
+        Point2((100.0 + i, 100.0)) for i in range(5)
+    ]
+    ctx = _regroup_ctx([first, second], crawlers)
+    assert targeting.regroup_point(ctx).distance_to(second) < 5.0
+
+    # The forward group dies: back to the group that still stands.
+    ctx.bot.structures.return_value.ready = [
+        c for c in ctx.bot.structures.return_value.ready if c.position.x < 80.0
+    ]
+    assert targeting.regroup_point(ctx).distance_to(first) < 5.0
 
 
 def main() -> int:

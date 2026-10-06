@@ -1010,6 +1010,72 @@ def _with_creep(ctx, fn):
         return fn()
 
 
+def _creep_patch(ctx_creep_fn):
+    return patch("cython_extensions.general_utils.cy_has_creep", ctx_creep_fn)
+
+
+def _wall_group_ctx(standing: int):
+    """Our base (10,10), enemy base (150,150), centre (110,110). `standing`
+    crawlers already built around the first anchor (60,60)."""
+    ctx = _forward_ctx(creep_until=200.0)
+    ctx.bot.enemy_start_locations = [Point2((150.0, 150.0))]
+    ctx.bot.enemy_structures = MagicMock()
+    ctx.bot.enemy_structures.of_type = MagicMock(return_value=[])
+    first = Point2((60.0, 60.0))
+    ctx.state.forward_anchors = [first]
+    crawlers = []
+    for i in range(standing):
+        crawler = MagicMock()
+        crawler.position = Point2((60.0 + i * 0.5, 60.0))
+        crawlers.append(crawler)
+    ctx.bot.structures = MagicMock(return_value=crawlers)
+    return ctx, first
+
+
+def test_forward_anchor_stays_until_the_group_is_about_ten() -> None:
+    ctx, first = _wall_group_ctx(standing=9)
+
+    anchor = _with_creep(ctx, lambda: z._forward_anchor(ctx))
+
+    assert anchor == first
+    assert ctx.state.forward_anchors == [first]
+
+
+def test_forward_anchor_advances_toward_the_enemy_once_the_group_is_full() -> None:
+    ctx, first = _wall_group_ctx(standing=10)
+
+    anchor = _with_creep(ctx, lambda: z._forward_anchor(ctx))
+
+    assert anchor != first
+    assert anchor.distance_to(first) >= z._FORWARD_ADVANCE_MIN
+    # Strictly closer to the enemy base than the previous group.
+    enemy = Point2((150.0, 150.0))
+    assert anchor.distance_to(enemy) < first.distance_to(enemy)
+    assert ctx.state.forward_anchors == [first, anchor]
+
+
+def test_forward_anchor_waits_when_creep_has_not_reached_further() -> None:
+    ctx, first = _wall_group_ctx(standing=10)
+    ctx.creep_until = 61.0  # creep ends right at the current group
+
+    assert _with_creep(ctx, lambda: z._forward_anchor(ctx)) is None
+    assert ctx.state.forward_anchors == [first]
+
+
+def test_forward_anchor_never_advances_into_the_enemy_base() -> None:
+    ctx, first = _wall_group_ctx(standing=10)
+    first_far = Point2((125.0, 125.0))  # already ~35 from the enemy base
+    ctx.state.forward_anchors = [first_far]
+    crawlers = []
+    for i in range(10):
+        crawler = MagicMock()
+        crawler.position = Point2((125.0 + i * 0.3, 125.0))
+        crawlers.append(crawler)
+    ctx.bot.structures = MagicMock(return_value=crawlers)
+
+    assert _with_creep(ctx, lambda: z._forward_anchor(ctx)) is None
+
+
 def test_forward_crawler_wave_anchors_at_the_creep_edge_toward_mid_map() -> None:
     """Not at the army (which is the natural whenever it's home or falling
     back): out along the line to the map centre, as far as creep reaches."""

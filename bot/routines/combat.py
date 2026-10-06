@@ -1396,7 +1396,8 @@ def attack_squads(
         squads = ctx.mediator.get_squads(
             role=UnitRole.ATTACKING, squad_radius=squad_radius
         )
-        rally = targeting.rally_point(ctx)
+        # Muster / fall-back at the forward wall when there is one.
+        rally = targeting.regroup_point(ctx)
         grid = ctx.mediator.get_ground_grid
         engagement = _wall_engagement(ctx) if flank_at_wall else None
         for squad in squads:
@@ -2349,13 +2350,37 @@ FUNGAL_GROWTH_ENERGY_COST: float = 75.0
 FUNGAL_GROWTH_RANGE: float = 10.0
 FUNGAL_GROWTH_RADIUS: float = 2.25
 # Fewer enemies than this packed together isn't worth rooting/damaging one
-# at a time - save the energy for an actual clump.
-FUNGAL_GROWTH_MIN_CLUMP: int = 4
+# at a time - save the energy for an actual clump. Was 4 *centre points*
+# within the bare 2.25 radius, which a spread-out Protoss army almost never
+# satisfied (live: Neural Parasite got used, Fungal never was).
+FUNGAL_GROWTH_MIN_CLUMP: int = 3
+# With this much energy banked (two Fungals' worth) a pair is worth casting on
+# rather than sitting at the energy cap.
+FUNGAL_GROWTH_RICH_ENERGY: float = 150.0
+FUNGAL_GROWTH_RICH_MIN_CLUMP: int = 2
+_FUNGAL_DEFAULT_UNIT_RADIUS: float = 0.6
 
 
-def _best_fungal_clumps(enemies: list[Unit]) -> list[Point2]:
-    """Enemy positions with >= `FUNGAL_GROWTH_MIN_CLUMP` other enemies
-    within Fungal's radius, biggest first, greedily de-duplicated (kept only
+def _fungal_reach(enemy: Unit) -> float:
+    """Fungal hits any unit whose *body* overlaps the circle, not just its
+    centre - so a unit counts out to the effect radius plus its own radius."""
+    radius = float(getattr(enemy, "radius", 0.0) or _FUNGAL_DEFAULT_UNIT_RADIUS)
+    return FUNGAL_GROWTH_RADIUS + radius
+
+
+def _clump_size(enemies: list[Unit], position: Point2) -> int:
+    return sum(
+        1
+        for other in enemies
+        if cy_distance_to(position, other.position) <= _fungal_reach(other)
+    )
+
+
+def _best_fungal_clumps(
+    enemies: list[Unit], min_clump: int = FUNGAL_GROWTH_MIN_CLUMP
+) -> list[Point2]:
+    """Enemy positions with >= `min_clump` enemies Fungal would catch
+    (`_fungal_reach`: radius plus body size), biggest first, greedily de-duplicated (kept only
     if farther than 1.5x the radius from every clump already kept) so two
     points deep inside the same ball of units don't both get reported as
     separate clumps.
@@ -2366,12 +2391,8 @@ def _best_fungal_clumps(enemies: list[Unit]) -> list[Point2]:
     """
     candidates: list[tuple[int, Point2]] = []
     for enemy in enemies:
-        count = sum(
-            1
-            for other in enemies
-            if cy_distance_to(enemy.position, other.position) <= FUNGAL_GROWTH_RADIUS
-        )
-        if count >= FUNGAL_GROWTH_MIN_CLUMP:
+        count = _clump_size(enemies, enemy.position)
+        if count >= min_clump:
             candidates.append((count, enemy.position))
     candidates.sort(key=lambda c: c[0], reverse=True)
 
@@ -2587,6 +2608,7 @@ def micro_infestors() -> CombatRoutine:
             )
 
         clumps = _best_fungal_clumps(enemies)
+        rich_clumps = _best_fungal_clumps(enemies, FUNGAL_GROWTH_RICH_MIN_CLUMP)
         neural_candidates = [
             e for e in enemies if e.type_id in NEURAL_PARASITE_TARGET_TYPES
         ]
@@ -2594,7 +2616,7 @@ def micro_infestors() -> CombatRoutine:
         approach_neural = [e for e in neural_candidates if _escorted(e.position)]
         zones = _detector_zones(ctx)
         grid = ctx.mediator.get_ground_grid
-        claimed_clumps: set[int] = set()
+        claimed_clumps: set[tuple[int, int]] = set()
         claimed_neural: set[int] = set()  # enemy tags
         for infestor in infestors:
             maneuver = CombatManeuver()
@@ -2622,13 +2644,34 @@ def micro_infestors() -> CombatRoutine:
 
             fungal_target = None
             if has_fungal_energy:
-                for index, clump in enumerate(clumps):
-                    if index in claimed_clumps:
+                usable = (
+                    rich_clumps
+                    if infestor.energy >= FUNGAL_GROWTH_RICH_ENERGY
+                    else clumps
+                )
+                for clump in usable:
+                    key = (round(clump.x), round(clump.y))
+                    if key in claimed_clumps:
                         continue
                     if cy_distance_to(infestor.position, clump) <= FUNGAL_GROWTH_RANGE:
                         fungal_target = clump
-                        claimed_clumps.add(index)
+                        claimed_clumps.add(key)
                         break
+                if fungal_target is not None:
+                    ctx.log(
+                        f"FUNGAL cast on {_clump_size(enemies, fungal_target)} "
+                        f"enemies (energy={infestor.energy:.0f})"
+                    )
+                elif fight_started:
+                    biggest = max(
+                        (_clump_size(enemies, e.position) for e in enemies), default=0
+                    )
+                    ctx.log_once(
+                        f"fungal_none:{int(ctx.bot.time // 10)}",
+                        f"FUNGAL held: energy={infestor.energy:.0f}, "
+                        f"{len(enemies)} enemies, biggest clump {biggest}, "
+                        f"in range of {len(usable)} usable",
+                    )
 
             neural_target = None
             near_fight = fight_started or (
@@ -2711,6 +2754,164 @@ def micro_infestors() -> CombatRoutine:
                 maneuver.add(
                     MoveToSafeTarget(unit=infestor, grid=grid, target=follow_target)
                 )
+            ctx.bot.register_behavior(maneuver)
+
+    return routine
+
+
+# --- Units we control through Neural Parasite --------------------------------
+
+
+@dataclass(frozen=True)
+class _ControlledSpell:
+    ability: AbilityId
+    energy: float
+    cast_range: float
+    radius: float
+    min_enemies: int
+    friendly_fire: bool
+    """True when the effect hurts our own units too (Storm, Nova): such a
+    cast is skipped unless it catches clearly more enemies than friendlies."""
+
+
+_CONTROLLED_SPELLS: dict[UnitTypeId, _ControlledSpell] = {
+    UnitTypeId.HIGHTEMPLAR: _ControlledSpell(
+        AbilityId.PSISTORM_PSISTORM, 75.0, 9.0, 1.5, 3, True
+    ),
+    UnitTypeId.DISRUPTOR: _ControlledSpell(
+        AbilityId.EFFECT_PURIFICATIONNOVA, 0.0, 13.0, 1.5, 2, True
+    ),
+    UnitTypeId.GHOST: _ControlledSpell(AbilityId.EMP_EMP, 75.0, 10.0, 1.5, 3, False),
+    UnitTypeId.INFESTOR: _ControlledSpell(
+        AbilityId.FUNGALGROWTH_FUNGALGROWTH, 75.0, 10.0, 2.25, 3, False
+    ),
+}
+
+CONTROLLED_ENGAGE_RANGE: float = 30.0
+"""A controlled unit only goes after enemies this close to it."""
+CONTROLLED_CAST_SLACK: float = 3.0
+"""A cast may target a point this far beyond cast range - the game walks the
+unit the rest of the way, and control only lasts a few seconds."""
+
+_CONTROLLED_SKIP_TYPES: frozenset[UnitTypeId] = frozenset(
+    {
+        UnitTypeId.INTERCEPTOR,
+        UnitTypeId.DISRUPTORPHASED,
+        UnitTypeId.ADEPTPHASESHIFT,
+        UnitTypeId.OBSERVER,
+        UnitTypeId.WARPPRISM,
+        UnitTypeId.MEDIVAC,
+    }
+)
+
+
+def _best_aoe_point(
+    enemies: list[Unit],
+    friendlies: list[Unit],
+    spell: _ControlledSpell,
+) -> Point2 | None:
+    """Best enemy position to centre `spell` on: the one catching the most
+    enemies (body-aware, like `_fungal_reach`), skipping any that would
+    catch too many of our own units when the spell is friendly-fire."""
+    best: Point2 | None = None
+    best_count = 0
+    for enemy in enemies:
+        point = enemy.position
+        hit = sum(
+            1
+            for other in enemies
+            if cy_distance_to(point, other.position)
+            <= spell.radius
+            + float(getattr(other, "radius", 0.0) or _FUNGAL_DEFAULT_UNIT_RADIUS)
+        )
+        if hit < spell.min_enemies:
+            continue
+        if spell.friendly_fire:
+            ours = sum(
+                1
+                for friend in friendlies
+                if cy_distance_to(point, friend.position) <= spell.radius + 0.5
+            )
+            if ours > 0 and hit < 2 * ours + 1:
+                continue
+        if hit > best_count:
+            best, best_count = point, hit
+    return best
+
+
+def use_controlled_units() -> CombatRoutine:
+    """Put units we've mind-controlled with Neural Parasite to work.
+
+    A Neural-controlled enemy unit is ours (`unit.race` is not ours) for the
+    few seconds the channel lasts but has no role, so nothing else ever gives
+    it an order - it just stood there. Each one now:
+
+    1. Casts its signature spell at the best clump in reach
+       (`_CONTROLLED_SPELLS`: High Templar Psionic Storm, Disruptor
+       Purification Nova, Ghost EMP, Infestor Fungal Growth) - friendly-fire
+       spells only when they catch clearly more enemies than our own units.
+       `UseAbility` only fires when the ability is actually available to
+       the unit, so a spell the controlled unit can't use (no energy, no
+       research) quietly falls through to step 2.
+    2. Otherwise shoots what is in range and attacks the closest enemy it
+       can hit.
+    """
+
+    def routine(ctx: "BotContext") -> None:
+        own_race = ctx.bot.race
+        controlled = [
+            u
+            for u in ctx.bot.units
+            if getattr(u, "race", own_race) != own_race
+            and u.type_id not in _CONTROLLED_SKIP_TYPES
+        ]
+        if not controlled:
+            return
+
+        enemies = enemy_army(ctx)
+        if not enemies:
+            return
+        friendlies = list(ctx.bot.units)
+        engage_sq = CONTROLLED_ENGAGE_RANGE**2
+        for unit in controlled:
+            nearby = [
+                e
+                for e in enemies
+                if cy_distance_to_squared(unit.position, e.position) <= engage_sq
+            ]
+            if not nearby:
+                continue
+            maneuver = CombatManeuver()
+
+            spell = _CONTROLLED_SPELLS.get(unit.type_id)
+            if spell is not None and unit.energy >= spell.energy:
+                reachable = [
+                    e
+                    for e in nearby
+                    if cy_distance_to(unit.position, e.position)
+                    <= spell.cast_range + CONTROLLED_CAST_SLACK + spell.radius
+                ]
+                point = _best_aoe_point(
+                    reachable, [f for f in friendlies if f.tag != unit.tag], spell
+                )
+                if point is not None:
+                    ctx.log_once(
+                        f"controlled_cast:{unit.tag}:{int(ctx.bot.time // 5)}",
+                        f"CONTROLLED {unit.type_id.name} casting "
+                        f"{spell.ability.name} at ({point.x:.0f},{point.y:.0f})",
+                    )
+                    maneuver.add(UseAbility(spell.ability, unit, point))
+
+            if unit.can_attack:
+                targets = _attackable(nearby, [unit])
+                if targets:
+                    maneuver.add(ShootTargetInRange(unit=unit, targets=targets))
+                    maneuver.add(
+                        AttackTarget(
+                            unit=unit,
+                            target=cy_closest_to(position=unit.position, units=targets),
+                        )
+                    )
             ctx.bot.register_behavior(maneuver)
 
     return routine

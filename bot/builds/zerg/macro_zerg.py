@@ -1286,6 +1286,8 @@ BUILD = BuildDefinition(
             combat.engage_idle_attackers(),
             combat.escort_corruptors(),
             combat.micro_infestors(),
+            # Units Neural Parasite has handed us: Storm, Nova, EMP, Fungal, else fight.
+            combat.use_controlled_units(),
             overseer_routines.manage_overseers(),
             creep.spread_creep(),
             creep.spread_tumors(),

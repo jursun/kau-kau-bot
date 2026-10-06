@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from cython_extensions import cy_closest_to, cy_distance_to_squared
+from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
 
 from bot.consts import (
@@ -275,6 +276,46 @@ def rally_point(ctx: "BotContext") -> Point2:
         return locator(ctx)
     nat: Point2 = ctx.own_nat
     return nat.towards(ctx.bot.enemy_start_locations[0], ctx.build.combat.rally_offset)
+
+
+FORWARD_LINE_RADIUS: float = 14.0
+"""Crawlers within this of a forward anchor belong to that wall group."""
+FORWARD_REGROUP_MIN_CRAWLERS: int = 4
+"""Ready Spines/Spores a wall group needs before the army regroups on it."""
+FORWARD_REGROUP_BEHIND: float = 3.0
+"""Stand this far behind the crawlers (toward home), not inside them."""
+
+
+def regroup_point(ctx: "BotContext") -> Point2:
+    """Where attacking squads muster and fall back to: the most advanced
+    Spine/Spore wall group (`RunState.forward_anchors`) that is actually
+    standing, else the natural-front `rally_point`.
+
+    A squad that has pushed out to the wall regroups there under the static
+    D instead of walking all the way back to the natural, and the re-push
+    starts from the wall. Home defenders keep using `rally_point` /
+    `hold_positions` - the natural must stay defended while the army is out.
+    """
+    anchors = ctx.state.forward_anchors
+    if anchors:
+        crawlers = [
+            s.position
+            for s in ctx.bot.structures(
+                {UnitTypeId.SPINECRAWLER, UnitTypeId.SPORECRAWLER}
+            ).ready
+        ]
+        radius_sq = FORWARD_LINE_RADIUS**2
+        for anchor in reversed(anchors):
+            standing = sum(
+                1 for c in crawlers if cy_distance_to_squared(c, anchor) <= radius_sq
+            )
+            if standing >= FORWARD_REGROUP_MIN_CRAWLERS:
+                townhalls = [th.position for th in ctx.bot.townhalls]
+                if not townhalls:
+                    return anchor
+                home = cy_closest_to(anchor, townhalls)
+                return anchor.towards(home, FORWARD_REGROUP_BEHIND)
+    return rally_point(ctx)
 
 
 def hold_positions(ctx: "BotContext") -> list[Point2]:

@@ -331,6 +331,11 @@ class RunState:
     """Crawler-building drone tag -> (closest distance to its build site so
     far, game time that best distance was last improved). Feeds
     `steps.zerg.release_stuck_crawlers`."""
+    forward_anchors: list[Point2] = field(default_factory=list)
+    """Spine/Spore wall groups in the order they were started, each one
+    further toward the enemy (see `steps.zerg.forward_crawler_wave`). The
+    army regroups on the most advanced one that is standing
+    (`routines.targeting.regroup_point`)."""
     crawler_last_error: dict[int, str] = field(default_factory=dict)
     """Drone tag -> the last SC2 `ActionResult` name returned for its Spine/
     Spore build command. Diagnostic only (shown in the stuck-drone log)."""

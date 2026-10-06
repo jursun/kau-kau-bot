@@ -3328,6 +3328,60 @@ def _infestor_ctx(infestor_at: Point2, energy: float):
     return ctx, infestor
 
 
+def _sized_enemy(tag: int, position: Point2, radius: float) -> MagicMock:
+    unit = _enemy(tag, position)
+    unit.radius = radius
+    unit.is_flying = False  # a bare MagicMock attribute is truthy
+    return unit
+
+
+def test_best_fungal_clumps_counts_unit_body_not_just_the_centre() -> None:
+    """Three Stalkers a typical 2.6 apart (radius 0.625): a centre-only 2.25
+    radius found no clump in a spread army; the body-aware reach does."""
+    enemies = [_sized_enemy(i, Point2((50.0 + 2.6 * i, 50.0)), 0.625) for i in range(3)]
+
+    clumps = combat._best_fungal_clumps(enemies)
+
+    assert len(clumps) == 1
+
+
+def test_best_fungal_clumps_min_clump_is_three_by_default() -> None:
+    pair = [_sized_enemy(i, Point2((50.0 + i, 50.0)), 0.6) for i in range(2)]
+
+    assert combat._best_fungal_clumps(pair) == []
+    assert len(combat._best_fungal_clumps(pair, min_clump=2)) == 1
+
+
+def test_micro_infestors_with_banked_energy_fungals_a_pair() -> None:
+    ctx, infestor = _infestor_ctx(Point2((0.0, 0.0)), energy=160)
+    ctx.mediator.get_cached_enemy_army = [
+        _sized_enemy(i, Point2((5.0 + i, 0.0)), 0.6) for i in range(2)
+    ]
+
+    combat.micro_infestors()(ctx)
+
+    assert [
+        m for m in _all_micros(ctx)
+        if isinstance(m, UseAbility)
+        and m.ability == AbilityId.FUNGALGROWTH_FUNGALGROWTH
+    ]
+
+
+def test_micro_infestors_with_normal_energy_saves_fungal_for_three() -> None:
+    ctx, infestor = _infestor_ctx(Point2((0.0, 0.0)), energy=80)
+    ctx.mediator.get_cached_enemy_army = [
+        _sized_enemy(i, Point2((5.0 + i, 0.0)), 0.6) for i in range(2)
+    ]
+
+    combat.micro_infestors()(ctx)
+
+    assert not [
+        m for m in _all_micros(ctx)
+        if isinstance(m, UseAbility)
+        and m.ability == AbilityId.FUNGALGROWTH_FUNGALGROWTH
+    ]
+
+
 def test_micro_infestors_ignores_a_clump_far_from_the_army() -> None:
     """The "hanging out across the map" bug: `enemy_army` includes units seen
     anywhere, and the nearest clump pulled the Infestor off alone."""
@@ -3427,6 +3481,126 @@ def test_micro_infestors_fungals_a_clump_in_range_without_waiting_for_a_fight() 
         if isinstance(m, UseAbility)
         and m.ability == AbilityId.FUNGALGROWTH_FUNGALGROWTH
     ]
+
+
+# --- use_controlled_units ---------------------------------------------------
+
+
+def _controlled(tag: int, type_id: UnitTypeId, at: Point2, energy: float = 100.0):
+    from sc2.data import Race
+
+    unit = _unit(tag, at)
+    unit.type_id = type_id
+    unit.race = Race.Protoss
+    unit.energy = energy
+    unit.can_attack = True
+    unit.can_attack_air = False
+    unit.is_flying = False
+    return unit
+
+
+def _controlled_ctx(controlled, enemies, own=()):
+    from sc2.data import Race
+
+    ctx = _ctx()
+    ctx.bot.time = 100.0
+    ctx.bot.race = Race.Zerg
+    ctx.bot.units = list(controlled) + list(own)
+    ctx.mediator.get_cached_enemy_army = list(enemies)
+    return ctx
+
+
+def _ours(tag: int, at: Point2) -> MagicMock:
+    from sc2.data import Race
+
+    unit = _unit(tag, at)
+    unit.type_id = UnitTypeId.ROACH
+    unit.race = Race.Zerg
+    return unit
+
+
+def _storm_casts(ctx) -> list:
+    return [
+        m for m in _all_micros(ctx)
+        if isinstance(m, UseAbility) and m.ability == AbilityId.PSISTORM_PSISTORM
+    ]
+
+
+def test_controlled_high_templar_storms_an_enemy_clump() -> None:
+    ht = _controlled(1, UnitTypeId.HIGHTEMPLAR, Point2((0.0, 0.0)), energy=75)
+    enemies = [_sized_enemy(10 + i, Point2((7.0 + 0.5 * i, 0.0)), 0.6) for i in range(4)]
+    ctx = _controlled_ctx([ht], enemies)
+
+    combat.use_controlled_units()(ctx)
+
+    casts = _storm_casts(ctx)
+    assert len(casts) == 1
+    assert casts[0].unit is ht
+    assert cy_distance_to(casts[0].target, Point2((8.0, 0.0))) < 2.0
+
+
+def test_controlled_high_templar_does_not_storm_its_own_army() -> None:
+    ht = _controlled(1, UnitTypeId.HIGHTEMPLAR, Point2((0.0, 0.0)), energy=75)
+    enemies = [_sized_enemy(10 + i, Point2((7.0 + 0.5 * i, 0.0)), 0.6) for i in range(3)]
+    ours = [_ours(50 + i, Point2((7.0 + 0.5 * i, 0.3))) for i in range(4)]
+    ctx = _controlled_ctx([ht], enemies, own=ours)
+
+    combat.use_controlled_units()(ctx)
+
+    assert _storm_casts(ctx) == []
+
+
+def test_controlled_high_templar_without_energy_just_fights() -> None:
+    ht = _controlled(1, UnitTypeId.HIGHTEMPLAR, Point2((0.0, 0.0)), energy=40)
+    enemies = [_sized_enemy(10 + i, Point2((7.0 + 0.5 * i, 0.0)), 0.6) for i in range(4)]
+    ctx = _controlled_ctx([ht], enemies)
+
+    combat.use_controlled_units()(ctx)
+
+    assert _storm_casts(ctx) == []
+    micros = _all_micros(ctx)
+    assert any(isinstance(m, AttackTarget) for m in micros)
+
+
+def test_controlled_colossus_attacks_the_closest_enemy() -> None:
+    colossus = _controlled(2, UnitTypeId.COLOSSUS, Point2((0.0, 0.0)))
+    near = _sized_enemy(10, Point2((6.0, 0.0)), 0.6)
+    far = _sized_enemy(11, Point2((20.0, 0.0)), 0.6)
+    ctx = _controlled_ctx([colossus], [far, near])
+
+    combat.use_controlled_units()(ctx)
+
+    attacks = [m for m in _all_micros(ctx) if isinstance(m, AttackTarget)]
+    assert len(attacks) == 1
+    assert attacks[0].target is near
+
+
+def test_controlled_units_ignores_our_own_race_and_far_enemies() -> None:
+    ours = _ours(3, Point2((0.0, 0.0)))
+    colossus = _controlled(2, UnitTypeId.COLOSSUS, Point2((0.0, 0.0)))
+    far = _sized_enemy(11, Point2((90.0, 0.0)), 0.6)
+    ctx = _controlled_ctx([colossus], [far], own=[ours])
+
+    combat.use_controlled_units()(ctx)
+
+    ctx.bot.register_behavior.assert_not_called()
+
+
+def test_controlled_disruptor_novas_a_pair_but_not_through_its_own_units() -> None:
+    nova = AbilityId.EFFECT_PURIFICATIONNOVA
+    disruptor = _controlled(4, UnitTypeId.DISRUPTOR, Point2((0.0, 0.0)), energy=0)
+    enemies = [_sized_enemy(10 + i, Point2((10.0 + 0.5 * i, 0.0)), 0.6) for i in range(2)]
+
+    clear = _controlled_ctx([disruptor], enemies)
+    combat.use_controlled_units()(clear)
+    assert [m for m in _all_micros(clear)
+            if isinstance(m, UseAbility) and m.ability == nova]
+
+    ours = [_ours(60 + i, Point2((10.0, 0.2 * i))) for i in range(3)]
+    blocked = _controlled_ctx([disruptor], enemies, own=ours)
+    combat.use_controlled_units()(blocked)
+    assert not [m for m in _all_micros(blocked)
+                if isinstance(m, UseAbility) and m.ability == nova]
 
 
 # --- micro_infestors: detection -------------------------------------------
