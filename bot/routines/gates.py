@@ -244,6 +244,16 @@ def early_aggression() -> Gate:
 
     return gate
 
+def home_under_attack() -> Gate:
+    """True while an enemy army is attacking our core bases
+    (`routines.emergency_defense`): `RunState.home_threat_until` is live."""
+
+    def gate(ctx: "BotContext") -> bool:
+        return ctx.state.home_threat_until > ctx.bot.time
+
+    return gate
+
+
 def training_started(unit_type: UnitTypeId) -> Gate:
     """True once at least one is queued or in production - not merely
     unlocked. `already_pending` counts anything in a production queue, so

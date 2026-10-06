@@ -1461,6 +1461,17 @@ BUILD = BuildDefinition(
                 gates.minerals_at_least(200),
             ),
         ),
+        # Under attack at the core: more Spines at the natural (the 3rd base
+        # is given up - see `routines.emergency_defense`). One at a time via
+        # the same BuildSporeCrawler placement, up to 5 at the natural.
+        z.early_aggression_spines(
+            5,
+            gate=gates.all_of(
+                gates.home_under_attack(),
+                gates.structure_started(UnitTypeId.SPAWNINGPOOL),
+                gates.minerals_at_least(150),
+            ),
+        ),
         # Maintain 3 Overseers once Lair exists (home / army / scout roles
         # in `routines.overseers.manage_overseers`).
         z.overseers(

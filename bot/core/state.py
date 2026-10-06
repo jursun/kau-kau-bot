@@ -339,6 +339,9 @@ class RunState:
     pulled_queen_roles: dict[int, "UnitRole"] = field(default_factory=dict)
     """Pulled Queen tag -> the role to restore when the threat is over."""
     home_threat_until: float = 0.0
+    drone_engage_until: float = 0.0
+    """Drones stay pulled until this time: the enemy last engaged us in range
+    of the Spines (not merely near the base)."""
     """Keep the pull until this game time (last sighting + hold)."""
     transfuse_at: dict[int, float] = field(default_factory=dict)
     """Transfuse target tag -> game time last cast on it."""

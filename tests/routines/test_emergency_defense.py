@@ -15,6 +15,8 @@ from bot.core.state import RunState
 from bot.routines import emergency_defense as ed
 
 BASE = Point2((20.0, 20.0))
+NAT = Point2((40.0, 20.0))
+THIRD = Point2((100.0, 60.0))
 SPINE_AT = Point2((30.0, 20.0))
 
 
@@ -46,12 +48,20 @@ def _drone(tag: int, at: Point2 = Point2((15.0, 20.0))) -> MagicMock:
     return _unit(tag, at, UnitTypeId.DRONE)
 
 
-def _ctx(enemies=(), queens=(), drones=(), spines=(), army=()) -> BotContext:
+def _hall(at: Point2) -> MagicMock:
+    townhall = MagicMock()
+    townhall.position = at
+    townhall.is_ready = True
+    return townhall
+
+
+def _ctx(
+    enemies=(), queens=(), drones=(), spines=(), army=(), townhalls=None
+) -> BotContext:
     bot = MagicMock()
     bot.time = 100.0
-    townhall = MagicMock()
-    townhall.position = BASE
-    bot.townhalls = [townhall]
+    bot.start_location = BASE
+    bot.townhalls = list(townhalls) if townhalls is not None else [_hall(BASE)]
     bot.calculate_supply_cost.side_effect = lambda t: {
         UnitTypeId.ZEALOT: 2.0,
         UnitTypeId.DRONE: 1.0,
@@ -72,6 +82,8 @@ def _ctx(enemies=(), queens=(), drones=(), spines=(), army=()) -> BotContext:
     build = MagicMock()
     build.army.types = frozenset({UnitTypeId.ZERGLING, UnitTypeId.ROACH})
     ctx = BotContext(bot=bot, build=build, state=RunState())
+    ctx.mediator.get_own_expansions = [(NAT, 10.0)]
+    ctx.mediator.get_own_nat = NAT
     ctx.mediator.get_cached_enemy_army = list(enemies)
     ctx.mediator.get_ground_grid = "grid"
     ctx.mediator.get_units_from_role.side_effect = lambda *, role, unit_type=None: (
@@ -266,3 +278,119 @@ def test_dead_pulled_units_are_forgotten() -> None:
     ed.pull_defense()(ctx)
 
     assert not any(tag < 110 for tag in ctx.state.pulled_drone_tags)
+
+
+# --- when to pull: core only, drones only once engaged in Spine range ---------
+
+
+def test_an_attack_on_the_third_base_is_ignored() -> None:
+    """The 3rd base is given up: holding it spreads the defense thin."""
+    ctx = _ctx(
+        enemies=_attackers(8, at=Point2((98.0, 60.0))),
+        queens=[_queen(1)],
+        drones=[_drone(100 + i) for i in range(20)],
+        spines=[_spine(5)],
+        townhalls=[_hall(BASE), _hall(NAT), _hall(THIRD)],
+    )
+
+    ed.pull_defense()(ctx)
+
+    ctx.mediator.assign_role.assert_not_called()
+    assert ctx.state.home_threat_until == 0.0
+
+
+def test_an_attack_on_the_natural_counts() -> None:
+    ctx = _ctx(
+        enemies=_attackers(5, at=Point2((44.0, 20.0))),
+        queens=[_queen(1)],
+        townhalls=[_hall(BASE), _hall(NAT)],
+    )
+
+    ed.pull_defense()(ctx)
+
+    assert ctx.state.pulled_queen_roles
+    assert ctx.state.home_threat_until > 100.0
+
+
+def test_drones_wait_until_the_enemy_is_in_range_of_the_spines() -> None:
+    """The enemy is walking in (near the base, outside Spine range): Queens
+    pre-position, drones keep mining."""
+    drones = [_drone(100 + i) for i in range(30)]
+    ctx = _ctx(
+        enemies=_attackers(8, at=Point2((16.0, 20.0))),  # 14 from the spine
+        queens=[_queen(1)],
+        drones=drones,
+        spines=[_spine(5)],
+    )
+
+    ed.pull_defense()(ctx)
+
+    assert ctx.state.pulled_queen_roles  # Queens are pulled
+    assert ctx.state.pulled_drone_tags == set()  # drones are not
+
+
+def test_drones_are_pulled_once_the_enemy_engages_in_spine_range() -> None:
+    drones = [_drone(100 + i) for i in range(30)]
+    ctx = _ctx(
+        enemies=_attackers(8, at=Point2((24.0, 20.0))),  # 6 from the spine
+        queens=[_queen(1)],
+        drones=drones,
+        spines=[_spine(5)],
+    )
+
+    ed.pull_defense()(ctx)
+
+    assert len(ctx.state.pulled_drone_tags) == 16
+
+
+def test_a_single_unit_in_spine_range_does_not_pull_drones() -> None:
+    drones = [_drone(100 + i) for i in range(30)]
+    enemies = _attackers(5, at=Point2((16.0, 20.0))) + [_unit(950, Point2((26.0, 20.0)))]
+    ctx = _ctx(enemies=enemies, queens=[_queen(1)], drones=drones, spines=[_spine(5)])
+
+    ed.pull_defense()(ctx)
+
+    assert ctx.state.pulled_drone_tags == set()
+
+
+def test_drones_go_back_once_the_enemy_leaves_spine_range() -> None:
+    drones = [_drone(100 + i) for i in range(30)]
+    ctx = _ctx(
+        enemies=_attackers(8, at=Point2((24.0, 20.0))),
+        queens=[_queen(1)],
+        drones=drones,
+        spines=[_spine(5)],
+    )
+    ed.pull_defense()(ctx)
+    assert ctx.state.pulled_drone_tags
+
+    # The enemy backs off to near the base but out of Spine range.
+    ctx.mediator.get_cached_enemy_army = _attackers(8, at=Point2((14.0, 20.0)))
+    ctx.bot.time += ed.PULL_HOLD_S + 1.0
+    ed.pull_defense()(ctx)
+
+    assert ctx.state.pulled_drone_tags == set()
+    assert ctx.state.pulled_queen_roles  # the threat is still there
+
+
+def test_without_spines_an_enemy_on_the_townhall_counts_as_engaged() -> None:
+    drones = [_drone(100 + i) for i in range(30)]
+    ctx = _ctx(enemies=_attackers(6, at=Point2((24.0, 20.0))), queens=[_queen(1)], drones=drones)
+
+    ed.pull_defense()(ctx)
+
+    assert ctx.state.pulled_drone_tags
+
+
+def test_home_under_attack_gate_tracks_the_threat_window() -> None:
+    from bot.routines import gates
+
+    ctx = _ctx()
+    gate = gates.home_under_attack()
+    assert gate(ctx) is False
+
+    ctx.state.home_threat_until = ctx.bot.time + 3.0
+    assert gate(ctx) is True
+
+    ctx.bot.time += 5.0
+    assert gate(ctx) is False

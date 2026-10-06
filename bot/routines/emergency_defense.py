@@ -1,12 +1,19 @@
 """Home emergency: an army attacking into our bases / Spine Crawlers.
 
-When a timing attack arrives the economy is what we can afford to spend:
+When a timing attack arrives we hold the *core* (main + natural) and give up
+the outlying bases rather than spread thin:
 
-- Queens drop injects and creep and join the fight. They Transfuse damaged
-  Spine/Spore Crawlers (and each other) to keep the static D alive, and
-  shoot whatever is in reach of it.
-- If the defenders are outmatched, Drones are pulled to soak damage in front
-  of the Spines while the Spines, Zerglings and Queens do the killing.
+- Only enemies near the core count as a threat; a 3rd base under attack is
+  left to its fate while the army and new Spines gather at the natural
+  (`steps.zerg.early_aggression_spines` adds more while `home_threat_until`
+  is live).
+- Queens drop injects and creep, pre-position at the Spines, Transfuse damaged
+  Spine/Spore Crawlers (and each other) and shoot what is in reach.
+- Drones are pulled only once the enemy army has actually engaged us in
+  range of the Spines, and only if the defenders are outmatched: they soak
+  damage in front of the Spines while the Spines, Zerglings and Queens do
+  the killing. Pulling them as the enemy walks in just feeds them to the
+  army one at a time and wrecks the economy for nothing.
 
 Pulled units sit on `UnitRole.BASE_DEFENDER` for the duration, which takes
 them off the inject / creep / mining routines (those order units by role, and
@@ -38,9 +45,16 @@ from bot.intel import enemy_army
 if TYPE_CHECKING:
     from bot.core.context import BotContext
 
-# Enemy army within this of one of our townhalls / Spine Crawlers is "at home".
+# Enemy army within this of a core townhall / Spine Crawler is "at home".
 THREAT_TOWNHALL_RADIUS: float = 25.0
 THREAT_SPINE_RADIUS: float = 14.0
+CORE_RADIUS: float = 15.0
+"""A townhall this close to the main or natural is part of the core we hold."""
+SPINE_ENGAGE_RADIUS: float = 10.0
+"""Spine range (7) + body + a step: the enemy is fighting the Spines."""
+TOWNHALL_ENGAGE_RADIUS: float = 12.0
+"""No Spines up: an enemy this close to a core townhall is attacking it."""
+ENGAGE_MIN_UNITS: int = 2
 # Fewer enemy units than this (by count and by supply) is a scout / poke.
 THREAT_MIN_UNITS: int = 3
 THREAT_MIN_SUPPLY: float = 6.0
@@ -74,11 +88,32 @@ _STATIC_D: frozenset[UnitTypeId] = frozenset(
 )
 
 
+def _core_townhalls(ctx: "BotContext") -> list:
+    """Positions of the main + natural townhalls (every townhall if neither is
+    left): the bases we hold. A 3rd base and beyond are given up."""
+    anchors = (ctx.production_location, ctx.own_nat)
+    all_townhalls = [th.position for th in ctx.bot.townhalls]
+    core = [
+        p
+        for p in all_townhalls
+        if any(cy_distance_to(p, anchor) <= CORE_RADIUS for anchor in anchors)
+    ]
+    return core or all_townhalls
+
+
+def _core_spines(ctx: "BotContext", core: list) -> list:
+    return [
+        s.position
+        for s in ctx.bot.structures(UnitTypeId.SPINECRAWLER).ready
+        if any(cy_distance_to(s.position, p) <= THREAT_TOWNHALL_RADIUS for p in core)
+    ]
+
+
 def _threat(ctx: "BotContext") -> list | None:
-    """Enemy units attacking into our bases / Spines, or None."""
+    """Enemy units attacking into our core bases / Spines, or None."""
     bot = ctx.bot
-    townhalls = [th.position for th in bot.townhalls]
-    spines = [s.position for s in bot.structures(UnitTypeId.SPINECRAWLER).ready]
+    townhalls = _core_townhalls(ctx)
+    spines = _core_spines(ctx, townhalls)
     if not townhalls and not spines:
         return None
     near = []
@@ -98,6 +133,24 @@ def _threat(ctx: "BotContext") -> list | None:
     if len(near) < THREAT_MIN_UNITS and supply < THREAT_MIN_SUPPLY:
         return None
     return near
+
+
+def _engaged(ctx: "BotContext", enemies: list) -> list:
+    """The part of the enemy army actually fighting us: in Spine range of a
+    core Spine, or (no Spines up) on top of a core townhall."""
+    core = _core_townhalls(ctx)
+    spines = _core_spines(ctx, core)
+    if spines:
+        return [
+            e
+            for e in enemies
+            if any(cy_distance_to(e.position, p) <= SPINE_ENGAGE_RADIUS for p in spines)
+        ]
+    return [
+        e
+        for e in enemies
+        if any(cy_distance_to(e.position, p) <= TOWNHALL_ENGAGE_RADIUS for p in core)
+    ]
 
 
 def _defense_supply(ctx: "BotContext", center: Point2) -> float:
@@ -283,10 +336,16 @@ def pull_defense() -> CombatRoutine:
         )
 
         _pull_queens(ctx, queens)
-        if _defense_supply(ctx, center) < enemy_supply * DEFENSE_ENOUGH_RATIO:
+        engaged = _engaged(ctx, enemies)
+        if len(engaged) >= ENGAGE_MIN_UNITS:
+            state.drone_engage_until = now + PULL_HOLD_S
+        fighting = now < state.drone_engage_until
+        outmatched = _defense_supply(ctx, center) < enemy_supply * DEFENSE_ENOUGH_RATIO
+        if fighting and outmatched:
             _pull_drones(ctx, center, enemy_supply)
-        elif state.pulled_drone_tags:
-            # Defense caught up: drones back to mining, Queens stay.
+        elif state.pulled_drone_tags and not (fighting and outmatched):
+            # The enemy is not in Spine range (or our defense caught up):
+            # drones back to mining, Queens stay.
             for tag in list(state.pulled_drone_tags):
                 ctx.mediator.assign_role(tag=tag, role=UnitRole.GATHERING)
             state.pulled_drone_tags.clear()
