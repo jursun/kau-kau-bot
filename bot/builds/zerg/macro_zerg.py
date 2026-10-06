@@ -215,6 +215,7 @@ from bot.consts import (
     ZERGLING_SCOUT_ROLE,
 )
 from bot.intel import army as intel_army
+from bot.intel import composition as intel_army_composition
 from bot.routines import (
     combat,
     creep,
@@ -1213,11 +1214,50 @@ def _macro_zerg_on_unit_created(ctx, unit) -> None:
         )
 
 
+ARMY_LOG_INTERVAL_S: float = 30.0
+_ARMY_LOG_TYPES: tuple[UnitTypeId, ...] = (
+    UnitTypeId.ZERGLING,
+    UnitTypeId.ROACH,
+    UnitTypeId.RAVAGER,
+    UnitTypeId.HYDRALISK,
+    UnitTypeId.INFESTOR,
+    UnitTypeId.CORRUPTOR,
+    UnitTypeId.QUEEN,
+)
+
+
+def _log_army_composition(ctx) -> None:
+    """Every `ARMY_LOG_INTERVAL_S`: our army by unit type, supply, workers,
+    banked resources, and what we know of the enemy army - so a lost (or tied)
+    game can be read against what each side actually had."""
+    now = ctx.bot.time
+    last = ctx.state.last_army_log_at
+    if last is not None and now - last < ARMY_LOG_INTERVAL_S:
+        return
+    ctx.state.last_army_log_at = now
+    bot = ctx.bot
+    counts = {
+        t.name: len(list(bot.units(t)))
+        for t in _ARMY_LOG_TYPES
+        if len(list(bot.units(t)))
+    }
+    shares = intel_army_composition.enemy_supply_shares(ctx)
+    enemy = ", ".join(
+        f"{t.name} {share:.0%}"
+        for t, share in sorted(shares.items(), key=lambda kv: -kv[1])[:5]
+    )
+    ctx.log(
+        f"ARMY {counts} army_supply={bot.supply_army:.0f} workers={bot.supply_workers:.0f} "
+        f"bank={bot.minerals:.0f}/{bot.vespene:.0f} | enemy: {enemy or 'unseen'}"
+    )
+
+
 def _macro_zerg_on_step(ctx) -> None:
     """`BuildDefinition` only has one `on_step` slot - all of this
     build's per-frame concerns are called from here."""
     _claim_natural_scout(ctx)
     _claim_natural_queen_tumor(ctx)
+    _log_army_composition(ctx)
 
 # Roach's own attack range is 4 - retreat once an enemy closes inside 3, so
 # it holds anywhere from 3 to 4 rather than closing to melee. Same idiom as

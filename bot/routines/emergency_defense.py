@@ -332,7 +332,8 @@ def pull_defense() -> CombatRoutine:
         ctx.log_once(
             f"home_threat:{int(now // 20)}",
             f"HOME_DEFENSE {len(enemies)} enemy units ({enemy_supply:.0f} supply) "
-            f"at ({center.x:.0f},{center.y:.0f}) - pulling Queens",
+            f"at ({center.x:.0f},{center.y:.0f}) vs our defense "
+            f"{_defense_supply(ctx, center):.0f} supply - pulling Queens",
         )
 
         _pull_queens(ctx, queens)

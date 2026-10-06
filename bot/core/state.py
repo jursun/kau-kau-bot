@@ -341,6 +341,8 @@ class RunState:
     melee_evo_tag: int | None = None
     """The Evolution Chamber pinned to the melee attack chain (the gas-surplus
     3rd one) - see `behaviors.zerg.ResearchChain`."""
+    last_army_log_at: float | None = None
+    """Game time of the last periodic `ARMY ...` composition log line."""
     enemy_comp_memory: dict = field(default_factory=dict)
     """Enemy unit type -> (largest supply of it seen at once, game time last
     seen) - what `intel.composition.enemy_supply_shares` counters."""
