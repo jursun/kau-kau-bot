@@ -677,6 +677,8 @@ def test_den_research_pins_each_den_to_its_own_upgrades() -> None:
     assert chains[8] == mz._LURKER_DEN_UPGRADES
     assert UpgradeId.EVOLVEGROOVEDSPINES in chains[4]
     assert UpgradeId.DIGGINGCLAWS in chains[8]
+    assert UpgradeId.LURKERRANGE in chains[8]  # Seismic Spines: Lurker Den
+    assert UpgradeId.LURKERRANGE not in chains[4]
 
 
 def test_den_research_does_nothing_without_a_den() -> None:

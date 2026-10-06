@@ -640,10 +640,12 @@ def _surplus_evolution_chambers(ctx) -> int:
 _HYDRA_DEN_UPGRADES: tuple[UpgradeId, ...] = (
     UpgradeId.EVOLVEGROOVEDSPINES,  # Grooved Spines: +range
     UpgradeId.EVOLVEMUSCULARAUGMENTS,  # Muscular Augments: +speed
-    UpgradeId.LURKERRANGE,  # Seismic Spines (needs Hive)
 )
+# Both Lurker upgrades are researched at the Lurker Den (not the Hydralisk
+# Den - `sc2.dicts.upgrade_researched_from`) and both need Hive.
 _LURKER_DEN_UPGRADES: tuple[UpgradeId, ...] = (
-    UpgradeId.DIGGINGCLAWS,  # Adaptive Talons (needs Hive)
+    UpgradeId.LURKERRANGE,  # Seismic Spines: Lurker range 8 -> 10
+    UpgradeId.DIGGINGCLAWS,  # Adaptive Talons: faster burrow
 )
 
 

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence
 
 from loguru import logger
+from sc2.dicts.unit_research_abilities import RESEARCH_INFO
 from sc2.ids.upgrade_id import UpgradeId
 
 from ares.behaviors.macro.macro_behavior import MacroBehavior
@@ -82,7 +83,18 @@ class ResearchChain(MacroBehavior):
                     f"(minerals={ai.minerals}, gas={ai.vespene})",
                 )
                 return False
-            ability = ai.game_data.upgrades[upgrade.value].research_ability.id
+            # The ability and the `research` call are what ares' own
+            # `UpgradeController` uses (python-sc2's `RESEARCH_INFO`), not
+            # `game_data.upgrades[...].research_ability`, which is not
+            # guaranteed to be the id the building actually offers.
+            info = RESEARCH_INFO.get(structure.type_id, {}).get(upgrade)
+            if info is None:
+                _log_blocked(
+                    ai, self.structure_tag, upgrade, "not researched here",
+                    f"({structure.type_id.name} has no entry for it)",
+                )
+                return False
+            ability = info["ability"]
             if ability not in structure.abilities:
                 _log_blocked(
                     ai, self.structure_tag, upgrade, "ability not offered",
@@ -93,6 +105,6 @@ class ResearchChain(MacroBehavior):
             _log_blocked(
                 ai, self.structure_tag, upgrade, "started", f"({ability.name})"
             )
-            structure(ability)
+            structure.research(upgrade)
             return True
         return False
