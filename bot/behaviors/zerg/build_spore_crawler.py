@@ -39,12 +39,18 @@ from sc2.unit import Unit
 from ares.behaviors.macro.macro_behavior import MacroBehavior
 from ares.managers.manager_mediator import ManagerMediator
 
+from bot.behaviors.zerg.crawler_sites import (
+    reserved_crawler_sites,
+    snap_2x2,
+    too_close,
+)
+
 if TYPE_CHECKING:
     from ares import AresBot
 
 
 def _snap(x: float, y: float) -> Point2:
-    return Point2((floor(x) + 0.5, floor(y) + 0.5))
+    return snap_2x2(x, y)
 
 _SPINE_MIN_SEP: float = 3.0
 """Spines closer than this count as the same pad — 2nd spine must not land here."""
@@ -79,8 +85,10 @@ def _find_near(
     max_radius: float = 10.0,
     avoid: list[Point2] | None = None,
     min_sep: float = _SPINE_MIN_SEP,
+    reserved: list[Point2] | None = None,
 ) -> Point2 | None:
-    """Ring-search a legal crawler spot near `reference` (needs creep)."""
+    """Ring-search a legal crawler spot near `reference` (needs creep),
+    leaving a 1-tile gap to every site in `reserved` (see `crawler_sites`)."""
     resources = [*ai.mineral_field, *ai.vespene_geyser]
     resource_sq = 2.5**2
     avoid = avoid or []
@@ -108,6 +116,8 @@ def _find_near(
         if any(cy_distance_to_squared(point, r.position) < resource_sq for r in resources):
             continue
         if any(cy_distance_to_squared(point, a) < min_sep_sq for a in avoid):
+            continue
+        if reserved and too_close(point, reserved):
             continue
         if mediator.can_place_structure(
             position=point, structure_type=structure_type
@@ -168,6 +178,7 @@ class BuildSporeCrawler(MacroBehavior):
         if not ai.can_afford(self.structure_type):
             return False
 
+        reserved = reserved_crawler_sites(ai, mediator)
         if self.structure_type == UnitTypeId.SPINECRAWLER:
             avoid = _spine_reserved_positions(ai, mediator)
             avoid.extend(Point2(t) for t in self.avoid_tiles)
@@ -178,6 +189,7 @@ class BuildSporeCrawler(MacroBehavior):
                     anchor,
                     self.structure_type,
                     avoid=avoid,
+                    reserved=reserved,
                 )
                 if candidate is None:
                     continue
@@ -192,6 +204,8 @@ class BuildSporeCrawler(MacroBehavior):
         candidates = mediator.get_behind_mineral_positions(th_pos=self.base_location)
         for candidate in candidates:
             if any(cy_distance_to_squared(candidate, b) < 1.0 for b in bad):
+                continue
+            if too_close(candidate, reserved):
                 continue
             if not mediator.can_place_structure(
                 position=candidate, structure_type=self.structure_type
@@ -208,6 +222,7 @@ class BuildSporeCrawler(MacroBehavior):
                 self.base_location,
                 self.structure_type,
                 avoid=bad,
+                reserved=reserved,
             )
             if fallback is not None and self._dispatch(mediator, fallback):
                 return True

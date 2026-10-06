@@ -18,6 +18,12 @@ from sc2.position import Point2
 from ares.behaviors.macro.macro_behavior import MacroBehavior
 from ares.managers.manager_mediator import ManagerMediator
 
+from bot.behaviors.zerg.crawler_sites import (
+    reserved_crawler_sites,
+    snap_2x2,
+    too_close,
+)
+
 if TYPE_CHECKING:
     from ares import AresBot
 
@@ -27,7 +33,7 @@ _CRAWLER_TYPES: frozenset[UnitTypeId] = frozenset(
 
 
 def _snap(x: float, y: float) -> Point2:
-    return Point2((floor(x) + 0.5, floor(y) + 0.5))
+    return snap_2x2(x, y)
 
 
 def _find_near(
@@ -38,6 +44,7 @@ def _find_near(
     min_radius: float = 1.0,
     max_radius: float = 12.0,
     avoid: Sequence[Point2] = (),
+    reserved: Sequence[Point2] = (),
 ) -> Point2 | None:
     """Ring-search a legal crawler spot near `reference` (needs creep)."""
     resources = [*ai.mineral_field, *ai.vespene_geyser]
@@ -66,6 +73,8 @@ def _find_near(
             continue
         if any(cy_distance_to_squared(point, a) < 1.0 for a in avoid):
             continue
+        if reserved and too_close(point, reserved):
+            continue
         if mediator.can_place_structure(
             position=point, structure_type=structure_type
         ):
@@ -92,6 +101,9 @@ class ForwardCrawlerWave(MacroBehavior):
     def execute(self, ai: "AresBot", config: dict, mediator: ManagerMediator) -> bool:
         acted = False
         bad = [Point2(t) for t in self.avoid_tiles]
+        # Sites already claimed - and each one this pulse picks - so six
+        # crawlers planned together never share or touch a footprint.
+        reserved = reserved_crawler_sites(ai, mediator)
         # Slight angular spread so six crawlers do not fight one tile.
         offsets = [
             Point2((3.0 * cos(2.0 * pi * i / max(len(self.structure_types), 1)),
@@ -104,7 +116,9 @@ class ForwardCrawlerWave(MacroBehavior):
             if not ai.can_afford(structure_type):
                 break
             reference = self.anchor + offsets[index]
-            pos = _find_near(ai, mediator, reference, structure_type, avoid=bad)
+            pos = _find_near(
+                ai, mediator, reference, structure_type, avoid=bad, reserved=reserved
+            )
             if pos is None:
                 continue
             worker = mediator.select_worker(target_position=pos, force_close=True)
@@ -114,4 +128,5 @@ class ForwardCrawlerWave(MacroBehavior):
                 worker=worker, structure_type=structure_type, pos=pos
             ):
                 acted = True
+                reserved.append(pos)
         return acted
