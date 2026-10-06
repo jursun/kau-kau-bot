@@ -217,6 +217,7 @@ from bot.consts import (
 from bot.intel import army as intel_army
 from bot.intel import composition as intel_army_composition
 from bot.routines import (
+    cancel_buildings,
     combat,
     creep,
     emergency_defense,
@@ -1362,6 +1363,9 @@ BUILD = BuildDefinition(
             # outmatched, Drones defend. First so the pulled units' roles are
             # settled before any other routine orders them.
             emergency_defense.pull_defense(),
+            # A half-built structure the enemy is about to kill: cancel it for
+            # the 75% refund (and the Drone) instead of losing all of it.
+            cancel_buildings.cancel_doomed_buildings(),
             combat.release_first_wave_then_stream(muster=True),
             combat.reinforce_home_vs_early_aggression(),
             # After early window: home/scout lings join DEFENDING → ATTACKING.

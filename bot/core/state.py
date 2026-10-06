@@ -341,6 +341,9 @@ class RunState:
     melee_evo_tag: int | None = None
     """The Evolution Chamber pinned to the melee attack chain (the gas-surplus
     3rd one) - see `behaviors.zerg.ResearchChain`."""
+    cancelled_building_tags: set[int] = field(default_factory=set)
+    """Under-construction structures already ordered cancelled
+    (`routines.cancel_buildings`) - one order each."""
     last_army_log_at: float | None = None
     """Game time of the last periodic `ARMY ...` composition log line."""
     enemy_comp_memory: dict = field(default_factory=dict)
