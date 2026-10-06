@@ -997,17 +997,51 @@ def test_spawn_macro_army_adds_hydralisks_once_the_den_is_up() -> None:
     assert UnitTypeId.LURKERMP not in comp
 
 
-def test_spawn_macro_army_morphs_lurkers_once_both_dens_are_up() -> None:
-    comp = _chosen_comp(_comp_ctx(hydra=True, lurker=True))
+def test_spawn_macro_army_morphs_ravagers_once_the_hydra_den_is_up() -> None:
+    comp = _chosen_comp(_comp_ctx(hydra=True, lurker=False))
 
-    assert UnitTypeId.HYDRALISK in comp and UnitTypeId.LURKERMP in comp
+    assert UnitTypeId.HYDRALISK in comp and UnitTypeId.RAVAGER in comp
+    assert UnitTypeId.LURKERMP not in comp
     assert UnitTypeId.INFESTOR not in comp
 
 
-def test_spawn_macro_army_keeps_infestors_alongside_lurkers() -> None:
-    comp = _chosen_comp(_comp_ctx(hydra=True, lurker=True, pit=True))
+def test_spawn_macro_army_keeps_infestors_alongside_ravagers() -> None:
+    comp = _chosen_comp(_comp_ctx(hydra=True, lurker=False, pit=True))
 
-    assert UnitTypeId.LURKERMP in comp and UnitTypeId.INFESTOR in comp
+    assert UnitTypeId.RAVAGER in comp and UnitTypeId.INFESTOR in comp
+
+
+def _ravager_ctx(count: int, cocoons: int = 0):
+    ctx = _comp_ctx(hydra=True, lurker=False)
+    ctx.bot.units = MagicMock(
+        side_effect=lambda t: (
+            [MagicMock() for _ in range(count)]
+            if t == UnitTypeId.RAVAGER
+            else [MagicMock() for _ in range(cocoons)]
+            if t == UnitTypeId.RAVAGERCOCOON
+            else []
+        )
+    )
+    return ctx
+
+
+def test_spawn_macro_army_stops_making_ravagers_at_the_cap() -> None:
+    from bot.intel.composition import RAVAGER_CAP
+
+    below = _chosen_comp(_ravager_ctx(RAVAGER_CAP - 1))
+    at_cap = _chosen_comp(_ravager_ctx(RAVAGER_CAP))
+
+    assert UnitTypeId.RAVAGER in below
+    assert UnitTypeId.RAVAGER not in at_cap
+    assert sum(v["proportion"] for v in at_cap.values()) == pytest.approx(1.0)
+
+
+def test_ravager_cap_counts_cocoons() -> None:
+    from bot.intel.composition import RAVAGER_CAP
+
+    comp = _chosen_comp(_ravager_ctx(RAVAGER_CAP - 2, cocoons=2))
+
+    assert UnitTypeId.RAVAGER not in comp
 
 
 def test_spawn_macro_army_stays_roach_ling_without_a_hydra_den() -> None:
@@ -1029,9 +1063,8 @@ def test_every_late_comp_sums_to_one() -> None:
     from bot import consts
 
     for comp in (
-        consts.ROACH_HYDRA_COMP,
-        consts.HYDRA_LURKER_COMP,
-        consts.HYDRA_LURKER_INFESTOR_COMP,
+        consts.HYDRA_RAVAGER_COMP,
+        consts.HYDRA_RAVAGER_INFESTOR_COMP,
         consts.ROACH_HYDRA_CORRUPTOR_COMP,
     ):
         assert sum(v["proportion"] for v in comp.values()) == pytest.approx(1.0)

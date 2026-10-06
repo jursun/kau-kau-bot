@@ -657,14 +657,13 @@ def test_dedicated_research_keeps_its_evo_while_alive_and_repicks_when_it_dies()
 # --- Hydralisk / Lurker Den research ------------------------------------------
 
 
-def test_den_research_pins_each_den_to_its_own_upgrades() -> None:
+def test_den_research_pins_the_hydralisk_den_to_its_upgrades() -> None:
     ctx = _ctx()
 
     def structures(unit_type):
         found = MagicMock()
         found.ready = {
             UnitTypeId.HYDRALISKDEN: [_structure(4)],
-            UnitTypeId.LURKERDENMP: [_structure(8)],
         }.get(unit_type, [])
         return found
 
@@ -674,11 +673,9 @@ def test_den_research_pins_each_den_to_its_own_upgrades() -> None:
 
     chains = {m.structure_tag: tuple(m.upgrades) for m in plan.macros}
     assert chains[4] == mz._HYDRA_DEN_UPGRADES
-    assert chains[8] == mz._LURKER_DEN_UPGRADES
     assert UpgradeId.EVOLVEGROOVEDSPINES in chains[4]
-    assert UpgradeId.DIGGINGCLAWS in chains[8]
-    assert UpgradeId.LURKERRANGE in chains[8]  # Seismic Spines: Lurker Den
-    assert UpgradeId.LURKERRANGE not in chains[4]
+    assert UpgradeId.EVOLVEMUSCULARAUGMENTS in chains[4]
+    assert len(chains) == 1  # no Lurker Den in this build
 
 
 def test_den_research_does_nothing_without_a_den() -> None:

@@ -2923,93 +2923,179 @@ def micro_infestors() -> CombatRoutine:
     return routine
 
 
-# --- Lurkers -------------------------------------------------------------------
+# --- Ravagers --------------------------------------------------------------------
 
-LURKER_RANGE: float = 8.0
-"""Base Lurker attack range (10 with Seismic Spines, `UpgradeId.LURKERRANGE`)."""
-LURKER_RANGE_UPGRADED: float = 10.0
-LURKER_BURROW_MARGIN: float = 2.0
-"""Burrow once a ground enemy is within range + this: burrowing takes about a
-second, and the enemy is walking at us."""
-LURKER_UNBURROW_CLEAR_RADIUS: float = 18.0
-"""A burrowed Lurker only gets up once nothing on the ground is within this."""
-LURKER_FOLLOW_ARRIVE: float = 3.0
+RAVAGER_BILE_RANGE: float = 9.0
+RAVAGER_STAND_RANGE: float = 8.5
+"""Cast from just inside max range."""
+RAVAGER_SAFE_DISTANCE: float = 7.5
+"""Keep at least this far from anything that can shoot a Ravager (Cannon 7,
+Stalker / Immortal 6) - bile outranges them all."""
+RAVAGER_BILE_SLACK: float = 4.0
+"""A bile target may be this far past range - the Ravager walks to a stand
+point first."""
+RAVAGER_SHOOT_RANGE: float = 6.0
+RAVAGER_FOLLOW_ARRIVE: float = 3.0
+
+# What Corrosive Bile is for: things that don't move out of the way (the
+# bile lands ~2.5s after the cast) and that make a ball hard to break.
+_BILE_STATIC_TYPES: frozenset[UnitTypeId] = frozenset(
+    {
+        UnitTypeId.PHOTONCANNON,
+        UnitTypeId.SHIELDBATTERY,
+        UnitTypeId.BUNKER,
+        UnitTypeId.PLANETARYFORTRESS,
+        UnitTypeId.SPINECRAWLER,
+        UnitTypeId.SPORECRAWLER,
+        UnitTypeId.MISSILETURRET,
+    }
+)
+_BILE_STATIONARY_UNITS: frozenset[UnitTypeId] = frozenset(
+    {
+        UnitTypeId.SIEGETANKSIEGED,
+        UnitTypeId.LURKERMPBURROWED,
+        UnitTypeId.FORCEFIELD,
+    }
+)
 
 
-def _lurker_range(ctx: "BotContext") -> float:
-    if UpgradeId.LURKERRANGE in ctx.bot.state.upgrades:
-        return LURKER_RANGE_UPGRADED
-    return LURKER_RANGE
+def _bile_candidates(ctx: "BotContext", enemies: list) -> list[tuple[int, object]]:
+    """(priority, target) for every possible bile target, best tier first:
+
+    0. defensive structures and stationary units (never dodge),
+    1. any other enemy structure (a Ravager in an enemy base keeps biling
+       Pylons / Gateways instead of idling between casts),
+    2. enemy ground army units (a bile lands late, but "as often as possible"
+       beats saving it).
+    """
+    out: list[tuple[int, object]] = []
+    for structure in ctx.bot.enemy_structures:
+        out.append((0 if structure.type_id in _BILE_STATIC_TYPES else 1, structure))
+    for unit in ctx.bot.enemy_units:
+        if unit.type_id in _BILE_STATIONARY_UNITS:
+            out.append((0, unit))
+    for unit in enemies:
+        if not getattr(unit, "is_flying", False) and unit.type_id not in _BILE_STATIONARY_UNITS:
+            out.append((2, unit))
+    return out
 
 
-def micro_lurkers() -> CombatRoutine:
-    """Lurkers: ride with the army, burrow when the enemy walks into range,
-    stay burrowed while there is anything on the ground nearby, then get up
-    and follow again.
+def micro_ravagers() -> CombatRoutine:
+    """Ravagers (morphed from Roaches by `SpawnController`): Corrosive Bile as
+    often as the cooldown allows, from outside everything's range.
 
-    A surfaced Lurker cannot attack, so the whole job is timing the burrow.
-    Burrowing inside an enemy detector's reach (`INFESTOR_DETECTOR_RADIUS`:
-    Observer, Cannon, Overseer, Raven, Spore, Turret) just parks a target, so
-    a Lurker there backs off instead. Units are found by type rather than by
-    role: a Hydralisk morphs into a Lurker through `SpawnController`, which
-    clears its role on the way.
+    Found by type, not role - the morph clears the Roach's role. Per Ravager:
+
+    1. Bile ready and a target within reach: cast if already within bile range
+       (9), otherwise walk to a stand point 8.5 from the target - unless that
+       spot is inside `RAVAGER_SAFE_DISTANCE` of an enemy that can shoot it.
+       Targets are `_bile_candidates` (static D / stationary units first, then
+       structures, then army units) and claimed one per Ravager per frame.
+    2. Otherwise (on cooldown / nothing to bile): back off if an enemy that
+       can hit it is within `RAVAGER_SAFE_DISTANCE`; else shoot what is in
+       weapon range; else follow the biggest ATTACKING squad. It never walks
+       onto the enemy ball.
     """
 
     def routine(ctx: "BotContext") -> None:
-        surfaced = list(ctx.bot.units(UnitTypeId.LURKERMP))
-        burrowed = list(ctx.bot.units(UnitTypeId.LURKERMPBURROWED))
-        if not surfaced and not burrowed:
+        ravagers = list(ctx.bot.units(UnitTypeId.RAVAGER))
+        if not ravagers:
             return
 
         squads = ctx.mediator.get_squads(
             role=UnitRole.ATTACKING, squad_radius=SQUAD_RADIUS
         )
-        if squads:
-            biggest = max(squads, key=lambda squad: len(squad.squad_units))
-            follow_target = biggest.squad_position
-        else:
-            follow_target = targeting.regroup_point(ctx)
-
-        ground = [e for e in enemy_army(ctx) if not getattr(e, "is_flying", False)]
-        zones = _detector_zones(ctx)
+        follow_target = (
+            max(squads, key=lambda squad: len(squad.squad_units)).squad_position
+            if squads
+            else targeting.regroup_point(ctx)
+        )
         grid = ctx.mediator.get_ground_grid
-        burrow_radius = _lurker_range(ctx) + LURKER_BURROW_MARGIN
-        burrow_sq = burrow_radius**2
-        clear_sq = LURKER_UNBURROW_CLEAR_RADIUS**2
+        enemies = enemy_army(ctx)
+        threats = [e for e in enemies if getattr(e, "can_attack_ground", True)]
+        candidates = _bile_candidates(ctx, enemies)
+        claimed: set[int] = set()
+        reach = RAVAGER_BILE_RANGE + RAVAGER_BILE_SLACK
 
-        def nearest_sq(unit) -> float:
+        def threat_distance(point) -> float:
             return min(
-                (cy_distance_to_squared(unit.position, e.position) for e in ground),
+                (cy_distance_to(point, t.position) for t in threats),
                 default=float("inf"),
             )
 
-        for lurker in surfaced:
+        for ravager in ravagers:
             maneuver = CombatManeuver()
-            in_zone = _in_detector_zone(lurker.position, zones)
-            if nearest_sq(lurker) <= burrow_sq and not in_zone:
-                maneuver.add(UseAbility(AbilityId.BURROWDOWN_LURKER, lurker))
-            elif in_zone:
-                exit_point = _detector_exit_point(lurker.position, zones)
-                if exit_point is not None:
-                    maneuver.add(
-                        PathUnitToTarget(unit=lurker, grid=grid, target=exit_point)
-                    )
-            if (
-                follow_target is not None
-                and cy_distance_to(lurker.position, follow_target)
-                > LURKER_FOLLOW_ARRIVE
-                and not in_zone
-            ):
-                maneuver.add(
-                    PathUnitToTarget(unit=lurker, grid=grid, target=follow_target)
-                )
-            ctx.bot.register_behavior(maneuver)
 
-        for lurker in burrowed:
-            if nearest_sq(lurker) > clear_sq:
-                maneuver = CombatManeuver()
-                maneuver.add(UseAbility(AbilityId.BURROWUP_LURKER, lurker))
-                ctx.bot.register_behavior(maneuver)
+            if AbilityId.EFFECT_CORROSIVEBILE in ravager.abilities:
+                options = [
+                    (priority, cy_distance_to(ravager.position, t.position), t)
+                    for priority, t in candidates
+                    if t.tag not in claimed
+                    and cy_distance_to(ravager.position, t.position) <= reach
+                ]
+                if options:
+                    _, distance, target = min(options, key=lambda o: (o[0], o[1]))
+                    if distance <= RAVAGER_BILE_RANGE:
+                        claimed.add(target.tag)
+                        maneuver.add(
+                            UseAbility(
+                                AbilityId.EFFECT_CORROSIVEBILE,
+                                ravager,
+                                target.position,
+                            )
+                        )
+                        ctx.bot.register_behavior(maneuver)
+                        continue
+                    stand = Point2(
+                        cy_towards(target.position, ravager.position, RAVAGER_STAND_RANGE)
+                    )
+                    if threat_distance(stand) >= RAVAGER_SAFE_DISTANCE:
+                        claimed.add(target.tag)
+                        maneuver.add(
+                            PathUnitToTarget(unit=ravager, grid=grid, target=stand)
+                        )
+                        ctx.bot.register_behavior(maneuver)
+                        continue
+
+            nearest_threat = (
+                cy_closest_to(position=ravager.position, units=threats)
+                if threats
+                else None
+            )
+            if (
+                nearest_threat is not None
+                and cy_distance_to(ravager.position, nearest_threat.position)
+                < RAVAGER_SAFE_DISTANCE
+            ):
+                retreat_to = Point2(
+                    cy_towards(
+                        nearest_threat.position,
+                        ravager.position,
+                        RAVAGER_SAFE_DISTANCE + 1.5,
+                    )
+                )
+                maneuver.add(_Move(unit=ravager, target=retreat_to))
+            else:
+                in_weapon = _attackable(
+                    [
+                        e
+                        for e in enemies
+                        if cy_distance_to(ravager.position, e.position)
+                        <= RAVAGER_SHOOT_RANGE
+                    ],
+                    [ravager],
+                )
+                if in_weapon:
+                    maneuver.add(ShootTargetInRange(unit=ravager, targets=in_weapon))
+                elif (
+                    follow_target is not None
+                    and cy_distance_to(ravager.position, follow_target)
+                    > RAVAGER_FOLLOW_ARRIVE
+                ):
+                    maneuver.add(
+                        PathUnitToTarget(unit=ravager, grid=grid, target=follow_target)
+                    )
+            ctx.bot.register_behavior(maneuver)
 
     return routine
 

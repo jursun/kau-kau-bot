@@ -334,6 +334,9 @@ class RunState:
     melee_evo_tag: int | None = None
     """The Evolution Chamber pinned to the melee attack chain (the gas-surplus
     3rd one) - see `behaviors.zerg.ResearchChain`."""
+    enemy_comp_memory: dict = field(default_factory=dict)
+    """Enemy unit type -> (largest supply of it seen at once, game time last
+    seen) - what `intel.composition.enemy_supply_shares` counters."""
     pulled_drone_tags: set[int] = field(default_factory=set)
     """Drones pulled to defend a timing attack (`routines.emergency_defense`)."""
     pulled_queen_roles: dict[int, "UnitRole"] = field(default_factory=dict)

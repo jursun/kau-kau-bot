@@ -29,11 +29,10 @@ from bot.builds.definition import _always
 from bot.consts import (
     ALL_TOWNHALL_TYPES,
     GAS_STARVED_MINERAL_RATIO,
-    HYDRA_LURKER_COMP,
-    HYDRA_LURKER_INFESTOR_COMP,
+    HYDRA_RAVAGER_COMP,
+    HYDRA_RAVAGER_INFESTOR_COMP,
     LING_HEAVY_CORRUPTOR_COMP,
     LING_HEAVY_ROACH_COMP,
-    ROACH_HYDRA_COMP,
     ROACH_HYDRA_CORRUPTOR_COMP,
     ROACH_LING_COMP,
     ROACH_LING_CORRUPTOR_COMP,
@@ -42,6 +41,12 @@ from bot.consts import (
 )
 from bot.core.types import Gate, MacroStep
 from bot.intel.army import early_aggression, enemy_has_air_units
+from bot.intel.composition import (
+    RAVAGER_CAP,
+    cap_unit,
+    counter_comp,
+    enemy_supply_shares,
+)
 from bot.routines import targeting
 from bot.steps import common
 
@@ -965,11 +970,17 @@ def spawn_macro_army(gate: Gate = _always) -> MacroStep:
     fold Corruptor in. When mineral:gas > `GAS_STARVED_MINERAL_RATIO` (5:1),
     flip to the ling-heavy comps so larva spends on Zerglings instead of Roaches.
 
+    The mix is then re-weighted by what the enemy is fielding
+    (`intel.composition.counter_comp`): e.g. an Immortal-heavy army cuts Roach
+    and Ravager, boosts Zergling / Hydralisk, and brings Infestors in for
+    Neural Parasite once it is researched.
+
     Late game, with the Hydralisk Den ready, Hydralisks join the Roach/
-    Zergling army (`ROACH_HYDRA_COMP`); with the Lurker Den too, a fifth of
-    it morphs into Lurkers (`HYDRA_LURKER_COMP`) - Roach/Zergling alone
-    could not break a Protoss ball. Both keep Infestors when the Pit is up,
-    and an air-heavy enemy swaps Lurkers for Corruptors.
+    Zergling army, and a fifth of it morphs into Ravagers
+    (`HYDRA_RAVAGER_COMP`) - Roach/Zergling alone could not break a Protoss
+    ball. Both keep Infestors when the Pit is up, and an air-heavy enemy swaps
+    Ravagers for Corruptors. Ravagers are capped at `RAVAGER_CAP` (8) - they
+    are expensive.
 
     Once Infestation Pit is ready - late game only, it's gated behind
     Tunneling Claws (see `macro_zerg.py`'s tech_up gate) - fold Infestor in
@@ -1000,7 +1011,6 @@ def spawn_macro_army(gate: Gate = _always) -> MacroStep:
         )
         infestor_ready = bool(ctx.bot.structures(UnitTypeId.INFESTATIONPIT).ready)
         hydra_ready = bool(ctx.bot.structures(UnitTypeId.HYDRALISKDEN).ready)
-        lurker_ready = bool(ctx.bot.structures(UnitTypeId.LURKERDENMP).ready)
         if gas_starved:
             comp = LING_HEAVY_CORRUPTOR_COMP if air else LING_HEAVY_ROACH_COMP
         elif air:
@@ -1012,12 +1022,26 @@ def spawn_macro_army(gate: Gate = _always) -> MacroStep:
                     if infestor_ready
                     else ROACH_LING_CORRUPTOR_COMP
                 )
-        elif lurker_ready and hydra_ready:
-            comp = HYDRA_LURKER_INFESTOR_COMP if infestor_ready else HYDRA_LURKER_COMP
         elif hydra_ready:
-            comp = ROACH_HYDRA_COMP
+            comp = (
+                HYDRA_RAVAGER_INFESTOR_COMP if infestor_ready else HYDRA_RAVAGER_COMP
+            )
         else:
             comp = ROACH_LING_INFESTOR_COMP if infestor_ready else ROACH_LING_COMP
+        # Bend the mix toward what the enemy fields: Immortals shut off Roach
+        # / Ravager and call for Zerglings, Hydralisks and Neural Parasite.
+        np_ready = UpgradeId.NEURALPARASITE in ctx.bot.state.upgrades
+        comp = counter_comp(
+            comp,
+            enemy_supply_shares(ctx),
+            add_infestor=infestor_ready and np_ready and not gas_starved,
+        )
+        # Ravagers are expensive: stop making more at the cap (counting the
+        # ones still in their cocoon).
+        ravagers = len(list(ctx.bot.units(UnitTypeId.RAVAGER))) + len(
+            list(ctx.bot.units(UnitTypeId.RAVAGERCOCOON))
+        )
+        comp = cap_unit(comp, UnitTypeId.RAVAGER, ravagers, RAVAGER_CAP)
         return SpawnController(dict(comp), spawn_target=None)
 
     return step

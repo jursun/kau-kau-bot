@@ -642,24 +642,14 @@ _HYDRA_DEN_UPGRADES: tuple[UpgradeId, ...] = (
     UpgradeId.EVOLVEGROOVEDSPINES,  # Grooved Spines: +range
     UpgradeId.EVOLVEMUSCULARAUGMENTS,  # Muscular Augments: +speed
 )
-# Both Lurker upgrades are researched at the Lurker Den (not the Hydralisk
-# Den - `sc2.dicts.upgrade_researched_from`) and both need Hive.
-_LURKER_DEN_UPGRADES: tuple[UpgradeId, ...] = (
-    UpgradeId.LURKERRANGE,  # Seismic Spines: Lurker range 8 -> 10
-    UpgradeId.DIGGINGCLAWS,  # Adaptive Talons: faster burrow
-)
 
 
 def _den_research(ctx):
-    """Hydralisk / Lurker upgrades, each pinned to its own Den
-    (`ResearchChain`) so they research as soon as the Den is up instead of
-    waiting on the shared queue. A level that isn't available yet (Hive
-    upgrades) just waits."""
+    """Hydralisk upgrades, pinned to the Den (`ResearchChain`) so they research
+    as soon as it is up instead of waiting on the shared queue."""
     plan = MacroPlan()
     for den in ctx.bot.structures(UnitTypeId.HYDRALISKDEN).ready:
         plan.add(ResearchChain(den.tag, _HYDRA_DEN_UPGRADES))
-    for den in ctx.bot.structures(UnitTypeId.LURKERDENMP).ready:
-        plan.add(ResearchChain(den.tag, _LURKER_DEN_UPGRADES))
     return plan if plan.macros else None
 
 
@@ -1368,8 +1358,8 @@ BUILD = BuildDefinition(
             combat.engage_idle_attackers(),
             combat.escort_corruptors(),
             combat.micro_infestors(),
-            # Lurkers burrow at range from the army and unburrow to advance.
-            combat.micro_lurkers(),
+            # Ravagers: Corrosive Bile on Cannons / Batteries / Force Fields.
+            combat.micro_ravagers(),
             # Units Neural Parasite has handed us: Storm, Nova, EMP, Fungal, else fight.
             combat.use_controlled_units(),
             overseer_routines.manage_overseers(),
@@ -1511,7 +1501,7 @@ BUILD = BuildDefinition(
         # Gas surplus: 3rd Evo -> melee attack, Pool -> Adrenal Glands, each on
         # its own building and independent of the shared upgrade queue.
         _dedicated_research,
-        # Hydralisk / Lurker Den upgrades, each on its own Den.
+        # Hydralisk Den upgrades, pinned to the Den.
         _den_research,
         # Whole game once Lair is commanded (Glial/Burrow/Claws, then the
         # rest of `Army.upgrades`) - see its own docstring for why this
@@ -1544,20 +1534,13 @@ BUILD = BuildDefinition(
                 gates.negate(gates.early_aggression()),
             ),
         ),
-        # Late-game Hydralisk + Lurker: Roach/Zergling alone can't break a
-        # Protoss ball. Den after the Pit (Lair + Claws path first), Lurker
-        # Den once the Hydralisk Den stands (`spawn_macro_army` switches comps).
+        # Late-game Hydralisk (+ Ravager morphs): Roach/Zergling alone can't
+        # break a Protoss ball. Den after the Pit (Lair + Claws path first);
+        # `spawn_macro_army` switches comps once it stands.
         z.tech_up(
             UnitTypeId.HYDRALISKDEN,
             gate=gates.all_of(
                 gates.structure_started(UnitTypeId.INFESTATIONPIT),
-                gates.negate(gates.early_aggression()),
-            ),
-        ),
-        z.tech_up(
-            UnitTypeId.LURKERDENMP,
-            gate=gates.all_of(
-                gates.has_structure(UnitTypeId.HYDRALISKDEN),
                 gates.negate(gates.early_aggression()),
             ),
         ),

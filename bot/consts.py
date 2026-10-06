@@ -100,27 +100,22 @@ ROACH_LING_CORRUPTOR_INFESTOR_COMP: dict[UnitTypeId, dict[str, float | int]] = {
 }
 
 # Late game: Roach/Zergling alone can't break a Protoss ball. Once the
-# Hydralisk Den is up fold Hydralisks in; once the Lurker Den is up too, a
-# fifth of the army morphs into Lurkers (SpawnController morphs them from
-# Hydralisks - `ares.dicts.does_not_use_larva`). Lurkers are siege units:
-# see `routines.combat.micro_lurkers`.
-ROACH_HYDRA_COMP: dict[UnitTypeId, dict[str, float | int]] = {
-    UnitTypeId.ROACH: {"proportion": 0.55, "priority": 0},
-    UnitTypeId.HYDRALISK: {"proportion": 0.30, "priority": 0},
-    UnitTypeId.ZERGLING: {"proportion": 0.15, "priority": 1},
-}
-
-HYDRA_LURKER_COMP: dict[UnitTypeId, dict[str, float | int]] = {
+# Hydralisk Den is up fold Hydralisks in and morph a fifth of the army into
+# Ravagers (SpawnController morphs them from Roaches -
+# `ares.dicts.does_not_use_larva`). Ravagers break the ball's static pieces
+# (Cannons, Batteries, sieged Tanks, Force Fields) with Corrosive Bile: see
+# `routines.combat.micro_ravagers`.
+HYDRA_RAVAGER_COMP: dict[UnitTypeId, dict[str, float | int]] = {
     UnitTypeId.ROACH: {"proportion": 0.35, "priority": 0},
     UnitTypeId.HYDRALISK: {"proportion": 0.25, "priority": 0},
-    UnitTypeId.LURKERMP: {"proportion": 0.20, "priority": 0},
+    UnitTypeId.RAVAGER: {"proportion": 0.20, "priority": 0},
     UnitTypeId.ZERGLING: {"proportion": 0.20, "priority": 1},
 }
 
-HYDRA_LURKER_INFESTOR_COMP: dict[UnitTypeId, dict[str, float | int]] = {
+HYDRA_RAVAGER_INFESTOR_COMP: dict[UnitTypeId, dict[str, float | int]] = {
     UnitTypeId.ROACH: {"proportion": 0.30, "priority": 0},
     UnitTypeId.HYDRALISK: {"proportion": 0.25, "priority": 0},
-    UnitTypeId.LURKERMP: {"proportion": 0.20, "priority": 0},
+    UnitTypeId.RAVAGER: {"proportion": 0.20, "priority": 0},
     UnitTypeId.INFESTOR: {"proportion": 0.10, "priority": 0},
     UnitTypeId.ZERGLING: {"proportion": 0.15, "priority": 1},
 }
