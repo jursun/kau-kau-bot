@@ -657,6 +657,66 @@ def _forward_wave_size(minerals: float) -> int:
     return min(_FORWARD_WAVE_MAX, _FORWARD_WAVE_BASE + _FORWARD_WAVE_PER_1000 * extra)
 
 
+_FORWARD_CRAWLER_COST: dict[UnitTypeId, int] = {
+    UnitTypeId.SPINECRAWLER: 100,
+    UnitTypeId.SPORECRAWLER: 75,
+}
+
+
+def _within_budget(
+    types: tuple[UnitTypeId, ...], budget: float
+) -> tuple[UnitTypeId, ...]:
+    """The longest prefix of `types` whose total cost fits in `budget`."""
+    spent = 0
+    kept: list[UnitTypeId] = []
+    for structure_type in types:
+        spent += _FORWARD_CRAWLER_COST[structure_type]
+        if spent > budget:
+            break
+        kept.append(structure_type)
+    return tuple(kept)
+
+
+def _release_poor_forward_crawlers(ctx: "BotContext") -> None:
+    """The wall is a mineral sink, not a purchase: once the bank is below
+    `_FORWARD_CRAWLER_MINERALS`, forward crawler drones that are still walking
+    to their site (not yet placed) go back to mining. Without this, a pulse
+    already dispatched keeps spending the bank down past the floor."""
+    if ctx.bot.minerals >= _FORWARD_CRAWLER_MINERALS or not ctx.state.forward_anchors:
+        return
+    from cython_extensions import cy_distance_to_squared
+
+    radius_sq = targeting.FORWARD_LINE_RADIUS**2
+    tracker = ctx.mediator.get_building_tracker_dict
+    released = 0
+    for tag, info in list(tracker.items()):
+        structure_type = info.get(ID)
+        if structure_type not in _CRAWLER_TYPES:
+            continue
+        target = info.get(TARGET)
+        if target is None:
+            continue
+        site = Point2(getattr(target, "position", target))
+        if not any(
+            cy_distance_to_squared(site, anchor) <= radius_sq
+            for anchor in ctx.state.forward_anchors
+        ):
+            continue  # a base Spore / Spine: those stay
+        ctx.mediator.get_building_counter[structure_type] -= 1
+        tracker.pop(tag, None)
+        ctx.mediator.assign_role(tag=tag, role=UnitRole.GATHERING)
+        ctx.state.crawler_progress.pop(tag, None)
+        released += 1
+    if released:
+        from bot.common.log import log_event
+
+        log_event(
+            ctx.bot,
+            f"FORWARD_CRAWLER bank {ctx.bot.minerals:.0f} < "
+            f"{_FORWARD_CRAWLER_MINERALS}: recalled {released} drones",
+        )
+
+
 def _forward_wave_types(count: int) -> tuple[UnitTypeId, ...]:
     """Two Spines to every Spore: the Protoss ball is mostly ground."""
     pattern = (
@@ -785,17 +845,23 @@ def _forward_anchor(ctx: "BotContext") -> Point2 | None:
 
 
 def forward_crawler_wave(gate: Gate = _always) -> MacroStep:
-    """When floating >2000 minerals, every 20s pull 6 workers to plant
-    3 Spines + 3 Spores at the current forward wall group - groups of ~10,
-    each further toward the enemy base than the last (`_forward_anchor`).
-    Waits (no-op, interval not consumed) while creep hasn't reached anywhere
-    forward enough to build the next group.
+    """Spend the bank above `_FORWARD_CRAWLER_MINERALS` (2000) on a forward
+    Spine/Spore wall - groups of ~10, each further toward the enemy base than
+    the last (`_forward_anchor`) - and never touch the first 2000.
+
+    - Below 2000 minerals the wall stops: nothing new is planned and drones
+      still walking to a forward site are recalled.
+    - A pulse is trimmed to what the bank above 2000 can pay for, so it can't
+      take the bank under the floor.
+    - Waits (no-op, interval not consumed) while creep hasn't reached
+      anywhere forward enough to build the next group.
     """
 
     def step(ctx: "BotContext"):
         if not gate(ctx):
             return None
-        if ctx.bot.minerals <= _FORWARD_CRAWLER_MINERALS:
+        _release_poor_forward_crawlers(ctx)
+        if ctx.bot.minerals < _FORWARD_CRAWLER_MINERALS:
             return None
         last = ctx.state.last_forward_crawler_wave_at
         interval = (
@@ -806,13 +872,18 @@ def forward_crawler_wave(gate: Gate = _always) -> MacroStep:
         if last is not None and ctx.bot.time - last < interval:
             return None
 
+        wave = _within_budget(
+            _forward_wave_types(_forward_wave_size(ctx.bot.minerals)),
+            ctx.bot.minerals - _FORWARD_CRAWLER_MINERALS,
+        )
+        if not wave:
+            return None
         anchor = _forward_anchor(ctx)
         if anchor is None:
             return None
         ctx.state.last_forward_crawler_wave_at = ctx.bot.time
         from bot.common.log import log_event
 
-        wave = _forward_wave_types(_forward_wave_size(ctx.bot.minerals))
         log_event(
             ctx.bot,
             f"FORWARD_CRAWLER wave: {len(wave)} crawlers, group "
@@ -822,6 +893,7 @@ def forward_crawler_wave(gate: Gate = _always) -> MacroStep:
         return ForwardCrawlerWave(
             anchor=anchor,
             structure_types=wave,
+            mineral_floor=_FORWARD_CRAWLER_MINERALS,
             avoid_tiles=frozenset(ctx.state.bad_crawler_tiles),
         )
 

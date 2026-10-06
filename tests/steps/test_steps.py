@@ -1048,7 +1048,7 @@ def test_forward_crawler_wave_waits_on_minerals_and_interval() -> None:
     ctx.bot.minerals = 2000
     assert wave() is None
 
-    ctx.bot.minerals = 2001
+    ctx.bot.minerals = 2700
     found = wave()
     assert isinstance(found, ForwardCrawlerWave)
     assert len(found.structure_types) == 6
@@ -1240,3 +1240,75 @@ def test_forward_wave_keeps_the_slow_interval_below_the_fast_bank() -> None:
 
     ctx.bot.time = 100.0 + z._FORWARD_CRAWLER_FAST_INTERVAL + 0.5
     assert _with_creep(ctx, lambda: z.forward_crawler_wave()(ctx)) is None
+
+
+
+def test_forward_wave_is_trimmed_to_the_bank_above_the_floor() -> None:
+    """A pulse never plans more than the bank above 2000 can pay for."""
+    ctx = _forward_ctx(creep_until=60.0)
+    ctx.bot.minerals = 2250  # 250 above the floor
+
+    wave = _with_creep(ctx, lambda: z.forward_crawler_wave()(ctx))
+
+    cost = sum(z._FORWARD_CRAWLER_COST[t] for t in wave.structure_types)
+    assert 0 < cost <= 250
+    assert wave.mineral_floor == z._FORWARD_CRAWLER_MINERALS
+
+
+def test_forward_wave_does_nothing_when_the_bank_cannot_pay_for_one() -> None:
+    ctx = _forward_ctx(creep_until=60.0)
+    ctx.bot.minerals = 2050
+
+    assert _with_creep(ctx, lambda: z.forward_crawler_wave()(ctx)) is None
+    assert ctx.state.last_forward_crawler_wave_at is None  # interval not burned
+
+
+def test_within_budget_is_a_cost_prefix() -> None:
+    types = (
+        UnitTypeId.SPINECRAWLER,
+        UnitTypeId.SPORECRAWLER,
+        UnitTypeId.SPINECRAWLER,
+    )
+    assert z._within_budget(types, 0) == ()
+    assert z._within_budget(types, 100) == (UnitTypeId.SPINECRAWLER,)
+    assert z._within_budget(types, 175) == types[:2]
+    assert z._within_budget(types, 10000) == types
+
+
+def _poor_ctx(minerals: float, site: Point2, anchor=Point2((60.0, 60.0))):
+    ctx = _forward_ctx(creep_until=200.0)
+    ctx.bot.minerals = minerals
+    ctx.state.forward_anchors = [anchor]
+    ctx.mediator.get_building_tracker_dict = {
+        501: {ID: UnitTypeId.SPINECRAWLER, TARGET: site}
+    }
+    ctx.mediator.get_building_counter = {UnitTypeId.SPINECRAWLER: 1}
+    ctx.bot.mediator = ctx.mediator
+    return ctx
+
+
+def test_forward_drones_still_walking_are_recalled_below_the_floor() -> None:
+    ctx = _poor_ctx(1500, Point2((62.0, 61.0)))
+
+    _with_creep(ctx, lambda: z.forward_crawler_wave()(ctx))
+
+    assert 501 not in ctx.mediator.get_building_tracker_dict
+    assert ctx.mediator.get_building_counter[UnitTypeId.SPINECRAWLER] == 0
+    ctx.mediator.assign_role.assert_called_once_with(tag=501, role=UnitRole.GATHERING)
+
+
+def test_base_crawler_drones_are_not_recalled_below_the_floor() -> None:
+    ctx = _poor_ctx(1500, Point2((12.0, 12.0)))  # a base Spore / Spine
+
+    _with_creep(ctx, lambda: z.forward_crawler_wave()(ctx))
+
+    assert 501 in ctx.mediator.get_building_tracker_dict
+    ctx.mediator.assign_role.assert_not_called()
+
+
+def test_forward_drones_are_left_alone_while_the_bank_is_above_the_floor() -> None:
+    ctx = _poor_ctx(2600, Point2((62.0, 61.0)))
+
+    _with_creep(ctx, lambda: z.forward_crawler_wave()(ctx))
+
+    assert 501 in ctx.mediator.get_building_tracker_dict

@@ -196,6 +196,38 @@ def test_new_crawler_avoids_an_existing_crawler() -> None:
     assert _gap_ok(pos, existing.position)
 
 
+def test_forward_wave_stops_dispatching_at_the_mineral_floor() -> None:
+    from bot.behaviors.zerg.forward_crawler_wave import ForwardCrawlerWave
+
+    ai = _open_ground_ai()
+    ai.minerals = 2250  # 250 above the floor: two Spines, then stop
+    mediator = _open_ground_mediator()
+    wave = ForwardCrawlerWave(
+        anchor=Point2((60.0, 60.0)),
+        structure_types=[UnitTypeId.SPINECRAWLER] * 6,
+        mineral_floor=2000.0,
+    )
+
+    assert wave.execute(ai, {}, mediator) is True
+
+    assert mediator.build_with_specific_worker.call_count == 2
+
+
+def test_forward_wave_without_a_floor_dispatches_everything_affordable() -> None:
+    from bot.behaviors.zerg.forward_crawler_wave import ForwardCrawlerWave
+
+    ai = _open_ground_ai()
+    ai.minerals = 100
+    mediator = _open_ground_mediator()
+    wave = ForwardCrawlerWave(
+        anchor=Point2((60.0, 60.0)), structure_types=[UnitTypeId.SPINECRAWLER] * 6
+    )
+
+    wave.execute(ai, {}, mediator)
+
+    assert mediator.build_with_specific_worker.call_count == 6
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failures = 0

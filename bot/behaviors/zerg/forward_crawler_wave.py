@@ -30,6 +30,10 @@ if TYPE_CHECKING:
 _CRAWLER_TYPES: frozenset[UnitTypeId] = frozenset(
     {UnitTypeId.SPINECRAWLER, UnitTypeId.SPORECRAWLER}
 )
+_COST: dict[UnitTypeId, int] = {
+    UnitTypeId.SPINECRAWLER: 100,
+    UnitTypeId.SPORECRAWLER: 75,
+}
 
 
 def _snap(x: float, y: float) -> Point2:
@@ -94,12 +98,15 @@ class ForwardCrawlerWave(MacroBehavior):
 
     anchor: Point2
     structure_types: Sequence[UnitTypeId]
+    mineral_floor: float = 0.0
+    """Never dispatch a crawler that would leave fewer minerals than this."""
     avoid_tiles: frozenset[tuple[float, float]] = frozenset()
     """Sites a drone previously got stuck on - never picked again (see
     `steps.zerg.release_stuck_crawlers`)."""
 
     def execute(self, ai: "AresBot", config: dict, mediator: ManagerMediator) -> bool:
         acted = False
+        committed = 0  # minerals promised to drones dispatched this pulse
         bad = [Point2(t) for t in self.avoid_tiles]
         # Sites already claimed - and each one this pulse picks - so six
         # crawlers planned together never share or touch a footprint.
@@ -115,6 +122,11 @@ class ForwardCrawlerWave(MacroBehavior):
                 continue
             if not ai.can_afford(structure_type):
                 break
+            if (
+                self.mineral_floor
+                and ai.minerals - committed < self.mineral_floor + _COST[structure_type]
+            ):
+                break
             reference = self.anchor + offsets[index]
             pos = _find_near(
                 ai, mediator, reference, structure_type, avoid=bad, reserved=reserved
@@ -128,5 +140,6 @@ class ForwardCrawlerWave(MacroBehavior):
                 worker=worker, structure_type=structure_type, pos=pos
             ):
                 acted = True
+                committed += _COST[structure_type]
                 reserved.append(pos)
         return acted
