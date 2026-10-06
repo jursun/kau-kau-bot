@@ -3129,6 +3129,23 @@ def _bile_candidates(ctx: "BotContext", enemies: list) -> list[tuple[int, object
     return out
 
 
+def _ravager_station(ctx: "BotContext") -> Point2 | None:
+    """Where Ravagers wait when there is no bile to throw.
+
+    Home when it is under attack (`RunState.home_threat_until`, set by
+    `emergency_defense.pull_defense`): a Ravager follows its squad, and the
+    squad can be on the far side of the map - or its regroup point on the
+    enemy's side - while the base falls (live: Ravagers were nowhere near the
+    defense). Otherwise the biggest ATTACKING squad, else the regroup point.
+    """
+    if ctx.state.home_threat_until > ctx.bot.time:
+        return targeting.rally_point(ctx)
+    squads = ctx.mediator.get_squads(role=UnitRole.ATTACKING, squad_radius=SQUAD_RADIUS)
+    if squads:
+        return max(squads, key=lambda squad: len(squad.squad_units)).squad_position
+    return targeting.regroup_point(ctx)
+
+
 def micro_ravagers() -> CombatRoutine:
     """Ravagers (morphed from Roaches by `SpawnController`): Corrosive Bile as
     often as the cooldown allows, from outside everything's range.
@@ -3151,14 +3168,7 @@ def micro_ravagers() -> CombatRoutine:
         if not ravagers:
             return
 
-        squads = ctx.mediator.get_squads(
-            role=UnitRole.ATTACKING, squad_radius=SQUAD_RADIUS
-        )
-        follow_target = (
-            max(squads, key=lambda squad: len(squad.squad_units)).squad_position
-            if squads
-            else targeting.regroup_point(ctx)
-        )
+        follow_target = _ravager_station(ctx)
         grid = ctx.mediator.get_ground_grid
         enemies = enemy_army(ctx)
         threats = [e for e in enemies if getattr(e, "can_attack_ground", True)]

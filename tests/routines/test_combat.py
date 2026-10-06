@@ -4064,6 +4064,54 @@ def test_raid_ends_with_a_fall_back_when_hopelessly_outmatched_on_the_spot() -> 
         _restore_targeting(original)
 
 
+def test_ravagers_come_home_when_the_base_is_under_attack() -> None:
+    """Live: Ravagers sat across the map (with the squad / the enemy-side
+    staging point) while the base was attacked, so their bile never helped."""
+    home = Point2((20.0, 20.0))
+    original = _patch_targeting(home, Point2((999.0, 999.0)))
+    try:
+        rav = _ravager(1, Point2((120.0, 120.0)), bile=False)
+        ctx = _rav_ctx([rav], squad_at=Point2((130.0, 130.0)))
+        ctx.state.home_threat_until = ctx.bot.time + 3.0
+
+        combat.micro_ravagers()(ctx)
+
+        paths = [m for m in _all_micros(ctx) if isinstance(m, PathUnitToTarget)]
+        assert len(paths) == 1
+        assert paths[0].target == home
+    finally:
+        _restore_targeting(original)
+
+
+def test_ravagers_follow_the_squad_when_home_is_safe() -> None:
+    original = _patch_targeting(Point2((20.0, 20.0)), Point2((999.0, 999.0)))
+    try:
+        rav = _ravager(1, Point2((0.0, 0.0)), bile=False)
+        ctx = _rav_ctx([rav], squad_at=Point2((60.0, 0.0)))
+
+        combat.micro_ravagers()(ctx)
+
+        paths = [m for m in _all_micros(ctx) if isinstance(m, PathUnitToTarget)]
+        assert cy_distance_to(paths[0].target, Point2((60.5, 0.0))) < 0.1
+    finally:
+        _restore_targeting(original)
+
+
+def test_a_ravager_at_home_biles_the_attackers() -> None:
+    original = _patch_targeting(Point2((20.0, 20.0)), Point2((999.0, 999.0)))
+    try:
+        rav = _ravager(1, Point2((20.0, 20.0)))
+        attacker = _sized_enemy(12, Point2((28.0, 20.0)), 0.6)
+        ctx = _rav_ctx([rav], army=[attacker])
+        ctx.state.home_threat_until = ctx.bot.time + 3.0
+
+        combat.micro_ravagers()(ctx)
+
+        assert _biles(ctx)[0].target == attacker.position
+    finally:
+        _restore_targeting(original)
+
+
 # --- micro_infestors: detection -------------------------------------------
 
 
