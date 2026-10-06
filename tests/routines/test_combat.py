@@ -3912,6 +3912,158 @@ def test_ravager_follows_the_squad_with_nothing_near() -> None:
     assert cy_distance_to(paths[0].target, Point2((30.5, 0.0))) < 0.1
 
 
+# --- raid when outmatched ---------------------------------------------------------
+
+
+def _raid_setup(our_count: int = 8, enemy_count: int = 20, target_known: bool = True):
+    """A squad of `our_count` at (50, 50) facing an army of `enemy_count` that
+    is far stronger; a scouted enemy base lies far from that army."""
+    ctx, units = _fall_back_setup(
+        our_count=our_count, enemy_count=enemy_count, at=Point2((50.0, 50.0))
+    )
+    # Compact the enemy so the whole army is within the squad's engage range.
+    enemies = [
+        _unit(90 + k, Point2((54.0, 50.0 + 0.2 * k))) for k in range(enemy_count)
+    ]
+    ctx.mediator.get_cached_enemy_army = enemies
+    ctx.mediator.get_units_in_range.return_value = [enemies]
+    base = MagicMock()
+    base.position = Point2((120.0, 30.0))
+    base.type_id = UnitTypeId.NEXUS
+    structures = MagicMock()
+    structures.of_type = lambda types: [base] if target_known else []
+    structures.__iter__ = lambda self: iter([base] if target_known else [])
+    ctx.bot.enemy_structures = structures
+    ctx.bot.enemy_start_locations = [Point2((150.0, 150.0))]
+    ctx.bot.expansion_locations_list = []
+    ctx.bot.start_location = Point2((10.0, 10.0))
+    return ctx, units, base
+
+
+def test_outmatched_squad_raids_a_far_base_instead_of_falling_back() -> None:
+    rally = Point2((10.0, 10.0))
+    original = _patch_targeting(rally, Point2((999.0, 999.0)))
+    try:
+        ctx, units, base = _raid_setup()
+
+        combat.attack_squads(fall_back_ratio=0.55, raid_when_outmatched=True)(ctx)
+
+        assert {u.tag for u in units} <= ctx.state.raiding_tags
+        assert ctx.state.raid_target == base.position
+        assert ctx.state.falling_back_tags == set()
+        micros = _all_micros(ctx)
+        paths = [m for m in micros if isinstance(m, PathUnitToTarget)]
+        assert paths and all(m.target == base.position for m in paths)
+        assert not any(isinstance(m, combat._Move) and m.target == rally for m in micros)
+    finally:
+        _restore_targeting(original)
+
+
+def test_raid_is_off_unless_the_build_asks_for_it() -> None:
+    rally = Point2((10.0, 10.0))
+    original = _patch_targeting(rally, Point2((999.0, 999.0)))
+    try:
+        ctx, units, _ = _raid_setup()
+
+        combat.attack_squads(fall_back_ratio=0.55)(ctx)
+
+        assert ctx.state.raiding_tags == set()
+        assert {u.tag for u in units} <= ctx.state.falling_back_tags
+    finally:
+        _restore_targeting(original)
+
+
+def test_a_tiny_squad_falls_back_instead_of_raiding() -> None:
+    rally = Point2((10.0, 10.0))
+    original = _patch_targeting(rally, Point2((999.0, 999.0)))
+    try:
+        ctx, units, _ = _raid_setup(our_count=3, enemy_count=12)
+
+        combat.attack_squads(fall_back_ratio=0.55, raid_when_outmatched=True)(ctx)
+
+        assert ctx.state.raiding_tags == set()
+        assert {u.tag for u in units} <= ctx.state.falling_back_tags
+    finally:
+        _restore_targeting(original)
+
+
+def test_no_known_base_means_the_old_fall_back() -> None:
+    rally = Point2((10.0, 10.0))
+    original = _patch_targeting(rally, Point2((999.0, 999.0)))
+    try:
+        ctx, units, _ = _raid_setup(target_known=False)
+
+        combat.attack_squads(fall_back_ratio=0.55, raid_when_outmatched=True)(ctx)
+
+        assert ctx.state.raiding_tags == set()
+        assert {u.tag for u in units} <= ctx.state.falling_back_tags
+    finally:
+        _restore_targeting(original)
+
+
+def test_raiders_attack_move_in_once_near_the_target() -> None:
+    original = _patch_targeting(Point2((10.0, 10.0)), Point2((999.0, 999.0)))
+    try:
+        ctx, units, base = _raid_setup()
+        ctx.mediator.get_cached_enemy_army = []
+        ctx.mediator.get_units_in_range.return_value = [[]]
+        for i, unit in enumerate(units):  # 15 from the target
+            unit.position = Point2((105.0 + i * 0.2, 30.0))
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+        ctx.state.raiding_tags = {u.tag for u in units}
+        ctx.state.raid_target = base.position
+
+        combat.attack_squads(fall_back_ratio=0.55, raid_when_outmatched=True)(ctx)
+
+        amoves = [m for m in _all_micros(ctx) if isinstance(m, AMove)]
+        assert amoves and all(m.target == base.position for m in amoves)
+    finally:
+        _restore_targeting(original)
+
+
+def test_raid_moves_on_once_the_base_is_cleared() -> None:
+    original = _patch_targeting(Point2((10.0, 10.0)), Point2((999.0, 999.0)))
+    try:
+        ctx, units, base = _raid_setup()
+        ctx.mediator.get_cached_enemy_army = []
+        ctx.mediator.get_units_in_range.return_value = [[]]
+        other = MagicMock()
+        other.position = Point2((60.0, 140.0))
+        other.type_id = UnitTypeId.NEXUS
+        base_gone = MagicMock()
+        base_gone.of_type = lambda types: [other]
+        base_gone.__iter__ = lambda self: iter([])  # nothing left at the raided base
+        ctx.bot.enemy_structures = base_gone
+        for i, unit in enumerate(units):
+            unit.position = Point2((120.0 + i * 0.2, 31.0))  # on the target
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+        ctx.state.raiding_tags = {u.tag for u in units}
+        ctx.state.raid_target = base.position
+
+        combat.attack_squads(fall_back_ratio=0.55, raid_when_outmatched=True)(ctx)
+
+        assert (120, 30) in ctx.state.raided_bases
+        assert ctx.state.raid_target == other.position
+    finally:
+        _restore_targeting(original)
+
+
+def test_raid_ends_with_a_fall_back_when_hopelessly_outmatched_on_the_spot() -> None:
+    rally = Point2((10.0, 10.0))
+    original = _patch_targeting(rally, Point2((999.0, 999.0)))
+    try:
+        ctx, units, base = _raid_setup(our_count=8, enemy_count=40)
+        ctx.state.raiding_tags = {u.tag for u in units}
+        ctx.state.raid_target = base.position
+
+        combat.attack_squads(fall_back_ratio=0.55, raid_when_outmatched=True)(ctx)
+
+        assert ctx.state.raiding_tags == set()
+        assert {u.tag for u in units} <= ctx.state.falling_back_tags
+    finally:
+        _restore_targeting(original)
+
+
 # --- micro_infestors: detection -------------------------------------------
 
 

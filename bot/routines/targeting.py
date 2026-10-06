@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from cython_extensions import cy_closest_to, cy_distance_to_squared
+from cython_extensions import cy_closest_to, cy_distance_to, cy_distance_to_squared
 from sc2.ids.unit_typeid import UnitTypeId
 from sc2.position import Point2
 
@@ -315,7 +315,94 @@ def regroup_point(ctx: "BotContext") -> Point2:
                     return anchor
                 home = cy_closest_to(anchor, townhalls)
                 return anchor.towards(home, FORWARD_REGROUP_BEHIND)
-    return rally_point(ctx)
+    return forward_staging_point(ctx) or rally_point(ctx)
+
+
+FORWARD_STAGING_FRACTION: float = 0.6
+"""How far from our most forward base to the enemy start the army musters
+when there is no wall: well past the middle, on the enemy's side."""
+STAGING_ENEMY_STANDOFF: float = 45.0
+"""...but never closer than this to a known enemy base."""
+
+
+def forward_staging_point(ctx: "BotContext") -> Point2 | None:
+    """Where the army musters and falls back to when no Spine/Spore wall
+    stands: on the enemy's side of the map, not back at our natural. A squad
+    that retreated all the way home was the weak point - it lost the map and
+    the re-push started from our front door. None without an enemy start."""
+    starts = ctx.bot.enemy_start_locations
+    townhalls = [th.position for th in ctx.bot.townhalls]
+    if not starts or not townhalls:
+        return None
+    enemy = starts[0]
+    front = cy_closest_to(enemy, townhalls)
+    point = front.towards(enemy, cy_distance_to(front, enemy) * FORWARD_STAGING_FRACTION)
+    bases = [enemy] + [
+        s.position for s in ctx.bot.enemy_structures.of_type(ALL_TOWNHALL_TYPES)
+    ]
+    nearest = cy_closest_to(point, bases)
+    if cy_distance_to(point, nearest) < STAGING_ENEMY_STANDOFF:
+        point = nearest.towards(front, STAGING_ENEMY_STANDOFF)
+    return point
+
+
+RAID_MIN_ENEMY_DISTANCE: float = 30.0
+"""A raid target must be at least this far from the enemy army - that is what
+makes it a weak spot."""
+RAID_MAX_TRAVEL: float = 130.0
+
+
+def enemy_base_candidates(ctx: "BotContext") -> list[tuple[Point2, bool]]:
+    """Enemy bases that are not their main: (position, known). Known ones are
+    townhalls we have seen; with none seen, the enemy-side expansion
+    locations are guessed."""
+    starts = list(ctx.bot.enemy_start_locations)
+    if not starts:
+        return []
+    enemy_start = starts[0]
+    known = [
+        Point2(s.position)
+        for s in ctx.bot.enemy_structures.of_type(ALL_TOWNHALL_TYPES)
+        if cy_distance_to_squared(s.position, enemy_start) > 15.0**2
+    ]
+    if known:
+        return [(p, True) for p in known]
+    our_start = ctx.production_location
+    guessed = [
+        Point2(loc)
+        for loc in ctx.bot.expansion_locations_list
+        if cy_distance_to_squared(loc, enemy_start) > 15.0**2
+        and cy_distance_to_squared(loc, enemy_start)
+        < cy_distance_to_squared(loc, our_start)
+    ]
+    return [(p, False) for p in guessed]
+
+
+def pick_raid_target(
+    ctx: "BotContext",
+    squad_position: Point2,
+    enemy_center: Point2 | None,
+    exclude=(),
+) -> Point2 | None:
+    """The enemy base to hit: far from their army (weakly held) and not too far
+    from us. Scouted bases beat guessed locations. Bases already raided
+    (`exclude`, as rounded (x, y)) are skipped."""
+    best: Point2 | None = None
+    best_score = float("-inf")
+    for position, known in enemy_base_candidates(ctx):
+        if (round(position.x), round(position.y)) in exclude:
+            continue
+        if cy_distance_to(position, squad_position) > RAID_MAX_TRAVEL:
+            continue
+        away = (
+            cy_distance_to(position, enemy_center) if enemy_center is not None else 60.0
+        )
+        if away < RAID_MIN_ENEMY_DISTANCE:
+            continue
+        score = away - 0.25 * cy_distance_to(position, squad_position) + (10.0 if known else 0.0)
+        if score > best_score:
+            best, best_score = position, score
+    return best
 
 
 def hold_positions(ctx: "BotContext") -> list[Point2]:

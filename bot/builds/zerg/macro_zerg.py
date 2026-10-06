@@ -1350,6 +1350,9 @@ BUILD = BuildDefinition(
                 # Waiting for the bigger army to commit into our Spine/Spore
                 # wall is right; once it has, flank it even from behind.
                 flank_at_wall=True,
+                # Outmatched: skirt their army and hit another base instead of
+                # retreating home; regroup on their side of the map.
+                raid_when_outmatched=True,
                 # Hydralisks hold max range behind the front line.
                 range_hold_types=frozenset({UnitTypeId.HYDRALISK}),
                 kite_types=frozenset({UnitTypeId.ROACH}),

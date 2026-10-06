@@ -397,10 +397,13 @@ def _regroup_ctx(anchors, crawler_positions, townhall=Point2((10.0, 10.0))):
     return ctx
 
 
-def test_regroup_point_is_the_natural_rally_without_a_wall() -> None:
+def test_regroup_point_is_the_forward_staging_point_without_a_wall() -> None:
     ctx = _regroup_ctx([], [])
 
-    assert targeting.regroup_point(ctx) == targeting.rally_point(ctx)
+    point = targeting.regroup_point(ctx)
+
+    assert point == targeting.forward_staging_point(ctx)
+    assert point != targeting.rally_point(ctx)
 
 
 def test_regroup_point_is_the_forward_wall_once_it_stands() -> None:
@@ -419,7 +422,7 @@ def test_regroup_point_waits_for_enough_standing_crawlers() -> None:
     anchor = Point2((80.0, 80.0))
     ctx = _regroup_ctx([anchor], [Point2((80.0, 80.0))])  # 1 < minimum
 
-    assert targeting.regroup_point(ctx) == targeting.rally_point(ctx)
+    assert targeting.regroup_point(ctx) == targeting.forward_staging_point(ctx)
 
 
 def test_regroup_point_uses_the_most_advanced_standing_group() -> None:
@@ -454,3 +457,98 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# --- forward staging + raid targets -------------------------------------------
+
+
+def _staging_ctx(enemy_structures=()):
+    ctx = _regroup_ctx([], [])
+    ctx.bot.enemy_structures = _Structures(enemy_structures)
+    ctx.bot.expansion_locations_list = []
+    ctx.production_location = Point2((10.0, 10.0))
+    return ctx
+
+
+def test_staging_point_is_on_the_enemy_side_of_the_map() -> None:
+    ctx = _staging_ctx()
+
+    point = targeting.forward_staging_point(ctx)
+
+    # 60% of the way from our base (10,10) to the enemy start (150,150).
+    assert point.x == pytest.approx(10.0 + 0.6 * 140.0)
+    assert point.distance_to(Point2((150.0, 150.0))) > targeting.STAGING_ENEMY_STANDOFF
+
+
+def test_staging_point_keeps_clear_of_a_known_enemy_base() -> None:
+    base = _structure(Point2((80.0, 80.0)), UnitTypeId.NEXUS)
+    ctx = _staging_ctx([base])
+
+    point = targeting.forward_staging_point(ctx)
+
+    assert point.distance_to(base.position) >= targeting.STAGING_ENEMY_STANDOFF - 0.01
+
+
+def test_staging_point_needs_an_enemy_start() -> None:
+    ctx = _staging_ctx()
+    ctx.bot.enemy_start_locations = []
+
+    assert targeting.forward_staging_point(ctx) is None
+
+
+def test_raid_target_prefers_the_base_farthest_from_their_army() -> None:
+    near_army = _structure(Point2((100.0, 100.0)), UnitTypeId.NEXUS)
+    far_from_army = _structure(Point2((120.0, 40.0)), UnitTypeId.NEXUS)
+    ctx = _staging_ctx([near_army, far_from_army])
+
+    target = targeting.pick_raid_target(
+        ctx, Point2((80.0, 80.0)), enemy_center=Point2((105.0, 105.0))
+    )
+
+    assert target == far_from_army.position
+
+
+def test_raid_target_skips_a_base_the_army_is_sitting_on() -> None:
+    guarded = _structure(Point2((100.0, 100.0)), UnitTypeId.NEXUS)
+    ctx = _staging_ctx([guarded])
+
+    assert (
+        targeting.pick_raid_target(
+            ctx, Point2((80.0, 80.0)), enemy_center=Point2((105.0, 105.0))
+        )
+        is None
+    )
+
+
+def test_raid_target_never_picks_the_enemy_main() -> None:
+    main = _structure(Point2((150.0, 150.0)), UnitTypeId.NEXUS)
+    ctx = _staging_ctx([main])
+
+    assert (
+        targeting.pick_raid_target(ctx, Point2((80.0, 80.0)), enemy_center=None) is None
+    )
+
+
+def test_raid_target_skips_bases_already_raided() -> None:
+    a = _structure(Point2((120.0, 40.0)), UnitTypeId.NEXUS)
+    b = _structure(Point2((60.0, 130.0)), UnitTypeId.NEXUS)
+    ctx = _staging_ctx([a, b])
+
+    target = targeting.pick_raid_target(
+        ctx, Point2((80.0, 80.0)), None, exclude={(120, 40)}
+    )
+
+    assert target == b.position
+
+
+def test_raid_target_guesses_expansions_when_no_base_is_scouted() -> None:
+    ctx = _staging_ctx()
+    ctx.bot.expansion_locations_list = [
+        Point2((10.0, 10.0)),  # ours
+        Point2((130.0, 60.0)),  # enemy side
+        Point2((150.0, 150.0)),  # their main
+    ]
+
+    target = targeting.pick_raid_target(ctx, Point2((80.0, 80.0)), None)
+
+    assert target == Point2((130.0, 60.0))

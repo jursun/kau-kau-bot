@@ -452,11 +452,138 @@ def _regroup_ready(ctx: "BotContext", squad) -> bool:
     return False
 
 
+RAID_MIN_UNITS: int = 6
+RAID_ENGAGE_DISTANCE: float = 22.0
+"""Beyond this the raiders path around (influence-aware) to the target;
+within it they attack-move in."""
+RAID_DEFENDED_RADIUS: float = 22.0
+"""The enemy army this close to the target: it is defended - pick another."""
+RAID_ARRIVE: float = 12.0
+RAID_CLEAR_RADIUS: float = 15.0
+RAID_ABORT_RATIO: float = 0.4
+"""A raid squad this far outmatched by what is on top of it gives up and
+falls back instead."""
+
+
+def _raid_enemy_center(ctx: "BotContext", fallback=()) -> Point2 | None:
+    positions = [e.position for e in enemy_army(ctx)] or [e.position for e in fallback]
+    return Point2(cy_center(positions)) if positions else None
+
+
+def _raid_orders(ctx: "BotContext", units, position, target) -> None:
+    """Path around the enemy (ground influence) until near the target, then
+    attack-move in and clear it."""
+    grid = ctx.mediator.get_ground_grid
+    far = cy_distance_to(position, target) > RAID_ENGAGE_DISTANCE
+    for unit in units:
+        maneuver = CombatManeuver()
+        if far:
+            maneuver.add(PathUnitToTarget(unit=unit, grid=grid, target=target))
+        elif not _already_ordered_to_point(unit, target):
+            maneuver.add(AMove(unit=unit, target=target))
+        else:
+            continue
+        ctx.bot.register_behavior(maneuver)
+
+
+def _start_raid(ctx: "BotContext", squad, close_army, units) -> bool:
+    """Send an outmatched squad at a weakly held enemy base instead of home.
+    False when it is too small or no suitable base is known."""
+    state = ctx.state
+    if len(units) < RAID_MIN_UNITS:
+        return False
+    target = targeting.pick_raid_target(
+        ctx,
+        squad.squad_position,
+        _raid_enemy_center(ctx, close_army),
+        exclude=state.raided_bases,
+    )
+    if target is None:
+        return False
+    state.raiding_tags |= squad.tags
+    state.raid_target = target
+    ctx.log(
+        f"RAID {len(units)} units outmatched - skirting the army to the base at "
+        f"({target.x:.0f},{target.y:.0f})"
+    )
+    _raid_orders(ctx, units, squad.squad_position, target)
+    return True
+
+
+def _handle_raid(ctx: "BotContext", squad, close_army) -> bool:
+    """Continue a raid. True when the squad's orders for the frame are handled
+    here; False when the raid ends (the squad then falls back as usual)."""
+    state = ctx.state
+    units = [u for u in squad.squad_units if u.type_id != UnitTypeId.ROACHBURROWED]
+    if not units:
+        return False
+    position = squad.squad_position
+    target = state.raid_target
+
+    def end_raid() -> bool:
+        """Raid over: hand the squad to the normal fall-back (it must not be
+        able to start another raid on the spot)."""
+        state.raiding_tags -= squad.tags
+        state.falling_back_tags |= squad.tags
+        if state.regroup_enemy_supply is None:
+            state.regroup_since = ctx.bot.time
+        state.regroup_enemy_supply = max(state.regroup_enemy_supply or 0.0, enemy_local)
+        ctx.log(f"RAID over - {len(units)} units falling back to regroup")
+        return False
+
+    enemy_local = _combat_force_supply(ctx, close_army)
+    ours = max(
+        _allied_attack_supply(ctx, position),
+        _combat_force_supply(ctx, squad.squad_units),
+    )
+    if close_army and _outmatched(ours, enemy_local, RAID_ABORT_RATIO):
+        return end_raid()
+
+    enemy_center = _raid_enemy_center(ctx, close_army)
+    need_new = target is None
+    if (
+        not need_new
+        and enemy_center is not None
+        and cy_distance_to(target, enemy_center) < RAID_DEFENDED_RADIUS
+    ):
+        need_new = True
+    if not need_new and cy_distance_to(position, target) <= RAID_ARRIVE:
+        remaining = [
+            s
+            for s in ctx.bot.enemy_structures
+            if cy_distance_to(s.position, target) <= RAID_CLEAR_RADIUS
+        ]
+        if not remaining:
+            state.raided_bases.add((round(target.x), round(target.y)))
+            need_new = True
+    if need_new:
+        target = targeting.pick_raid_target(
+            ctx, position, enemy_center, exclude=state.raided_bases
+        )
+        if target is None:
+            state.raid_target = None
+            return end_raid()
+        state.raid_target = target
+        ctx.log(f"RAID moving on to the base at ({target.x:.0f},{target.y:.0f})")
+    _raid_orders(ctx, units, position, target)
+    return True
+
+
 def _handle_fall_back(
-    ctx: "BotContext", squad, close_army, mustering, rally, ratio: float
+    ctx: "BotContext",
+    squad,
+    close_army,
+    mustering,
+    rally,
+    ratio: float,
+    raid: bool = False,
 ) -> bool:
     """Start or continue a squad-level fall-back to `rally`. True when this
-    squad's orders for the frame are handled here (caller skips it)."""
+    squad's orders for the frame are handled here (caller skips it).
+
+    With `raid=True` an outmatched squad first tries to skirt the enemy army
+    and hit a weakly held base (`_start_raid`); only if there is none (or the
+    squad is too small) does it retreat to `rally`."""
     state = ctx.state
     position = squad.squad_position
     units = [u for u in squad.squad_units if u.type_id != UnitTypeId.ROACHBURROWED]
@@ -482,6 +609,8 @@ def _handle_fall_back(
         )
         if not _outmatched(ours, enemy, ratio):
             return False
+        if raid and _start_raid(ctx, squad, close_army, units):
+            return True
         state.falling_back_tags |= squad.tags
         if state.regroup_enemy_supply is None:
             state.regroup_since = ctx.bot.time
@@ -1375,6 +1504,7 @@ def attack_squads(
     fall_back_ratio: float | None = None,
     flank_at_wall: bool = False,
     range_hold_types: frozenset = frozenset(),
+    raid_when_outmatched: bool = False,
 ) -> CombatRoutine:
     """Drive each ATTACKING squad at its nearest worthwhile target.
 
@@ -1424,6 +1554,13 @@ def attack_squads(
       falling back included - flanks it (`_flank_squad`) regardless of the
       supply ratio. Holding back until the enemy commits into static
       defense is right; once it has, trading from the side is the payoff.
+    - `raid_when_outmatched=True`: instead of retreating when outmatched, a
+      squad of `RAID_MIN_UNITS`+ skirts the enemy army (influence-aware
+      pathing) to the enemy expansion farthest from it and attacks there,
+      moving on as bases fall or get defended. A squad that is hopelessly
+      outmatched on the spot (`RAID_ABORT_RATIO`) still falls back. With no
+      wall, regroup / muster is on the enemy's side of the map
+      (`targeting.forward_staging_point`), not at our natural.
     - `range_hold_types`: fragile ranged units (Hydralisks) that stay at
       max range behind the front line instead of stutter-stepping into the
       enemy ball - see `_hydra_maneuver`.
@@ -1495,8 +1632,20 @@ def attack_squads(
                 mustering = set()
 
             close_army_all = _intel_army_near(ctx, position, SQUAD_ENGAGE_RANGE)
+            if (
+                raid_when_outmatched
+                and squad.tags & ctx.state.raiding_tags
+                and _handle_raid(ctx, squad, close_army_all)
+            ):
+                continue
             if fall_back_ratio is not None and _handle_fall_back(
-                ctx, squad, close_army_all, mustering, rally, fall_back_ratio
+                ctx,
+                squad,
+                close_army_all,
+                mustering,
+                rally,
+                fall_back_ratio,
+                raid=raid_when_outmatched,
             ):
                 continue
             # Everything below is about what this squad can shoot.

@@ -171,6 +171,13 @@ class RunState:
     pending. While set, squads holding at the rally wait until they are big
     enough to re-push (or `REGROUP_MAX_HOLD_S` passes), and streamed
     reinforcements muster there instead of trickling to the front."""
+    raiding_tags: set[int] = field(default_factory=set)
+    """ATTACKING units on a raid of an enemy expansion instead of falling back
+    to regroup (`attack_squads(raid_when_outmatched=True)`)."""
+    raid_target: Point2 | None = None
+    """The enemy base the raiding squads are heading for."""
+    raided_bases: set[tuple[int, int]] = field(default_factory=set)
+    """Rounded (x, y) of bases already cleared, so the raid moves on."""
     wall_engagement: tuple[Point2, Point2] | None = None
     """(enemy ball centre, our wall centre) while an enemy army is attacking
     our Spine/Spore Crawlers - see `routines.combat._wall_engagement`."""
