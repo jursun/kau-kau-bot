@@ -147,3 +147,27 @@ def test_no_enemies_does_nothing() -> None:
     cb.cancel_doomed_buildings()(ctx)
 
     ctx.bot.register_behavior.assert_not_called()
+
+
+def test_creep_tumors_are_never_cancelled() -> None:
+    for tumor_type in (
+        UnitTypeId.CREEPTUMOR,
+        UnitTypeId.CREEPTUMORQUEEN,
+        UnitTypeId.CREEPTUMORBURROWED,
+    ):
+        tumor = _structure(health=10.0, type_id=tumor_type)
+        ctx = _ctx([tumor], [_enemy(dps=100.0)])
+
+        cb.cancel_doomed_buildings()(ctx)
+
+        assert _cancels(ctx) == [], tumor_type
+
+
+def test_a_free_structure_has_no_refund_to_cancel_for() -> None:
+    structure = _structure(health=10.0)
+    ctx = _ctx([structure], [_enemy(dps=100.0)])
+    ctx.bot.calculate_cost.return_value = MagicMock(minerals=0, vespene=0)
+
+    cb.cancel_doomed_buildings()(ctx)
+
+    assert _cancels(ctx) == []

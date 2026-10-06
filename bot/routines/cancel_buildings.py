@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 from ares.behaviors.combat.individual import UseAbility
 from cython_extensions import cy_distance_to
 from sc2.ids.ability_id import AbilityId
+from sc2.ids.unit_typeid import UnitTypeId
 
 from bot.core.types import CombatRoutine
 from bot.intel import enemy_army
@@ -34,6 +35,17 @@ CANCEL_HEALTH_FRACTION: float = 0.2
 FINISH_ALMOST: float = 0.9
 """Past this much progress it is about to finish: let it."""
 REFUND_FRACTION: float = 0.75
+
+NEVER_CANCEL: frozenset[UnitTypeId] = frozenset(
+    {
+        # Creep Tumors cost nothing to cancel for, and cancelling one only
+        # loses the creep it was about to spread (live: three cancelled
+        # "for -38 minerals").
+        UnitTypeId.CREEPTUMOR,
+        UnitTypeId.CREEPTUMORQUEEN,
+        UnitTypeId.CREEPTUMORBURROWED,
+    }
+)
 
 
 def _incoming_dps(structure, enemies: list) -> tuple[float, int]:
@@ -79,13 +91,17 @@ def cancel_doomed_buildings() -> CombatRoutine:
         for structure in ctx.bot.structures:
             if structure.tag in cancelled or structure.is_ready:
                 continue
+            if structure.type_id in NEVER_CANCEL:
+                continue
             if not is_doomed(structure, enemies):
                 continue
+            cost = ctx.bot.calculate_cost(structure.type_id)
+            if cost.minerals + cost.vespene <= 0:
+                continue  # nothing to refund
             cancelled.add(structure.tag)
             ctx.bot.register_behavior(
                 UseAbility(AbilityId.CANCEL_BUILDINPROGRESS, structure)
             )
-            cost = ctx.bot.calculate_cost(structure.type_id)
             ctx.log(
                 f"CANCEL {structure.type_id.name} {structure.health:.0f}/"
                 f"{structure.health_max:.0f} hp at {structure.build_progress:.0%} - "
