@@ -638,14 +638,33 @@ def rebuild_lost_tech(gate: Gate = _always) -> MacroStep:
 
 _FORWARD_CRAWLER_MINERALS: int = 2000
 _FORWARD_CRAWLER_INTERVAL: float = 20.0
-_FORWARD_CRAWLER_WAVE: tuple[UnitTypeId, ...] = (
-    UnitTypeId.SPINECRAWLER,
-    UnitTypeId.SPINECRAWLER,
-    UnitTypeId.SPINECRAWLER,
-    UnitTypeId.SPORECRAWLER,
-    UnitTypeId.SPORECRAWLER,
-    UnitTypeId.SPORECRAWLER,
-)
+_FORWARD_CRAWLER_FAST_INTERVAL: float = 10.0
+_FORWARD_FAST_BANK: int = 4000
+"""Above this bank the pulse repeats every `_FORWARD_CRAWLER_FAST_INTERVAL`."""
+_FORWARD_WAVE_BASE: int = 6
+_FORWARD_WAVE_MAX: int = 18
+_FORWARD_WAVE_PER_1000: int = 3
+"""Each extra 1000 minerals over `_FORWARD_CRAWLER_MINERALS` adds this many
+crawlers to a pulse (up to `_FORWARD_WAVE_MAX`): a 10k bank used to drain at
+6 crawlers per 20s - far slower than it piled up."""
+_FORWARD_STALLED_CAP: int = 30
+"""While creep can't carry the wall further forward, keep piling crawlers onto
+the current group up to this many instead of floating the bank."""
+
+
+def _forward_wave_size(minerals: float) -> int:
+    extra = max(0, int((minerals - _FORWARD_CRAWLER_MINERALS) // 1000))
+    return min(_FORWARD_WAVE_MAX, _FORWARD_WAVE_BASE + _FORWARD_WAVE_PER_1000 * extra)
+
+
+def _forward_wave_types(count: int) -> tuple[UnitTypeId, ...]:
+    """Two Spines to every Spore: the Protoss ball is mostly ground."""
+    pattern = (
+        UnitTypeId.SPINECRAWLER,
+        UnitTypeId.SPINECRAWLER,
+        UnitTypeId.SPORECRAWLER,
+    )
+    return tuple(pattern[i % 3] for i in range(count))
 
 
 _FORWARD_MIN_DISTANCE: float = 25.0
@@ -758,7 +777,9 @@ def _forward_anchor(ctx: "BotContext") -> Point2 | None:
         return current
     nxt = _advance_anchor(ctx, current)
     if nxt is None:
-        return None  # creep hasn't reached anywhere further forward yet
+        # Creep hasn't reached anywhere further forward: keep thickening the
+        # current group rather than letting the bank float.
+        return current if have < _FORWARD_STALLED_CAP else None
     anchors.append(nxt)
     return nxt
 
@@ -777,7 +798,12 @@ def forward_crawler_wave(gate: Gate = _always) -> MacroStep:
         if ctx.bot.minerals <= _FORWARD_CRAWLER_MINERALS:
             return None
         last = ctx.state.last_forward_crawler_wave_at
-        if last is not None and ctx.bot.time - last < _FORWARD_CRAWLER_INTERVAL:
+        interval = (
+            _FORWARD_CRAWLER_FAST_INTERVAL
+            if ctx.bot.minerals >= _FORWARD_FAST_BANK
+            else _FORWARD_CRAWLER_INTERVAL
+        )
+        if last is not None and ctx.bot.time - last < interval:
             return None
 
         anchor = _forward_anchor(ctx)
@@ -786,15 +812,16 @@ def forward_crawler_wave(gate: Gate = _always) -> MacroStep:
         ctx.state.last_forward_crawler_wave_at = ctx.bot.time
         from bot.common.log import log_event
 
+        wave = _forward_wave_types(_forward_wave_size(ctx.bot.minerals))
         log_event(
             ctx.bot,
-            f"FORWARD_CRAWLER wave: 3 Spine + 3 Spore, group "
+            f"FORWARD_CRAWLER wave: {len(wave)} crawlers, group "
             f"{len(ctx.state.forward_anchors)} at "
             f"({anchor.x:.0f},{anchor.y:.0f}) (minerals={ctx.bot.minerals})",
         )
         return ForwardCrawlerWave(
             anchor=anchor,
-            structure_types=_FORWARD_CRAWLER_WAVE,
+            structure_types=wave,
             avoid_tiles=frozenset(ctx.state.bad_crawler_tiles),
         )
 

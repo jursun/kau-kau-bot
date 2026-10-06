@@ -3874,6 +3874,149 @@ def test_micro_lurkers_does_not_burrow_inside_a_detectors_reach() -> None:
     assert paths and paths[0].target.x < 0.0
 
 
+# --- hydralisk range hold ------------------------------------------------------
+
+
+def _hydra(tag: int, at: Point2, cooldown: float = 0.0) -> MagicMock:
+    unit = _unit(tag, at)
+    unit.type_id = UnitTypeId.HYDRALISK
+    unit.weapon_cooldown = cooldown
+    unit.orders = []
+    unit.is_moving = False
+    unit.order_target = None
+    return unit
+
+
+def _roach_front(tag: int, at: Point2) -> MagicMock:
+    unit = _unit(tag, at)
+    unit.type_id = UnitTypeId.ROACH
+    return unit
+
+
+def _foe(tag: int, at: Point2) -> MagicMock:
+    unit = _sized_enemy(tag, at, 0.6)
+    return unit
+
+
+def _in_range_patch(in_range_fn):
+    return patch("bot.routines.combat.cy_in_attack_range", in_range_fn)
+
+
+def test_hydra_range_grows_with_grooved_spines() -> None:
+    ctx = _ctx()
+    ctx.bot.state.upgrades = set()
+    assert combat._hydra_range(ctx) == combat.HYDRA_RANGE
+
+    ctx.bot.state.upgrades = {UpgradeId.EVOLVEGROOVEDSPINES}
+    assert combat._hydra_range(ctx) == combat.HYDRA_RANGE_UPGRADED
+
+
+def test_hydra_shoots_when_ready_and_something_is_in_range() -> None:
+    hydra = _hydra(1, Point2((0.0, 0.0)))
+    foe = _foe(10, Point2((5.0, 0.0)))
+
+    with _in_range_patch(lambda u, es: list(es)):
+        maneuver = combat._hydra_maneuver(hydra, [foe], [hydra], Point2((90.0, 0.0)), 5.0)
+
+    assert any(isinstance(m, ShootTargetInRange) for m in maneuver.micros)
+    assert not any(isinstance(m, combat._Move) for m in maneuver.micros)
+
+
+def test_hydra_backs_off_to_max_range_during_cooldown_when_crowded() -> None:
+    hydra = _hydra(1, Point2((0.0, 0.0)), cooldown=0.5)
+    foe = _foe(10, Point2((2.0, 0.0)))  # well inside range - backoff
+
+    with _in_range_patch(lambda u, es: list(es)):
+        maneuver = combat._hydra_maneuver(hydra, [foe], [hydra], Point2((90.0, 0.0)), 5.0)
+
+    moves = [m for m in maneuver.micros if isinstance(m, combat._Move)]
+    assert len(moves) == 1
+    # Away from the enemy, back out to range + 1 from it.
+    assert cy_distance_to(moves[0].target, foe.position) == pytest.approx(6.0)
+    assert moves[0].target.x < hydra.position.x
+
+
+def test_hydra_holds_during_cooldown_when_already_at_max_range() -> None:
+    hydra = _hydra(1, Point2((0.0, 0.0)), cooldown=0.5)
+    foe = _foe(10, Point2((4.8, 0.0)))
+
+    with _in_range_patch(lambda u, es: list(es)):
+        assert (
+            combat._hydra_maneuver(hydra, [foe], [hydra], Point2((90.0, 0.0)), 5.0)
+            is None
+        )
+
+
+def test_hydra_does_not_walk_ahead_of_the_front_line() -> None:
+    """Enemy close but out of range and nobody of ours on it yet: hold."""
+    hydra = _hydra(1, Point2((0.0, 0.0)))
+    foe = _foe(10, Point2((9.0, 0.0)))
+    roach_behind = _roach_front(2, Point2((-3.0, 0.0)))
+
+    with _in_range_patch(lambda u, es: []):
+        result = combat._hydra_maneuver(
+            hydra, [foe], [hydra, roach_behind], Point2((90.0, 0.0)), 5.0
+        )
+
+    assert result is None
+
+
+def test_hydra_moves_up_once_the_front_line_is_fighting() -> None:
+    hydra = _hydra(1, Point2((0.0, 0.0)))
+    foe = _foe(10, Point2((9.0, 0.0)))
+    roach_engaged = _roach_front(2, Point2((8.0, 0.0)))  # on the enemy
+
+    with _in_range_patch(lambda u, es: []):
+        maneuver = combat._hydra_maneuver(
+            hydra, [foe], [hydra, roach_engaged], Point2((90.0, 0.0)), 5.0
+        )
+
+    amoves = [m for m in maneuver.micros if isinstance(m, AMove)]
+    assert len(amoves) == 1
+    assert amoves[0].target == foe.position
+
+
+def test_hydra_advances_on_the_target_when_nothing_is_near() -> None:
+    hydra = _hydra(1, Point2((0.0, 0.0)))
+    far = _foe(10, Point2((60.0, 0.0)))
+
+    with _in_range_patch(lambda u, es: []):
+        maneuver = combat._hydra_maneuver(
+            hydra, [far], [hydra], Point2((90.0, 0.0)), 5.0
+        )
+
+    assert maneuver.micros[0].target == Point2((90.0, 0.0))
+
+
+def test_attack_squads_hands_hydras_to_the_range_hold_and_keeps_the_rest_grouped() -> None:
+    original = _patch_targeting(Point2((50.0, 50.0)), Point2((999.0, 999.0)))
+    try:
+        ctx = _ctx()
+        ctx.bot.time = 100.0
+        ctx.bot.townhalls = []
+        hydra = _hydra(1, Point2((60.0, 50.0)))
+        roach = _roach_front(2, Point2((61.0, 50.0)))
+        foe = _foe(90, Point2((66.0, 50.0)))
+        units = [hydra, roach]
+        ctx.mediator.get_units_from_role.return_value = units
+        ctx.mediator.get_cached_enemy_army = [foe]
+        ctx.mediator.get_units_in_range.return_value = [[foe]]
+        ctx.mediator.get_squads.return_value = [_squad(units)]
+
+        with _in_range_patch(lambda u, es: list(es)):
+            combat.attack_squads(
+                fall_back_ratio=0.55, range_hold_types=frozenset({UnitTypeId.HYDRALISK})
+            )(ctx)
+
+        micros = _all_micros(ctx)
+        shooters = [m for m in micros if isinstance(m, ShootTargetInRange)]
+        assert any(m.unit is hydra for m in shooters)
+        # The Roach is still driven by the squad's commit maneuver.
+        assert not any(getattr(m, "unit", None) is roach for m in shooters)
+    finally:
+        _restore_targeting(original)
+
+
 # --- micro_infestors: detection -------------------------------------------
 
 

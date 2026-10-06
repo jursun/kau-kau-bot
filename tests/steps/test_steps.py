@@ -1051,8 +1051,9 @@ def test_forward_crawler_wave_waits_on_minerals_and_interval() -> None:
     ctx.bot.minerals = 2001
     found = wave()
     assert isinstance(found, ForwardCrawlerWave)
-    assert list(found.structure_types).count(UnitTypeId.SPINECRAWLER) == 3
-    assert list(found.structure_types).count(UnitTypeId.SPORECRAWLER) == 3
+    assert len(found.structure_types) == 6
+    assert list(found.structure_types).count(UnitTypeId.SPINECRAWLER) == 4
+    assert list(found.structure_types).count(UnitTypeId.SPORECRAWLER) == 2
     assert ctx.state.last_forward_crawler_wave_at == 100.0
     assert wave() is None
     ctx.bot.time = 130.0
@@ -1127,12 +1128,22 @@ def test_forward_anchor_advances_toward_the_enemy_once_the_group_is_full() -> No
     assert ctx.state.forward_anchors == [first, anchor]
 
 
-def test_forward_anchor_waits_when_creep_has_not_reached_further() -> None:
+def test_forward_anchor_keeps_thickening_the_group_when_creep_stalls() -> None:
+    """No creep further forward: pile onto the current group (up to the cap)
+    instead of floating the bank."""
     ctx, first = _wall_group_ctx(standing=10)
     ctx.creep_until = 61.0  # creep ends right at the current group
 
-    assert _with_creep(ctx, lambda: z._forward_anchor(ctx)) is None
+    assert _with_creep(ctx, lambda: z._forward_anchor(ctx)) == first
     assert ctx.state.forward_anchors == [first]
+
+
+def test_forward_anchor_stops_once_the_stalled_group_is_at_the_cap() -> None:
+    ctx, first = _wall_group_ctx(standing=12)
+    ctx.creep_until = 61.0
+
+    with patch.object(z, "_FORWARD_STALLED_CAP", 12):
+        assert _with_creep(ctx, lambda: z._forward_anchor(ctx)) is None
 
 
 def test_forward_anchor_never_advances_into_the_enemy_base() -> None:
@@ -1146,7 +1157,9 @@ def test_forward_anchor_never_advances_into_the_enemy_base() -> None:
         crawlers.append(crawler)
     ctx.bot.structures = MagicMock(return_value=crawlers)
 
-    assert _with_creep(ctx, lambda: z._forward_anchor(ctx)) is None
+    # Never advances toward the enemy: stays on the current group.
+    assert _with_creep(ctx, lambda: z._forward_anchor(ctx)) == first_far
+    assert ctx.state.forward_anchors == [first_far]
 
 
 def test_forward_crawler_wave_anchors_at_the_creep_edge_toward_mid_map() -> None:
@@ -1188,3 +1201,42 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+
+def test_forward_wave_grows_with_the_bank() -> None:
+    assert z._forward_wave_size(2000) == 6
+    assert z._forward_wave_size(3000) == 9
+    assert z._forward_wave_size(5000) == 15
+    assert z._forward_wave_size(50000) == z._FORWARD_WAVE_MAX
+
+
+def test_forward_wave_types_are_two_spines_per_spore() -> None:
+    types = z._forward_wave_types(9)
+
+    assert len(types) == 9
+    assert types.count(UnitTypeId.SPINECRAWLER) == 6
+    assert types.count(UnitTypeId.SPORECRAWLER) == 3
+
+
+def test_forward_wave_pulses_faster_and_bigger_with_a_huge_bank() -> None:
+    ctx = _forward_ctx(creep_until=60.0)
+    ctx.bot.minerals = 8000
+
+    first = _with_creep(ctx, lambda: z.forward_crawler_wave()(ctx))
+    assert len(first.structure_types) == z._FORWARD_WAVE_MAX
+    assert ctx.state.last_forward_crawler_wave_at == 100.0
+
+    ctx.bot.time = 100.0 + z._FORWARD_CRAWLER_FAST_INTERVAL - 1.0
+    assert _with_creep(ctx, lambda: z.forward_crawler_wave()(ctx)) is None
+    ctx.bot.time = 100.0 + z._FORWARD_CRAWLER_FAST_INTERVAL + 0.5
+    assert _with_creep(ctx, lambda: z.forward_crawler_wave()(ctx)) is not None
+
+
+def test_forward_wave_keeps_the_slow_interval_below_the_fast_bank() -> None:
+    ctx = _forward_ctx(creep_until=60.0)
+    ctx.bot.minerals = 2500
+    _with_creep(ctx, lambda: z.forward_crawler_wave()(ctx))
+
+    ctx.bot.time = 100.0 + z._FORWARD_CRAWLER_FAST_INTERVAL + 0.5
+    assert _with_creep(ctx, lambda: z.forward_crawler_wave()(ctx)) is None

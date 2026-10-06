@@ -842,6 +842,81 @@ def _kite_maneuver(
             maneuver.add(AMove(unit=unit, target=target))
     return maneuver
 
+HYDRA_RANGE: float = 5.0
+HYDRA_RANGE_UPGRADED: float = 6.0
+"""With Grooved Spines (`UpgradeId.EVOLVEGROOVEDSPINES`)."""
+HYDRA_BACKOFF: float = 1.0
+"""Back off during weapon cooldown when an enemy is closer than range - this."""
+HYDRA_ADVANCE_CLEAR: float = 7.0
+"""Only walk up on an enemy that is farther than range + this - or whose
+fight our front line is already in."""
+
+
+def _hydra_range(ctx: "BotContext") -> float:
+    if UpgradeId.EVOLVEGROOVEDSPINES in ctx.bot.state.upgrades:
+        return HYDRA_RANGE_UPGRADED
+    return HYDRA_RANGE
+
+
+def _hydra_maneuver(
+    unit: Unit, enemies, squad_units, target, rng: float
+) -> CombatManeuver | None:
+    """One Hydralisk's turn: deal damage from max range and never lead.
+
+    Hydralisks are the fragile damage dealers, so they
+
+    - shoot whatever is in range the moment the weapon is ready, and during
+      the cooldown step *back* to max range if anything is closer than
+      `rng - HYDRA_BACKOFF` (a kite, not the forward stutter-step that walked
+      them into the ball);
+    - hold position while the enemy is close but out of range, unless our
+      front line (non-Hydralisk squad units) is already fighting it - they
+      move up behind the Roaches, not ahead of them;
+    - advance on `target` only when nothing is near.
+
+    Returns None to leave the unit's current order alone.
+    """
+    if not enemies:
+        return AMoveManeuver(unit, target)
+    in_range = cy_in_attack_range(unit, enemies)
+    nearest = cy_closest_to(position=unit.position, units=enemies)
+    ready = float(getattr(unit, "weapon_cooldown", 0.0) or 0.0) <= 0.0
+    if in_range:
+        crowding = [
+            e
+            for e in in_range
+            if cy_distance_to(unit.position, e.position) < rng - HYDRA_BACKOFF
+        ]
+        if ready:
+            maneuver = CombatManeuver()
+            maneuver.add(ShootTargetInRange(unit=unit, targets=in_range))
+            return maneuver
+        if crowding:
+            retreat_to = Point2(cy_towards(nearest.position, unit.position, rng + 1.0))
+            maneuver = CombatManeuver()
+            maneuver.add(_Move(unit=unit, target=retreat_to))
+            return maneuver
+        return None
+    if cy_distance_to(unit.position, nearest.position) <= rng + HYDRA_ADVANCE_CLEAR:
+        frontline = any(
+            u.type_id != unit.type_id
+            and cy_distance_to(u.position, nearest.position) <= rng + 1.0
+            for u in squad_units
+        )
+        if frontline:
+            return AMoveManeuver(unit, nearest.position)
+        return None
+    return AMoveManeuver(unit, target)
+
+
+def AMoveManeuver(unit: Unit, target) -> CombatManeuver | None:
+    if _already_ordered_to_point(unit, target):
+        return None
+    maneuver = CombatManeuver()
+    maneuver.add(AMove(unit=unit, target=target))
+    return maneuver
+
+
 _HOLD_STICKY_RADIUS: float = 15.0
 """How far a remembered hold may drift before `_sticky_hold_point`
 rebalances. Behind-mineral points (`get_behind_mineral_positions`) can
@@ -1299,6 +1374,7 @@ def attack_squads(
     kite_types: frozenset = frozenset(),
     fall_back_ratio: float | None = None,
     flank_at_wall: bool = False,
+    range_hold_types: frozenset = frozenset(),
 ) -> CombatRoutine:
     """Drive each ATTACKING squad at its nearest worthwhile target.
 
@@ -1348,6 +1424,9 @@ def attack_squads(
       falling back included - flanks it (`_flank_squad`) regardless of the
       supply ratio. Holding back until the enemy commits into static
       defense is right; once it has, trading from the side is the payoff.
+    - `range_hold_types`: fragile ranged units (Hydralisks) that stay at
+      max range behind the front line instead of stutter-stepping into the
+      enemy ball - see `_hydra_maneuver`.
     - Otherwise, unsafe ground influence: `KeepGroupSafe` / `KeepUnitSafe`
       run first so the ball leaves bad tiles instead of parking.
     - Enemy force strictly smaller than ours: `StutterGroupForward` trades
@@ -1561,6 +1640,23 @@ def attack_squads(
                         u
                         for u in group_units
                         if not _roach_wants_regen_burrow(ctx, u)
+                    ]
+                    group_tags = {u.tag for u in group_units}
+                    if not group_units:
+                        continue
+
+            if range_hold_types and not mustering and close_army:
+                holders = [u for u in group_units if u.type_id in range_hold_types]
+                if holders:
+                    rng = _hydra_range(ctx)
+                    for unit in holders:
+                        hold = _hydra_maneuver(
+                            unit, close_army, squad.squad_units, target, rng
+                        )
+                        if hold is not None:
+                            ctx.bot.register_behavior(hold)
+                    group_units = [
+                        u for u in group_units if u.type_id not in range_hold_types
                     ]
                     group_tags = {u.tag for u in group_units}
                     if not group_units:

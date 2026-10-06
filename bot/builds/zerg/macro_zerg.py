@@ -1360,6 +1360,8 @@ BUILD = BuildDefinition(
                 # Waiting for the bigger army to commit into our Spine/Spore
                 # wall is right; once it has, flank it even from behind.
                 flank_at_wall=True,
+                # Hydralisks hold max range behind the front line.
+                range_hold_types=frozenset({UnitTypeId.HYDRALISK}),
                 kite_types=frozenset({UnitTypeId.ROACH}),
                 min_engage_range=_ROACH_MIN_ENGAGE_RANGE,
             ),

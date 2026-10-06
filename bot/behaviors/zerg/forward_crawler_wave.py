@@ -42,7 +42,7 @@ def _find_near(
     reference: Point2,
     structure_type: UnitTypeId,
     min_radius: float = 1.0,
-    max_radius: float = 12.0,
+    max_radius: float = 16.0,
     avoid: Sequence[Point2] = (),
     reserved: Sequence[Point2] = (),
 ) -> Point2 | None:
