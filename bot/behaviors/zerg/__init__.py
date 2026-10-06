@@ -12,6 +12,7 @@ from bot.behaviors.zerg.inject_larva import InjectLarva
 from bot.behaviors.zerg.morph_lair_at_main import MorphLairAtMain
 from bot.behaviors.zerg.morph_overseers import MorphOverseers
 from bot.behaviors.zerg.train_from_larva import TrainFromLarva, pending_larva_trained
+from bot.behaviors.zerg.research_chain import ResearchChain
 from bot.behaviors.zerg.train_queens import TrainQueens
 from bot.behaviors.zerg.upgrade_slots import UpgradeSlots, count_pending_upgrades
 
@@ -19,6 +20,7 @@ __all__ = [
     "BuildMacroHatch",
     "BuildSporeCrawler",
     "BuildZergStructure",
+    "ResearchChain",
     "ExpandWithPersistentBuilder",
     "ForwardCrawlerWave",
     "InjectLarva",

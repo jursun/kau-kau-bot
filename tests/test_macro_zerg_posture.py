@@ -576,22 +576,12 @@ def test_gas_surplus_latches_once_the_bank_passes_1000() -> None:
     assert mz._gas_surplus(ctx) is True
 
 
-def test_surplus_adds_melee_and_adrenal_after_the_normal_upgrades() -> None:
+def test_surplus_research_stays_out_of_the_shared_upgrade_queue() -> None:
+    """Melee / Adrenal run on their own pinned buildings (`ResearchChain`), so
+    the shared queue and its slot budget never see them."""
     ctx = _ctx(vespene=1500)
 
-    upgrades = mz._desired_upgrades(ctx)
-
-    assert upgrades[:3] == list(ctx.build.army.upgrades)
-    for expected in (
-        UpgradeId.ZERGMELEEWEAPONSLEVEL1,
-        UpgradeId.ZERGLINGATTACKSPEED,
-        UpgradeId.ZERGMELEEWEAPONSLEVEL2,
-        UpgradeId.ZERGMELEEWEAPONSLEVEL3,
-    ):
-        assert expected in upgrades
-    assert upgrades.index(UpgradeId.ZERGMELEEWEAPONSLEVEL1) < upgrades.index(
-        UpgradeId.ZERGLINGATTACKSPEED
-    )
+    assert mz._desired_upgrades(ctx) == list(ctx.build.army.upgrades)
 
 
 def test_no_surplus_leaves_the_upgrade_list_alone() -> None:
@@ -601,12 +591,67 @@ def test_no_surplus_leaves_the_upgrade_list_alone() -> None:
     assert mz._surplus_evolution_chambers(ctx) == 0
 
 
-def test_surplus_wants_a_third_evolution_chamber_and_one_more_research_slot() -> None:
-    plain = _ctx(vespene=0)
-    rich = _ctx(vespene=1500)
+def test_surplus_wants_a_third_evolution_chamber() -> None:
+    assert mz._surplus_evolution_chambers(_ctx(vespene=1500)) == 1
+    assert mz._surplus_evolution_chambers(_ctx(vespene=0)) == 0
 
-    assert mz._surplus_evolution_chambers(rich) == 1
-    assert mz._upgrade_slot_target(rich) == mz._upgrade_slot_target(plain) + 1
+
+def _structure(tag: int):
+    unit = MagicMock()
+    unit.tag = tag
+    return unit
+
+
+def _ctx_with_structures(vespene: float, evos: list, pools: list):
+    ctx = _ctx(vespene=vespene)
+
+    def structures(unit_type):
+        found = MagicMock()
+        if unit_type == UnitTypeId.EVOLUTIONCHAMBER:
+            found.ready = evos
+        elif unit_type == UnitTypeId.SPAWNINGPOOL:
+            found.ready = pools
+        else:
+            found.ready = []
+        return found
+
+    ctx.bot.structures = structures
+    return ctx
+
+
+def test_dedicated_research_pins_melee_to_the_newest_evo_and_adrenal_to_the_pool() -> None:
+    ctx = _ctx_with_structures(
+        1500, [_structure(5), _structure(9), _structure(7)], [_structure(3)]
+    )
+
+    plan = mz._dedicated_research(ctx)
+
+    chains = {m.structure_tag: tuple(m.upgrades) for m in plan.macros}
+    assert chains[9] == mz._MELEE_UPGRADES  # newest Evo
+    assert chains[3] == mz._ADRENAL_UPGRADES  # Spawning Pool
+    assert ctx.state.melee_evo_tag == 9
+
+
+def test_dedicated_research_waits_for_a_third_evo_and_for_the_surplus() -> None:
+    two_evos = _ctx_with_structures(1500, [_structure(5), _structure(9)], [])
+    assert mz._dedicated_research(two_evos) is None
+
+    poor = _ctx_with_structures(100, [_structure(5), _structure(9), _structure(7)], [])
+    assert mz._dedicated_research(poor) is None
+
+
+def test_dedicated_research_keeps_its_evo_while_alive_and_repicks_when_it_dies() -> None:
+    ctx = _ctx_with_structures(
+        1500, [_structure(5), _structure(9), _structure(7)], []
+    )
+    mz._dedicated_research(ctx)
+    assert ctx.state.melee_evo_tag == 9
+
+    ctx.bot.structures = _ctx_with_structures(
+        1500, [_structure(5), _structure(7), _structure(6)], []
+    ).bot.structures
+    mz._dedicated_research(ctx)
+    assert ctx.state.melee_evo_tag == 7
 
 
 def main() -> int:

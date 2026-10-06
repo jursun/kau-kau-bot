@@ -198,6 +198,7 @@ from sc2.position import Point2
 from bot.behaviors.zerg import (
     ExpandWithPersistentBuilder,
     MorphLairAtMain,
+    ResearchChain,
     TrainFromLarva,
     UpgradeSlots,
     ZergGasBuildingController,
@@ -606,8 +607,6 @@ def _upgrade_slot_target(ctx) -> int:
     base = 1 if intel_army.army_behind_on_supply(ctx) else 2
     if _has_extra_upgrade_budget(ctx):
         base += 1
-    if _gas_surplus(ctx):
-        base += 1  # the 3rd Evolution Chamber / Spawning Pool research
     return base
 
 
@@ -615,11 +614,13 @@ _GAS_SURPLUS_BANK: int = 1000
 """Banked gas that means we are floating: the normal upgrade path can't spend
 it, so a 3rd Evolution Chamber goes down and melee attack + Adrenal Glands
 join the research list."""
-_SURPLUS_UPGRADES: tuple[UpgradeId, ...] = (
+_MELEE_UPGRADES: tuple[UpgradeId, ...] = (
     UpgradeId.ZERGMELEEWEAPONSLEVEL1,
-    UpgradeId.ZERGLINGATTACKSPEED,  # Adrenal Glands (needs Hive)
     UpgradeId.ZERGMELEEWEAPONSLEVEL2,
     UpgradeId.ZERGMELEEWEAPONSLEVEL3,
+)
+_ADRENAL_UPGRADES: tuple[UpgradeId, ...] = (
+    UpgradeId.ZERGLINGATTACKSPEED,  # Adrenal Glands (needs Hive)
 )
 
 
@@ -636,10 +637,28 @@ def _surplus_evolution_chambers(ctx) -> int:
     return 1 if _gas_surplus(ctx) else 0
 
 
+def _dedicated_research(ctx):
+    """Gas surplus: the 3rd Evolution Chamber researches melee attack and the
+    Spawning Pool researches Adrenal Glands, each pinned to its own building
+    (`ResearchChain`) and independent of the shared upgrade queue / slot
+    budget - the 3rd Evo used to sit idle behind that queue."""
+    if not _gas_surplus(ctx):
+        return None
+    plan = MacroPlan()
+    evos = list(ctx.bot.structures(UnitTypeId.EVOLUTIONCHAMBER).ready)
+    if len(evos) >= 3:
+        alive = {e.tag for e in evos}
+        if ctx.state.melee_evo_tag not in alive:
+            ctx.state.melee_evo_tag = max(alive)
+        plan.add(ResearchChain(ctx.state.melee_evo_tag, _MELEE_UPGRADES))
+    pools = list(ctx.bot.structures(UnitTypeId.SPAWNINGPOOL).ready)
+    if pools:
+        plan.add(ResearchChain(pools[0].tag, _ADRENAL_UPGRADES))
+    return plan if plan.macros else None
+
+
 def _desired_upgrades(ctx) -> list[UpgradeId]:
     upgrades = list(ctx.build.army.upgrades)
-    if _gas_surplus(ctx):
-        upgrades.extend(u for u in _SURPLUS_UPGRADES if u not in upgrades)
     if intel_army.enemy_has_air_units(ctx):
         upgrades.extend(_AIR_UPGRADES)
     return upgrades
@@ -1442,6 +1461,9 @@ BUILD = BuildDefinition(
         # Replaces the generic `c.gas_buildings()` continuation outright:
         # see `_scripted_gas_scaling`'s own docstring for the growth rule.
         _scripted_gas_scaling,
+        # Gas surplus: 3rd Evo -> melee attack, Pool -> Adrenal Glands, each on
+        # its own building and independent of the shared upgrade queue.
+        _dedicated_research,
         # Whole game once Lair is commanded (Glial/Burrow/Claws, then the
         # rest of `Army.upgrades`) - see its own docstring for why this
         # must outrank `_post_opening_production` below.

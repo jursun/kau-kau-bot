@@ -331,6 +331,9 @@ class RunState:
     """Crawler-building drone tag -> (closest distance to its build site so
     far, game time that best distance was last improved). Feeds
     `steps.zerg.release_stuck_crawlers`."""
+    melee_evo_tag: int | None = None
+    """The Evolution Chamber pinned to the melee attack chain (the gas-surplus
+    3rd one) - see `behaviors.zerg.ResearchChain`."""
     gas_surplus: bool = False
     """Latched once the gas bank passed 1000 (`macro_zerg._gas_surplus`): adds
     a 3rd Evolution Chamber and melee attack / Adrenal Glands to the
